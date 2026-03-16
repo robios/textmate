@@ -357,7 +357,7 @@ BOOL HasDocumentWindow (NSArray* windows)
 				{ @"Go to Definition",                     @selector(lspGoToDefinition:),           @"d", .modifierFlags = NSEventModifierFlagCommand|NSEventModifierFlagOption },
 				{ @"Show Hover Info",                      @selector(lspShowHoverInfo:),            @"i", .modifierFlags = NSEventModifierFlagCommand|NSEventModifierFlagControl },
 				{ @"Find References",                      @selector(lspFindReferences:),           @"r", .modifierFlags = NSEventModifierFlagCommand|NSEventModifierFlagControl },
-				{ @"Rename Symbol",                        @selector(lspRename:),                   .key = NSF2FunctionKey },
+				{ @"Rename Symbol",                        @selector(lspRename:),                   @"r", .modifierFlags = NSEventModifierFlagCommand|NSEventModifierFlagShift },
 				{ @"Code Actions",                         @selector(lspCodeActions:),              @".", .modifierFlags = NSEventModifierFlagCommand },
 				{ /* -------- */ },
 				{ @"Format Code / Selection",              @selector(lspFormatDocument:) },
