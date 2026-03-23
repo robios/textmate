@@ -914,4 +914,19 @@ static std::string detectWorkspaceRoot (std::string const& filePath)
 
 	[NSNotificationCenter.defaultCenter postNotificationName:LSPDiagnosticsDidChangeNotification object:self userInfo:@{ @"uri": uri }];
 }
+
+- (NSSet<NSString*>*)lspClientOpenDocumentPaths:(LSPClient*)client
+{
+	NSMutableSet<NSString*>* paths = [NSMutableSet new];
+	for(NSUUID* docId in _openDocuments)
+	{
+		if(_documentClients[docId] != client)
+			continue;
+
+		OakDocument* doc = [OakDocument documentWithIdentifier:docId];
+		if(doc.path)
+			[paths addObject:doc.path];
+	}
+	return paths;
+}
 @end

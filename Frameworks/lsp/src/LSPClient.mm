@@ -1,7 +1,11 @@
 #import "LSPClient.h"
+#import "LSPFileWatcher.h"
+#import "LSPFileWatchRegistration.h"
+#import <io/FSEventsManager.h>
 #import <nlohmann/json.hpp>
 #import <oak/debug.h>
 #import <ns/ns.h>
+#import <settings/settings.h>
 #import <signal.h>
 
 NSString* const LSPLogNotification = @"LSPLogNotification";
@@ -23,6 +27,75 @@ static NSString* fileFromParams (json const& params)
 	return nil;
 }
 
+// Expand brace groups: "**/*.{php,inc}" → {"**/*.php", "**/*.inc"}
+static NSArray<NSString*>* expandBraces (NSString* pattern)
+{
+	NSRange open = [pattern rangeOfString:@"{"];
+	if(open.location == NSNotFound)
+		return @[pattern];
+
+	NSRange close = [pattern rangeOfString:@"}" options:0 range:NSMakeRange(open.location, pattern.length - open.location)];
+	if(close.location == NSNotFound)
+		return @[pattern];
+
+	NSString* prefix = [pattern substringToIndex:open.location];
+	NSString* suffix = [pattern substringFromIndex:close.location + 1];
+	NSString* inner  = [pattern substringWithRange:NSMakeRange(open.location + 1, close.location - open.location - 1)];
+
+	NSMutableArray<NSString*>* result = [NSMutableArray new];
+	for(NSString* alt in [inner componentsSeparatedByString:@","])
+	{
+		NSString* expanded = [NSString stringWithFormat:@"%@%@%@", prefix, [alt stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet], suffix];
+		[result addObjectsFromArray:expandBraces(expanded)];
+	}
+	return result;
+}
+
+// Extract extension from a simple glob like "**/*.php" or "*.php"
+static NSString* extensionFromGlob (NSString* glob)
+{
+	// Match patterns like "**/*.ext" or "*.ext"
+	if([glob hasPrefix:@"**/*."] || [glob hasPrefix:@"*."])
+	{
+		NSRange lastDot = [glob rangeOfString:@"." options:NSBackwardsSearch];
+		if(lastDot.location != NSNotFound)
+		{
+			NSString* ext = [glob substringFromIndex:lastDot.location];
+			// Only accept simple extensions (no wildcards in the extension part)
+			if([ext rangeOfString:@"*"].location == NSNotFound && [ext rangeOfString:@"?"].location == NSNotFound)
+				return ext.lowercaseString;
+		}
+	}
+	return nil;
+}
+
+static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*>* extensions, NSMutableSet<NSString*>* exactNames)
+{
+	NSArray<NSString*>* expanded = expandBraces(pattern);
+	for(NSString* glob in expanded)
+	{
+		NSString* ext = extensionFromGlob(glob);
+		if(ext)
+		{
+			[extensions addObject:ext];
+		}
+		else
+		{
+			// Unrecognized pattern — if it has no path separators or wildcards, treat as exact filename
+			if([glob rangeOfString:@"*"].location == NSNotFound && [glob rangeOfString:@"?"].location == NSNotFound)
+			{
+				NSString* name = glob.lastPathComponent;
+				[exactNames addObject:name];
+				NSLog(@"[LSP] File watch: unrecognized glob '%@', using exact filename match for '%@'", glob, name);
+			}
+			else
+			{
+				NSLog(@"[LSP] File watch: unsupported glob pattern '%@', skipping", glob);
+			}
+		}
+	}
+}
+
 @interface LSPClient ()
 {
 	NSTask* _task;
@@ -42,6 +115,14 @@ static NSString* fileFromParams (json const& params)
 	NSString* _initOptionsJSON;
 	NSMutableDictionary<NSNumber*, void(^)(id)>* _responseCallbacks;
 	NSMutableDictionary<NSNumber*, NSString*>* _requestMethods;
+
+	// File watching
+	NSMutableDictionary<NSString*, LSPFileWatchRegistration*>* _fileWatchRegistrations;
+	LSPFileWatcher* _fileWatcher;
+	id _fsEventsObserver;
+	dispatch_queue_t _scanQueue;
+	NSTimer* _debounceTimer;
+	NSMutableDictionary<NSString*, NSDictionary*>* _pendingChanges; // URI → latest change
 }
 - (void)openDocument:(OakDocument*)document languageId:(NSString*)languageId retryCount:(int)retryCount;
 @end
@@ -95,6 +176,8 @@ static NSString* fileFromParams (json const& params)
 				if(!strongSelf)
 					return;
 				strongSelf->_initialized = NO;
+				[strongSelf teardownFileWatcher];
+				[strongSelf->_fileWatchRegistrations removeAllObjects];
 				[strongSelf cancelPendingCallbacks];
 				if([strongSelf->_delegate respondsToSelector:@selector(lspClientDidTerminate:)])
 					[strongSelf->_delegate lspClientDidTerminate:strongSelf];
@@ -376,6 +459,18 @@ static NSString* fileFromParams (json const& params)
 					};
 					[self sendMessage:response];
 				}
+			}
+			else if(method == "client/registerCapability")
+			{
+				[self handleRegisterCapability:msg["params"]];
+				json response = {{"jsonrpc", "2.0"}, {"id", requestId}, {"result", json::object()}};
+				[self sendMessage:response];
+			}
+			else if(method == "client/unregisterCapability")
+			{
+				[self handleUnregisterCapability:msg["params"]];
+				json response = {{"jsonrpc", "2.0"}, {"id", requestId}, {"result", json::object()}};
+				[self sendMessage:response];
 			}
 			else
 			{
@@ -670,6 +765,11 @@ static NSString* fileFromParams (json const& params)
 					}},
 					{"dataSupport", true},
 					{"isPreferredSupport", true}
+				}}
+			}},
+			{"workspace", {
+				{"didChangeWatchedFiles", {
+					{"dynamicRegistration", true}
 				}}
 			}}
 		}}
@@ -1424,10 +1524,391 @@ static NSString* fileFromParams (json const& params)
 	}];
 }
 
+// MARK: - File watching
+
+- (NSArray<NSString*>*)fileWatchExcludes
+{
+	std::string filePath = to_s(_workingDirectory);
+	settings_t settings = settings_for_path(filePath, "", filePath);
+	std::string excludeSetting = settings.get("lspFileWatchExclude", "");
+
+	if(excludeSetting.empty())
+		return @[];
+
+	NSString* excludeStr = to_ns(excludeSetting);
+	NSMutableArray<NSString*>* result = [NSMutableArray new];
+	for(NSString* item in [excludeStr componentsSeparatedByString:@","])
+	{
+		NSString* trimmed = [item stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+		// Strip trailing slash
+		if([trimmed hasSuffix:@"/"])
+			trimmed = [trimmed substringToIndex:trimmed.length - 1];
+		if(trimmed.length)
+			[result addObject:trimmed];
+	}
+	return result;
+}
+
+- (void)handleRegisterCapability:(json const&)params
+{
+	if(!params.contains("registrations"))
+		return;
+
+	for(auto const& reg : params["registrations"])
+	{
+		if(!reg.contains("method") || !reg["method"].is_string() || !reg.contains("id"))
+			continue;
+
+		std::string method = reg["method"].get<std::string>();
+		if(method != "workspace/didChangeWatchedFiles")
+		{
+			if([_delegate respondsToSelector:@selector(lspClient:handleServerRequest:params:)])
+			{
+				NSDictionary* regDict = [self convertJSON:reg];
+				[_delegate lspClient:self handleServerRequest:@"client/registerCapability" params:@{@"registrations": @[regDict]}];
+			}
+			continue;
+		}
+
+		std::string regId = reg["id"].is_string() ? reg["id"].get<std::string>() : std::to_string(reg["id"].get<int>());
+		NSLog(@"[LSP] Registering file watcher: %s", regId.c_str());
+
+		if(!_fileWatchRegistrations)
+			_fileWatchRegistrations = [NSMutableDictionary new];
+
+		if(reg.contains("registerOptions") && reg["registerOptions"].contains("watchers"))
+		{
+			int watcherIndex = 0;
+			for(auto const& watcher : reg["registerOptions"]["watchers"])
+			{
+				LSPFileWatchRegistration* registration = [LSPFileWatchRegistration new];
+				// Unique ID per watcher within a registration
+				registration.registrationId = [NSString stringWithFormat:@"%s:%d", regId.c_str(), watcherIndex++];
+				registration.watchKind = watcher.contains("kind") ? watcher["kind"].get<int>() : 7;
+
+				NSMutableSet<NSString*>* extensions = [NSMutableSet new];
+				NSMutableSet<NSString*>* exactNames = [NSMutableSet new];
+				NSString* basePath = nil;
+
+				if(watcher.contains("globPattern"))
+				{
+					auto const& glob = watcher["globPattern"];
+					if(glob.is_string())
+					{
+						extractExtensionsFromGlob(to_ns(glob.get<std::string>()), extensions, exactNames);
+					}
+					else if(glob.is_object())
+					{
+						// RelativePattern: {baseUri, pattern}
+						if(glob.contains("pattern"))
+							extractExtensionsFromGlob(to_ns(glob["pattern"].get<std::string>()), extensions, exactNames);
+
+						if(glob.contains("baseUri"))
+						{
+							std::string baseUri;
+							if(glob["baseUri"].is_string())
+								baseUri = glob["baseUri"].get<std::string>();
+							else if(glob["baseUri"].is_object() && glob["baseUri"].contains("uri"))
+								baseUri = glob["baseUri"]["uri"].get<std::string>();
+
+							if(!baseUri.empty())
+							{
+								NSURL* url = [NSURL URLWithString:to_ns(baseUri)];
+								if(url.isFileURL)
+								{
+									NSString* path = url.path;
+									if([path hasPrefix:_workingDirectory])
+									{
+										basePath = path;
+									}
+									else
+									{
+										NSLog(@"[LSP] File watch: baseUri '%s' is outside working directory, skipping", baseUri.c_str());
+										continue;
+									}
+								}
+							}
+						}
+					}
+					else
+					{
+						NSLog(@"[LSP] File watch: unrecognized globPattern format, skipping");
+						continue;
+					}
+				}
+
+				registration.extensions = extensions;
+				registration.exactNames = exactNames;
+				registration.basePath = basePath;
+
+				_fileWatchRegistrations[registration.registrationId] = registration;
+
+				NSLog(@"[LSP] File watch registered: id=%@ extensions=%@ exactNames=%@ kind=%d basePath=%@",
+					registration.registrationId, registration.extensions, registration.exactNames,
+					registration.watchKind, registration.basePath ?: _workingDirectory);
+			}
+		}
+
+		[self setupFileWatcherIfNeeded];
+	}
+}
+
+- (void)handleUnregisterCapability:(json const&)params
+{
+	// LSP spec uses "unregisterations" (with the typo)
+	NSString* key = params.contains("unregisterations") ? @"unregisterations" : @"unregistrations";
+	std::string keyStr = key.UTF8String;
+
+	if(!params.contains(keyStr))
+		return;
+
+	for(auto const& unreg : params[keyStr])
+	{
+		if(!unreg.contains("method") || !unreg["method"].is_string() || !unreg.contains("id"))
+			continue;
+
+		std::string method = unreg["method"].get<std::string>();
+		if(method != "workspace/didChangeWatchedFiles")
+		{
+			if([_delegate respondsToSelector:@selector(lspClient:handleServerRequest:params:)])
+			{
+				NSDictionary* unregDict = [self convertJSON:unreg];
+				[_delegate lspClient:self handleServerRequest:@"client/unregisterCapability" params:@{key: @[unregDict]}];
+			}
+			continue;
+		}
+
+		std::string regId = unreg["id"].is_string() ? unreg["id"].get<std::string>() : std::to_string(unreg["id"].get<int>());
+		NSString* regIdPrefix = [NSString stringWithFormat:@"%s:", regId.c_str()];
+		NSLog(@"[LSP] Unregistering file watcher: %s", regId.c_str());
+
+		// Remove all per-watcher entries for this registration (keyed as "regId:0", "regId:1", etc.)
+		NSArray<NSString*>* regKeys = _fileWatchRegistrations.allKeys;
+		for(NSString* regKey in regKeys)
+		{
+			if([regKey hasPrefix:regIdPrefix])
+				[_fileWatchRegistrations removeObjectForKey:regKey];
+		}
+	}
+
+	if(_fileWatchRegistrations.count == 0)
+		[self teardownFileWatcher];
+}
+
+- (void)setupFileWatcherIfNeeded
+{
+	// Tear down existing watcher to rebuild with merged extensions from all registrations
+	if(_fileWatcher)
+		[self teardownFileWatcher];
+
+	NSArray<NSString*>* excludes = [self fileWatchExcludes];
+	_fileWatcher = [[LSPFileWatcher alloc] initWithRootDirectory:_workingDirectory excludes:excludes];
+
+	// Merge extensions and exact names from all registrations
+	for(LSPFileWatchRegistration* reg in _fileWatchRegistrations.allValues)
+	{
+		[_fileWatcher addExtensions:reg.extensions];
+		[_fileWatcher addExactNames:reg.exactNames];
+	}
+
+	if(!_scanQueue)
+		_scanQueue = dispatch_queue_create("com.macromates.lsp.filescan", DISPATCH_QUEUE_SERIAL);
+
+	__weak LSPClient* weakSelf = self;
+	LSPFileWatcher* capturedWatcher = _fileWatcher;
+	[_fileWatcher performInitialScanOnQueue:_scanQueue completion:^{
+		LSPClient* strongSelf = weakSelf;
+		if(!strongSelf)
+			return;
+
+		// If watcher was torn down or replaced during the scan, discard results
+		if(strongSelf->_fileWatcher != capturedWatcher)
+			return;
+
+		[strongSelf startFSEventsObserver];
+	}];
+}
+
+- (void)startFSEventsObserver
+{
+	if(_fsEventsObserver)
+		return;
+
+	NSURL* rootURL = [NSURL fileURLWithPath:_workingDirectory];
+	__weak LSPClient* weakSelf = self;
+
+	_fsEventsObserver = [FSEventsManager.sharedInstance addObserverToDirectoryAtURL:rootURL observeSubdirectories:YES usingBlock:^(NSURL* changedURL) {
+		dispatch_async(dispatch_get_main_queue(), ^{
+			LSPClient* strongSelf = weakSelf;
+			if(!strongSelf || !strongSelf->_fileWatcher)
+				return;
+
+			[strongSelf handleFSEventAtURL:changedURL];
+		});
+	}];
+}
+
+- (void)handleFSEventAtURL:(NSURL*)url
+{
+	NSString* dirPath = url.path;
+	__weak LSPClient* weakSelf = self;
+	LSPFileWatcher* capturedWatcher = _fileWatcher;
+
+	[_fileWatcher asyncDiffForChangedDirectory:dirPath onQueue:_scanQueue completion:^(NSArray<NSDictionary*>* changes) {
+		LSPClient* strongSelf = weakSelf;
+		if(!strongSelf || strongSelf->_fileWatcher != capturedWatcher)
+			return;
+
+		[strongSelf processFileChanges:changes];
+	}];
+}
+
+- (void)processFileChanges:(NSArray<NSDictionary*>*)changes
+{
+	if(changes.count == 0)
+		return;
+
+	// Get open document paths to filter Changed events
+	NSSet<NSString*>* openPaths = nil;
+	if([_delegate respondsToSelector:@selector(lspClientOpenDocumentPaths:)])
+		openPaths = [_delegate lspClientOpenDocumentPaths:self];
+
+	NSMutableArray<NSDictionary*>* filtered = [NSMutableArray new];
+	for(NSDictionary* change in changes)
+	{
+		int changeType = [change[@"type"] intValue];
+		NSString* uri = change[@"uri"];
+
+		// Filter by watchKind across all registrations (union semantics)
+		BOOL matchesAnyRegistration = NO;
+		for(LSPFileWatchRegistration* reg in _fileWatchRegistrations.allValues)
+		{
+			// Convert FileChangeType enum (1=Created,2=Changed,3=Deleted) to WatchKind bit (1,2,4)
+			int watchKindBit;
+			switch(changeType)
+			{
+				case 1: watchKindBit = 1; break;
+				case 2: watchKindBit = 2; break;
+				case 3: watchKindBit = 4; break;
+				default: continue;
+			}
+			if(!(reg.watchKind & watchKindBit))
+				continue;
+
+			// Check if file falls under this registration's basePath
+			if(reg.basePath)
+			{
+				NSURL* fileURL = [NSURL URLWithString:uri];
+				NSString* filePath = fileURL.path;
+				if(filePath && ![filePath hasPrefix:reg.basePath])
+					continue;
+			}
+
+			matchesAnyRegistration = YES;
+			break;
+		}
+
+		if(!matchesAnyRegistration)
+			continue;
+
+		// Skip Changed events for open documents
+		if(changeType == 2 && openPaths)
+		{
+			NSURL* fileURL = [NSURL URLWithString:uri];
+			NSString* filePath = fileURL.path;
+			if(filePath && [openPaths containsObject:filePath])
+				continue;
+		}
+
+		[filtered addObject:change];
+	}
+
+	if(filtered.count == 0)
+		return;
+
+	if(!_pendingChanges)
+		_pendingChanges = [NSMutableDictionary new];
+	for(NSDictionary* change in filtered)
+	{
+		NSString* uri = change[@"uri"];
+		NSDictionary* existing = _pendingChanges[uri];
+		if(!existing)
+		{
+			_pendingChanges[uri] = change;
+			continue;
+		}
+
+		int oldType = [existing[@"type"] intValue];
+		int newType = [change[@"type"] intValue];
+
+		if(oldType == 1 && newType == 2)
+			continue; // Created + Changed → keep Created (file is still new to server)
+		else if(oldType == 1 && newType == 3)
+			[_pendingChanges removeObjectForKey:uri]; // Created + Deleted → net no-op
+		else
+			_pendingChanges[uri] = change;
+	}
+
+	[_debounceTimer invalidate];
+	__weak LSPClient* weakSelf = self;
+	_debounceTimer = [NSTimer scheduledTimerWithTimeInterval:0.2 repeats:NO block:^(NSTimer* timer) {
+		[weakSelf flushPendingFileChanges];
+	}];
+}
+
+- (void)flushPendingFileChanges
+{
+	if(!_pendingChanges.count)
+		return;
+
+	NSArray<NSDictionary*>* allChanges = _pendingChanges.allValues;
+	[_pendingChanges removeAllObjects];
+
+	static NSUInteger const kBatchSize = 500;
+
+	for(NSUInteger offset = 0; offset < allChanges.count; offset += kBatchSize)
+	{
+		NSUInteger length = MIN(kBatchSize, allChanges.count - offset);
+		NSArray<NSDictionary*>* batch = [allChanges subarrayWithRange:NSMakeRange(offset, length)];
+
+		json changesArray = json::array();
+		for(NSDictionary* change in batch)
+		{
+			changesArray.push_back({
+				{"uri",  [change[@"uri"] UTF8String]},
+				{"type", [change[@"type"] intValue]}
+			});
+		}
+
+		json params = {{"changes", changesArray}};
+		[self sendNotification:@"workspace/didChangeWatchedFiles" params:params];
+	}
+}
+
+- (void)teardownFileWatcher
+{
+	[_debounceTimer invalidate];
+	_debounceTimer = nil;
+	[_pendingChanges removeAllObjects];
+	_pendingChanges = nil;
+
+	if(_fsEventsObserver)
+	{
+		[FSEventsManager.sharedInstance removeObserver:_fsEventsObserver];
+		_fsEventsObserver = nil;
+	}
+
+	[_fileWatcher clearSnapshot];
+	_fileWatcher = nil;
+}
+
 - (void)shutdown
 {
 	if(!_task.isRunning)
 		return;
+
+	[self teardownFileWatcher];
+	[_fileWatchRegistrations removeAllObjects];
 
 	NSLog(@"[LSP] Shutting down server");
 	[self sendRequest:@"shutdown" params:json::object()];

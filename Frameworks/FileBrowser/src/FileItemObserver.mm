@@ -1,5 +1,5 @@
 #import "FileItem.h"
-#import "FSEventsManager.h"
+#import <io/FSEventsManager.h>
 #import "SCMManager.h"
 #import <io/path.h>
 #import <ns/ns.h>

@@ -13,6 +13,7 @@
 - (void)lspClientDidInitialize:(LSPClient*)client;
 - (id)lspClient:(LSPClient*)client handleServerRequest:(NSString*)method params:(NSDictionary*)params;
 - (void)lspClient:(LSPClient*)client didReceiveNotification:(NSString*)method params:(NSDictionary*)params;
+- (NSSet<NSString*>*)lspClientOpenDocumentPaths:(LSPClient*)client;
 @end
 
 extern NSString* const LSPLogNotification;

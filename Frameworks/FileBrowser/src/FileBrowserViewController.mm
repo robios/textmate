@@ -6,7 +6,7 @@
 #import "FileItem.h"
 #import "FileItemTableCellView.h"
 #import "SCMManager.h"
-#import "FSEventsManager.h"
+#import <io/FSEventsManager.h>
 #import "OFB/OFBHeaderView.h"
 #import "OFB/OFBActionsView.h"
 #import "OFB/OFBFinderTagsChooser.h"
