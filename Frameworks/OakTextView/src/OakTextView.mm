@@ -6824,6 +6824,7 @@ static std::multimap<std::pair<size_t, size_t>, std::string> replacementsFromTex
 			rawDocumentation = docValue[@"value"];
 		}
 
+
 		NSString* newInsertText = nil;
 		if(resolved[@"insertText"])
 			newInsertText = resolved[@"insertText"];
@@ -6943,6 +6944,24 @@ static std::multimap<std::pair<size_t, size_t>, std::string> replacementsFromTex
 
 - (NSAttributedString*)parseMarkdownDocumentation:(NSString*)text
 {
+	// Deduplicate sections separated by --- (Intelephense repeats identical blocks)
+	NSArray* sections = [text componentsSeparatedByString:@"\n\n---\n\n"];
+	if(sections.count > 1)
+	{
+		NSMutableArray* unique = [NSMutableArray new];
+		NSMutableSet* seen = [NSMutableSet new];
+		for(NSString* section in sections)
+		{
+			NSString* trimmed = [section stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+			if(trimmed.length > 0 && ![seen containsObject:trimmed])
+			{
+				[seen addObject:trimmed];
+				[unique addObject:trimmed];
+			}
+		}
+		text = [unique componentsJoinedByString:@"\n\n---\n\n"];
+	}
+
 	NSMutableAttributedString* combined = [[NSMutableAttributedString alloc] init];
 	NSString* grammarScope = documentView ? to_ns(documentView->file_type()) : nil;
 
@@ -7001,6 +7020,24 @@ static std::multimap<std::pair<size_t, size_t>, std::string> replacementsFromTex
 
 	if(isMarkdown)
 	{
+		// Deduplicate sections separated by --- (Intelephense repeats identical blocks)
+		NSArray* sections = [value componentsSeparatedByString:@"\n\n---\n\n"];
+		if(sections.count > 1)
+		{
+			NSMutableArray* unique = [NSMutableArray new];
+			NSMutableSet* seen = [NSMutableSet new];
+			for(NSString* section in sections)
+			{
+				NSString* trimmed = [section stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+				if(trimmed.length > 0 && ![seen containsObject:trimmed])
+				{
+					[seen addObject:trimmed];
+					[unique addObject:trimmed];
+				}
+			}
+			value = [unique componentsJoinedByString:@"\n\n---\n\n"];
+		}
+
 		static NSRegularExpression* codeBlockRegex = [NSRegularExpression regularExpressionWithPattern:@"```(?:\\w+)?\\n([\\s\\S]*?)\\n```" options:0 error:nil];
 		NSArray* codeMatches = [codeBlockRegex matchesInString:value options:0 range:NSMakeRange(0, value.length)];
 
