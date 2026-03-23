@@ -61,9 +61,11 @@ public class CompletionViewModel: ObservableObject {
 
 	public func scheduleResolve() {
 		resolveTimer?.invalidate()
-		resolvedDocumentation = nil
 
-		guard let item = selectedItem else { return }
+		guard let item = selectedItem else {
+			resolvedDocumentation = nil
+			return
+		}
 
 		if item.isResolved {
 			resolvedDocumentation = item.documentation

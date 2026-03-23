@@ -15,13 +15,14 @@ import AppKit
 
 @Test func tooltipContentConvenienceInit() {
     let body = NSAttributedString(string: "Description")
+    let title = NSAttributedString(string: "MyFunc")
     let content = OakTooltipContent(
-        title: "MyFunc",
+        title: title,
         body: body,
         codeSnippet: "func myFunc() -> Int",
         language: "swift"
     )
-    #expect(content.title == "MyFunc")
+    #expect(content.title?.string == "MyFunc")
     #expect(content.body.string == "Description")
     #expect(content.codeSnippet == "func myFunc() -> Int")
     #expect(content.language == "swift")
@@ -29,10 +30,10 @@ import AppKit
 
 @Test func tooltipContentPropertiesAreMutable() {
     let content = OakTooltipContent(body: NSAttributedString(string: "initial"))
-    content.title = "Updated"
+    content.title = NSAttributedString(string: "Updated")
     content.codeSnippet = "let x = 1"
     content.language = "swift"
-    #expect(content.title == "Updated")
+    #expect(content.title?.string == "Updated")
     #expect(content.codeSnippet == "let x = 1")
     #expect(content.language == "swift")
 }

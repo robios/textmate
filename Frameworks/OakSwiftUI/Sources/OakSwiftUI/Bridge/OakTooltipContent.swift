@@ -1,7 +1,7 @@
 import AppKit
 
 @objc public class OakTooltipContent: NSObject {
-    @objc public var title: String?
+    @objc public var title: NSAttributedString?
     @objc public var body: NSAttributedString
     @objc public var codeSnippet: String?
     @objc public var language: String?
@@ -11,7 +11,7 @@ import AppKit
         super.init()
     }
 
-    @objc public convenience init(title: String?, body: NSAttributedString, codeSnippet: String?, language: String?) {
+    @objc public convenience init(title: NSAttributedString?, body: NSAttributedString, codeSnippet: String?, language: String?) {
         self.init(body: body)
         self.title = title
         self.codeSnippet = codeSnippet

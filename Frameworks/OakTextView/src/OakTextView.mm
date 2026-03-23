@@ -6831,58 +6831,7 @@ static std::multimap<std::pair<size_t, size_t>, std::string> replacementsFromTex
 			newInsertText = resolved[@"textEdit"][@"newText"];
 
 		dispatch_async(dispatch_get_main_queue(), ^{
-			NSAttributedString* parsedDocs = nil;
-			if(rawDocumentation.length > 0)
-			{
-				NSMutableAttributedString* combined = [[NSMutableAttributedString alloc] init];
-				NSString* text = rawDocumentation;
-
-				// Extract code blocks (```lang\n...\n```) as syntax-highlighted signature
-				static NSRegularExpression* codeBlockRegex = [NSRegularExpression regularExpressionWithPattern:@"```(\\w+)?\\n([\\s\\S]*?)\\n```" options:0 error:nil];
-				NSArray* codeMatches = [codeBlockRegex matchesInString:text options:0 range:NSMakeRange(0, text.length)];
-
-				NSString* bodyText = text;
-				if(codeMatches.count > 0)
-				{
-					NSTextCheckingResult* firstMatch = codeMatches[0];
-					NSString* signature = [text substringWithRange:[firstMatch rangeAtIndex:2]];
-					signature = [signature stringByReplacingOccurrencesOfString:@"<?php\n" withString:@""];
-					signature = [signature stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-
-					if(signature.length > 0)
-					{
-						NSString* grammarScope = documentView ? to_ns(documentView->file_type()) : nil;
-						NSMutableAttributedString* styledSignature = [strongSelf syntaxHighlight:signature withGrammar:grammarScope];
-						[combined appendAttributedString:styledSignature];
-					}
-
-					NSMutableString* remaining = [text mutableCopy];
-					[remaining replaceCharactersInRange:[firstMatch rangeAtIndex:0] withString:@""];
-					bodyText = [remaining stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-					bodyText = [bodyText stringByReplacingOccurrencesOfString:@"---" withString:@""];
-					bodyText = [bodyText stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-				}
-
-				if(bodyText.length > 0)
-				{
-					if(combined.length > 0)
-						[combined appendAttributedString:[[NSAttributedString alloc] initWithString:@"\n\n" attributes:@{}]];
-
-					if(codeMatches.count == 0)
-					{
-						// No code blocks — treat entire content as code (e.g. Copilot completions)
-						NSString* grammarScope = documentView ? to_ns(documentView->file_type()) : nil;
-						[combined appendAttributedString:[strongSelf syntaxHighlight:bodyText withGrammar:grammarScope]];
-					}
-					else
-					{
-						[combined appendAttributedString:[strongSelf parseMarkdownToAttributedString:bodyText]];
-					}
-				}
-
-				if(combined.length > 0)
-					parsedDocs = combined;
-			}
+			NSAttributedString* parsedDocs = rawDocumentation.length > 0 ? [strongSelf parseMarkdownDocumentation:rawDocumentation] : nil;
 			[strongSelf->_lspCompletionPopup resolveCompletedFor:item documentation:parsedDocs insertText:newInsertText];
 		});
 	}];
@@ -6992,30 +6941,66 @@ static std::multimap<std::pair<size_t, size_t>, std::string> replacementsFromTex
 		}];
 }
 
+- (NSAttributedString*)parseMarkdownDocumentation:(NSString*)text
+{
+	NSMutableAttributedString* combined = [[NSMutableAttributedString alloc] init];
+	NSString* grammarScope = documentView ? to_ns(documentView->file_type()) : nil;
+
+	static NSRegularExpression* codeBlockRegex = [NSRegularExpression regularExpressionWithPattern:@"```(\\w+)?\\n([\\s\\S]*?)\\n```" options:0 error:nil];
+	NSArray* codeMatches = [codeBlockRegex matchesInString:text options:0 range:NSMakeRange(0, text.length)];
+
+	NSString* bodyText = text;
+	if(codeMatches.count > 0)
+	{
+		NSTextCheckingResult* firstMatch = codeMatches[0];
+		NSString* signature = [text substringWithRange:[firstMatch rangeAtIndex:2]];
+		signature = [signature stringByReplacingOccurrencesOfString:@"<?php\n" withString:@""];
+		signature = [signature stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+
+		if(signature.length > 0)
+			[combined appendAttributedString:[self syntaxHighlight:signature withGrammar:grammarScope]];
+
+		// Strip all code blocks from body, not just the first
+		NSMutableString* remaining = [text mutableCopy];
+		for(NSTextCheckingResult* match in [codeMatches reverseObjectEnumerator])
+			[remaining replaceCharactersInRange:[match rangeAtIndex:0] withString:@""];
+		bodyText = [remaining stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+		bodyText = [bodyText stringByReplacingOccurrencesOfString:@"---" withString:@""];
+		bodyText = [bodyText stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+	}
+
+	if(bodyText.length > 0)
+	{
+		if(combined.length > 0)
+			[combined appendAttributedString:[[NSAttributedString alloc] initWithString:@"\n\n" attributes:@{}]];
+
+		if(codeMatches.count == 0)
+			[combined appendAttributedString:[self syntaxHighlight:bodyText withGrammar:grammarScope]];
+		else
+			[combined appendAttributedString:[self parseMarkdownToAttributedString:bodyText]];
+	}
+
+	return combined.length > 0 ? combined : nil;
+}
+
 - (OakTooltipContent*)createTooltipContentFromHover:(NSDictionary*)hover
 {
 	NSString* value = hover[@"value"];
 	if(!value.length)
 		return nil;
 
-	// Truncate huge content to avoid main thread freeze during rendering
-	// 420 characters is plenty for a tooltip
 	if(value.length > 420)
-	{
 		value = [[value substringToIndex:420] stringByAppendingString:@"\n... (truncated)"];
-	}
 
-	// Parse hover content — extract title (signature) and body (docs)
 	NSString* kind = hover[@"kind"];
 	NSString* language = hover[@"language"];
 	BOOL isMarkdown = [kind isEqualToString:@"markdown"];
 
-	NSString* title = nil;
+	NSAttributedString* title = nil;
 	NSAttributedString* body = [[NSAttributedString alloc] initWithString:@""];
 
 	if(isMarkdown)
 	{
-		// Extract code blocks from markdown (```lang\n...\n```)
 		static NSRegularExpression* codeBlockRegex = [NSRegularExpression regularExpressionWithPattern:@"```(?:\\w+)?\\n([\\s\\S]*?)\\n```" options:0 error:nil];
 		NSArray* codeMatches = [codeBlockRegex matchesInString:value options:0 range:NSMakeRange(0, value.length)];
 
@@ -7023,18 +7008,18 @@ static std::multimap<std::pair<size_t, size_t>, std::string> replacementsFromTex
 		if(codeMatches.count > 0)
 		{
 			NSTextCheckingResult* firstMatch = codeMatches[0];
-			title = [value substringWithRange:[firstMatch rangeAtIndex:1]];
+			NSString* signature = [value substringWithRange:[firstMatch rangeAtIndex:1]];
+			signature = [signature stringByReplacingOccurrencesOfString:@"<?php\n" withString:@""];
+			signature = [signature stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
 
-			// Strip PHP opening tag
-			title = [title stringByReplacingOccurrencesOfString:@"<?php\n" withString:@""];
-			title = [title stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+			NSString* grammarScope = documentView ? to_ns(documentView->file_type()) : nil;
+			title = [self syntaxHighlight:signature withGrammar:grammarScope];
 
-			// Body is everything outside the first code block
+			// Strip all code blocks from body, not just the first
 			NSMutableString* remaining = [value mutableCopy];
-			[remaining replaceCharactersInRange:[firstMatch rangeAtIndex:0] withString:@""];
+			for(NSTextCheckingResult* match in [codeMatches reverseObjectEnumerator])
+				[remaining replaceCharactersInRange:[match rangeAtIndex:0] withString:@""];
 			bodyText = [remaining stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-
-			// Clean up markdown separators
 			bodyText = [bodyText stringByReplacingOccurrencesOfString:@"---" withString:@""];
 			bodyText = [bodyText stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
 		}
@@ -7044,8 +7029,8 @@ static std::multimap<std::pair<size_t, size_t>, std::string> replacementsFromTex
 	}
 	else if(language)
 	{
-		// MarkedString with language — treat value as code signature
-		title = value;
+		NSString* grammarScope = documentView ? to_ns(documentView->file_type()) : nil;
+		title = [self syntaxHighlight:value withGrammar:grammarScope];
 	}
 	else if(value.length > 0)
 	{
@@ -7213,7 +7198,7 @@ static std::multimap<std::pair<size_t, size_t>, std::string> replacementsFromTex
 
 		// Skip lines that are just the symbol name in markdown bold/italic
 		// __ctype_alnum__ (bold) or _App\WalletPass::isApproved_ (italic FQN)
-		static NSRegularExpression* symbolNameRegex = [NSRegularExpression regularExpressionWithPattern:@"^_{1,2}[a-zA-Z_\\\\][a-zA-Z0-9_:\\\\]*_{1,2}$" options:0 error:nil];
+		static NSRegularExpression* symbolNameRegex = [NSRegularExpression regularExpressionWithPattern:@"^_{1,2}[a-zA-Z_$\\\\][a-zA-Z0-9_$:\\\\]*_{1,2}$" options:0 error:nil];
 		if([symbolNameRegex numberOfMatchesInString:line options:0 range:NSMakeRange(0, line.length)] > 0)
 			continue;
 
@@ -7296,10 +7281,13 @@ static std::multimap<std::pair<size_t, size_t>, std::string> replacementsFromTex
 		}
 
 		// Italic/tag markers: _text_ (used by Intelephense for @param, @return, @link etc.)
-		if(ch == '_' && i + 1 < len && [cleaned characterAtIndex:i + 1] != '_')
+		// Only treat as italic when preceded by whitespace/start to avoid mangling PHP identifiers like _App\User::$field_
+		if(ch == '_' && i + 1 < len && [cleaned characterAtIndex:i + 1] != '_'
+			&& (i == 0 || [[NSCharacterSet whitespaceCharacterSet] characterIsMember:[cleaned characterAtIndex:i - 1]]))
 		{
 			NSRange closeRange = [cleaned rangeOfString:@"_" options:0 range:NSMakeRange(i + 1, len - i - 1)];
-			if(closeRange.location != NSNotFound)
+			if(closeRange.location != NSNotFound
+				&& (closeRange.location + 1 >= len || [[NSCharacterSet whitespaceAndNewlineCharacterSet] characterIsMember:[cleaned characterAtIndex:closeRange.location + 1]]))
 			{
 				NSString* italic = [cleaned substringWithRange:NSMakeRange(i + 1, closeRange.location - i - 1)];
 				[result appendAttributedString:[[NSAttributedString alloc] initWithString:italic attributes:dimAttrs]];

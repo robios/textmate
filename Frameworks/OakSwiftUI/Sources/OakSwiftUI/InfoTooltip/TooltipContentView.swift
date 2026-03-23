@@ -7,11 +7,9 @@ struct TooltipContentView: View {
 	var body: some View {
 		ScrollView {
 			VStack(alignment: .leading, spacing: 8) {
-				if let title = content.title, !title.isEmpty {
-					Text(title)
-						.font(.system(size: theme.fontSize, weight: .semibold, design: .monospaced))
-						.foregroundStyle(.primary)
-						.lineLimit(nil)
+				if let title = content.title, title.length > 0 {
+					AttributedTextView(attributedString: title, fontSize: theme.fontSize, maxLayoutWidth: 476)
+						.fixedSize(horizontal: false, vertical: true)
 				}
 
 				if content.body.length > 0 {

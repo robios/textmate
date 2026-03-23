@@ -1114,26 +1114,36 @@ static NSString* fileFromParams (json const& params)
 		}
 		else if([contents isKindOfClass:[NSArray class]])
 		{
-			// MarkedString[] — concatenate values
+			// MarkedString[] — wrap {language,value} entries in code fences and deduplicate
 			NSMutableString* combined = [NSMutableString new];
+			NSMutableSet* seen = [NSMutableSet new];
+			kind = @"markdown";
+
 			for(id item in (NSArray*)contents)
 			{
+				NSString* fragment = nil;
 				if([item isKindOfClass:[NSString class]])
 				{
-					if(combined.length > 0) [combined appendString:@"\n\n"];
-					[combined appendString:item];
+					fragment = item;
 				}
 				else if([item isKindOfClass:[NSDictionary class]])
 				{
 					NSDictionary* d = item;
 					NSString* v = d[@"value"];
-					if(v.length > 0)
-					{
-						if(combined.length > 0) [combined appendString:@"\n\n"];
-						[combined appendString:v];
-					}
-					if(!language && d[@"language"])
-						language = d[@"language"];
+					NSString* lang = d[@"language"];
+					if(v.length > 0 && lang.length > 0)
+						fragment = [NSString stringWithFormat:@"```%@\n%@\n```", lang, v];
+					else if(v.length > 0)
+						fragment = v;
+					if(!language && lang)
+						language = lang;
+				}
+
+				if(fragment.length > 0 && ![seen containsObject:fragment])
+				{
+					[seen addObject:fragment];
+					if(combined.length > 0) [combined appendString:@"\n\n"];
+					[combined appendString:fragment];
 				}
 			}
 			value = combined;

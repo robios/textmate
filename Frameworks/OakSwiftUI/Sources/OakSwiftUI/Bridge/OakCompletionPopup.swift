@@ -60,8 +60,8 @@ import Combine
 			} else {
 				// Not enough horizontal space — stack doc panel vertically
 				let spaceBelow = screenPoint.y - screen.minY
-				let spaceAbove = screen.maxY - (screenPoint.y + 20)
-				vm.docPanelPosition = spaceAbove >= spaceBelow ? .above : .below
+				let neededVertical = computedListHeight + Self.verticalDocHeight
+				vm.docPanelPosition = spaceBelow >= neededVertical ? .below : .above
 			}
 		}
 

@@ -15,27 +15,6 @@ struct DocDetailView: View {
 	}
 }
 
-private struct AttributedTextView: NSViewRepresentable {
-	let attributedString: NSAttributedString
-	let fontSize: CGFloat
-
-	func makeNSView(context: Context) -> NSTextField {
-		let field = NSTextField(frame: .zero)
-		field.isEditable = false
-		field.isSelectable = true
-		field.isBordered = false
-		field.drawsBackground = false
-		field.lineBreakMode = .byWordWrapping
-		field.preferredMaxLayoutWidth = 240
-		field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-		return field
-	}
-
-	func updateNSView(_ field: NSTextField, context: Context) {
-		field.attributedStringValue = attributedString
-	}
-}
-
 private struct DocPanelFrameModifier: ViewModifier {
 	let isVerticalLayout: Bool
 
