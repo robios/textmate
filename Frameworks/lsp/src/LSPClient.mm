@@ -472,6 +472,23 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 				json response = {{"jsonrpc", "2.0"}, {"id", requestId}, {"result", json::object()}};
 				[self sendMessage:response];
 			}
+			else if(method == "window/workDoneProgress/create" || method == "window/showMessageRequest")
+			{
+				json response = {{"jsonrpc", "2.0"}, {"id", requestId}, {"result", nullptr}};
+				[self sendMessage:response];
+			}
+			else if(method == "workspace/configuration")
+			{
+				// Return an array of empty objects matching the items array length
+				json result = json::array();
+				if(msg.contains("params") && msg["params"].contains("items"))
+				{
+					for(size_t i = 0; i < msg["params"]["items"].size(); ++i)
+						result.push_back(json::object());
+				}
+				json response = {{"jsonrpc", "2.0"}, {"id", requestId}, {"result", result}};
+				[self sendMessage:response];
+			}
 			else
 			{
 				if([_delegate respondsToSelector:@selector(lspClient:handleServerRequest:params:)])
@@ -567,6 +584,7 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 
 			NSMutableString* logMsg = [NSMutableString stringWithFormat:@"%@ (id=%d) initialized", method ?: @"initialize", reqId];
 			[self sendNotification:@"initialized" params:json::object()];
+			[self sendNotification:@"workspace/didChangeConfiguration" params:{{"settings", json::object()}}];
 
 			if([_delegate respondsToSelector:@selector(lspClientDidInitialize:)])
 				[_delegate lspClientDidInitialize:self];
@@ -726,9 +744,7 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 		{"initializationOptions", _initOptionsJSON.length ? json::parse(_initOptionsJSON.UTF8String, nullptr, false) : json::object()},
 		{"capabilities", {
 			{"textDocument", {
-				{"publishDiagnostics", {
-					{"relatedInformation", true}
-				}},
+				{"publishDiagnostics", json::object()},
 				{"synchronization", {
 					{"didSave", true},
 					{"dynamicRegistration", false}
