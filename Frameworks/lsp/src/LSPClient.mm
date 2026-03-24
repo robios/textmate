@@ -11,6 +11,7 @@
 NSString* const LSPLogNotification = @"LSPLogNotification";
 NSString* const LSPShowMessageNotification = @"LSPShowMessageNotification";
 NSString* const LSPProgressNotification = @"LSPProgressNotification";
+NSString* const LSPShowMessageRequestNotification = @"LSPShowMessageRequestNotification";
 
 using json = nlohmann::json;
 
@@ -472,9 +473,74 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 				json response = {{"jsonrpc", "2.0"}, {"id", requestId}, {"result", json::object()}};
 				[self sendMessage:response];
 			}
-			else if(method == "window/workDoneProgress/create" || method == "window/showMessageRequest")
+			else if(method == "window/workDoneProgress/create")
 			{
 				json response = {{"jsonrpc", "2.0"}, {"id", requestId}, {"result", nullptr}};
+				[self sendMessage:response];
+			}
+			else if(method == "window/showMessageRequest")
+			{
+				std::string message = msg["params"].contains("message") ? msg["params"]["message"].get<std::string>() : "";
+				int type = msg["params"].contains("type") ? msg["params"]["type"].get<int>() : 3;
+
+				NSMutableArray<NSDictionary*>* actions = [NSMutableArray new];
+				NSMutableArray<NSString*>* actionTitles = [NSMutableArray new];
+				if(msg["params"].contains("actions"))
+				{
+					for(auto const& action : msg["params"]["actions"])
+					{
+						[actions addObject:[self convertJSON:action]];
+						[actionTitles addObject:to_ns(action["title"].get<std::string>())];
+					}
+				}
+
+				if(actions.count == 0)
+				{
+					json response = {{"jsonrpc", "2.0"}, {"id", requestId}, {"result", nullptr}};
+					[self sendMessage:response];
+					return;
+				}
+
+				[[NSNotificationCenter defaultCenter] postNotificationName:LSPShowMessageRequestNotification
+					object:self
+					userInfo:@{
+						@"type": @(type),
+						@"message": to_ns(message),
+						@"actions": actions,
+						@"actionTitles": actionTitles,
+						@"requestId": @(requestId)
+					}];
+			}
+			else if(method == "window/showDocument")
+			{
+				NSString* uri = to_ns(msg["params"]["uri"].get<std::string>());
+				bool external = msg["params"].value("external", false);
+				bool takeFocus = msg["params"].value("takeFocus", true);
+
+				bool success = false;
+				NSURL* url = [NSURL URLWithString:uri];
+
+				if(!url)
+				{
+					json response = {{"jsonrpc", "2.0"}, {"id", requestId}, {"result", {{"success", false}}}};
+					[self sendMessage:response];
+					return;
+				}
+
+				if(external || !url.isFileURL)
+				{
+					success = [[NSWorkspace sharedWorkspace] openURL:url];
+				}
+				else
+				{
+					if([_delegate respondsToSelector:@selector(lspClient:didRequestShowDocument:takeFocus:)])
+					{
+						[_delegate lspClient:self didRequestShowDocument:url.path takeFocus:takeFocus];
+						success = true;
+					}
+				}
+
+				json response = {{"jsonrpc", "2.0"}, {"id", requestId}, {"result", {{"success", success}}}};
 				[self sendMessage:response];
 			}
 			else if(method == "workspace/configuration")
@@ -941,6 +1007,13 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 		{"id",      requestId},
 		{"result",  result}
 	};
+	[self sendMessage:response];
+}
+
+- (void)respondToShowMessageRequest:(int)requestId action:(NSDictionary*)action
+{
+	json result = action ? [self convertToJSON:action] : json(nullptr);
+	json response = {{"jsonrpc", "2.0"}, {"id", requestId}, {"result", result}};
 	[self sendMessage:response];
 }
 

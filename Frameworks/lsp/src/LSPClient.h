@@ -13,12 +13,14 @@
 - (void)lspClientDidInitialize:(LSPClient*)client;
 - (id)lspClient:(LSPClient*)client handleServerRequest:(NSString*)method params:(NSDictionary*)params;
 - (void)lspClient:(LSPClient*)client didReceiveNotification:(NSString*)method params:(NSDictionary*)params;
+- (void)lspClient:(LSPClient*)client didRequestShowDocument:(NSString*)path takeFocus:(BOOL)takeFocus;
 - (NSSet<NSString*>*)lspClientOpenDocumentPaths:(LSPClient*)client;
 @end
 
 extern NSString* const LSPLogNotification;
 extern NSString* const LSPShowMessageNotification;
 extern NSString* const LSPProgressNotification;
+extern NSString* const LSPShowMessageRequestNotification;
 
 @interface LSPClient : NSObject
 @property (nonatomic, weak) id<LSPClientDelegate> delegate;
@@ -50,6 +52,7 @@ extern NSString* const LSPProgressNotification;
 - (void)executeCommand:(NSString*)command arguments:(NSArray*)arguments completion:(void(^)(id))callback;
 - (void)cancelRequest:(int)requestId;
 - (void)respondToApplyEdit:(int)requestId applied:(BOOL)applied failureReason:(NSString*)reason;
+- (void)respondToShowMessageRequest:(int)requestId action:(NSDictionary*)action;
 
 // Generic JSON-RPC methods for non-standard LSP extensions (e.g., Copilot)
 - (int)sendCustomRequest:(NSString*)method params:(NSDictionary*)params completion:(void(^)(id))callback;

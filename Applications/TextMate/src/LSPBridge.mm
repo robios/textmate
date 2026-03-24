@@ -25,6 +25,7 @@
 		[[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(handleLog:) name:LSPLogNotification object:nil];
 		[[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(handleShowMessage:) name:LSPShowMessageNotification object:nil];
 		[[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(handleProgress:) name:LSPProgressNotification object:nil];
+		[[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(handleShowMessageRequest:) name:LSPShowMessageRequestNotification object:nil];
 	}
 	return self;
 }
@@ -60,6 +61,45 @@
 
 	dispatch_async(dispatch_get_main_queue(), ^{
 		[OakNotificationManager.shared showWithMessage:message type:lspType];
+	});
+}
+
+- (void)handleShowMessageRequest:(NSNotification*)note
+{
+	NSString* message = [note.userInfo[@"message"] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+	NSNumber* type = note.userInfo[@"type"];
+	NSArray<NSDictionary*>* actions = note.userInfo[@"actions"];
+	NSArray<NSString*>* actionTitles = note.userInfo[@"actionTitles"];
+	NSNumber* requestId = note.userInfo[@"requestId"];
+	LSPClient* client = (LSPClient*)note.object;
+
+	if(!client || !requestId)
+		return;
+
+	if(!message || !actionTitles || actionTitles.count == 0)
+	{
+		[client respondToShowMessageRequest:requestId.intValue action:nil];
+		return;
+	}
+
+	int lspType = type ? type.intValue : 3;
+
+	dispatch_async(dispatch_get_main_queue(), ^{
+		[OakNotificationManager.shared showInteractiveWithMessage:message type:lspType actions:actionTitles callback:^(NSString* _Nullable selectedTitle) {
+			NSDictionary* selectedAction = nil;
+			if(selectedTitle)
+			{
+				for(NSUInteger i = 0; i < actionTitles.count; i++)
+				{
+					if([actionTitles[i] isEqualToString:selectedTitle])
+					{
+						selectedAction = actions[i];
+						break;
+					}
+				}
+			}
+			[client respondToShowMessageRequest:requestId.intValue action:selectedAction];
+		}];
 	});
 }
 

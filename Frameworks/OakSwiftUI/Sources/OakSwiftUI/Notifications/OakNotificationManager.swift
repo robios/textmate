@@ -31,6 +31,28 @@ import Combine
 		self.model.show(message: trimmed, type: toastType)
 	}
 
+	@objc public func showInteractive(message: String, type: Int, actions: [String], callback: @escaping (String?) -> Void) {
+		var controlAndWhitespace = CharacterSet.whitespacesAndNewlines
+		controlAndWhitespace.formUnion(.controlCharacters)
+		controlAndWhitespace.insert(charactersIn: "\u{200B}\u{200C}\u{200D}\u{FEFF}")
+		let trimmed = message.trimmingCharacters(in: controlAndWhitespace)
+		guard !trimmed.isEmpty else {
+			callback(nil)
+			return
+		}
+
+		let toastType: ToastType
+		switch type {
+		case 1: toastType = .error
+		case 2: toastType = .warning
+		case 3: toastType = .info
+		case 4: toastType = .success
+		default: toastType = .info
+		}
+		self.ensureWindow()
+		self.model.showInteractive(message: trimmed, type: toastType, actions: actions, onAction: callback)
+	}
+
 	private func ensureWindow() {
 		if windowController != nil { return }
 

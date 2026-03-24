@@ -15,6 +15,17 @@ struct NotificationView: View {
 						.font(.system(size: 14, weight: .medium))
 						.foregroundStyle(.white)
 						.lineLimit(2)
+					if let actions = toast.actions, !actions.isEmpty {
+						ForEach(actions, id: \.self) { action in
+							Button(action) {
+								toast.onAction?(action)
+								withAnimation { model.currentToast = nil }
+								model.showNextQueued()
+							}
+							.buttonStyle(.bordered)
+							.tint(color(for: toast.type))
+						}
+					}
 				}
 				.id(toast.id)
 				.padding(.horizontal, 20)
@@ -27,7 +38,11 @@ struct NotificationView: View {
 				.transition(.asymmetric(insertion: .move(edge: .bottom).combined(with: .opacity),
 				                        removal: .opacity))
 				.onTapGesture {
-					withAnimation { model.currentToast = nil }
+					if toast.actions != nil {
+						withAnimation { model.dismissCurrent() }
+					} else {
+						withAnimation { model.currentToast = nil }
+					}
 				}
 			}
 		}
