@@ -16,15 +16,18 @@ static scm::status::type parse_status_flag (std::string const& str)
 		{ "A", scm::status::added       },
 		{ "D", scm::status::deleted     },
 		{ "U", scm::status::conflicted  },
-		{ "T", scm::status::modified    }  // type change, e.g. symbolic link → regular file
+		{ "T", scm::status::modified    }, // type change, e.g. symbolic link → regular file
+		{ "S", scm::status::none        }, // submodule
+		{ "C", scm::status::added       }, // copied
+		{ "R", scm::status::modified    }  // renamed
 	};
 
 	auto it = StatusLetterConversionMap->find(str);
 	if(it != StatusLetterConversionMap->end())
 		return it->second;
 
-	ASSERT_EQ(str, NULL_STR); // we use ‘str’ in the assertion to output the unrecognized status flag
-	return scm::status::unknown;
+	os_log_error(OS_LOG_DEFAULT, "Unrecognized git status flag: ‘%{public}s’", str.c_str());
+	return scm::status::none;
 }
 
 static void parse_diff (std::map<std::string, scm::status::type>& entries, std::string const& output)
