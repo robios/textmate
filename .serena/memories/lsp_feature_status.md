@@ -20,6 +20,8 @@
 | Code Actions (Cmd+.) | Done — NSMenu picker, lightbulb gutter, workspace/applyEdit |
 | Formatting (Text → Format Code, lspFormatOnSave) | Done, merged to develop |
 | completionItem/resolve | Done — doc side panel + data update, merged to develop |
+| window/showMessageRequest | Done — interactive toast with action buttons, queuing, full action object preservation |
+| window/showDocument | Done — opens files in TextMate, external URLs in browser |
 
 ## Architecture
 - LSP completion uses Opt+Tab, NOT the Esc pipeline

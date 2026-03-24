@@ -4285,8 +4285,12 @@ static char const* kOakMenuItemTitle = "OakMenuItemTitle";
 			[self cancelLSPHoverRequest];
 			[_lspHoverTooltip dismiss];
 
-			std::string ch = documentView->substr(index.index, index.index + 1);
-			bool onWord = !ch.empty() && (isalnum((unsigned char)ch[0]) || ch[0] == '_');
+			bool onWord = false;
+			if(index.index < documentView->size())
+			{
+				std::string ch = documentView->substr(index.index, index.index + 1);
+				onWord = !ch.empty() && (isalnum((unsigned char)ch[0]) || ch[0] == '_');
+			}
 
 			if(onWord)
 			{

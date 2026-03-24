@@ -14,7 +14,7 @@ struct NotificationView: View {
 					Text(toast.message)
 						.font(.system(size: 14, weight: .medium))
 						.foregroundStyle(.white)
-						.lineLimit(2)
+						.lineLimit(toast.actions != nil ? 4 : 2)
 					if let actions = toast.actions, !actions.isEmpty {
 						ForEach(actions, id: \.self) { action in
 							Button(action) {
@@ -30,7 +30,7 @@ struct NotificationView: View {
 				.id(toast.id)
 				.padding(.horizontal, 20)
 				.padding(.vertical, 14)
-				.frame(maxWidth: 500)
+				.frame(maxWidth: toast.actions != nil ? 700 : 500)
 				.fixedSize()
 				.background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
 				.environment(\.colorScheme, .dark)
