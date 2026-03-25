@@ -1,4 +1,5 @@
 #import "LSPClient.h"
+#import "LSPManager.h"
 #import "LSPFileWatcher.h"
 #import "LSPFileWatchRegistration.h"
 #import <io/FSEventsManager.h>
@@ -71,11 +72,18 @@ static NSString* extensionFromGlob (NSString* glob)
 	return nil;
 }
 
-static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*>* extensions, NSMutableSet<NSString*>* exactNames)
+static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*>* extensions, NSMutableSet<NSString*>* exactNames, BOOL* watchAll)
 {
 	NSArray<NSString*>* expanded = expandBraces(pattern);
 	for(NSString* glob in expanded)
 	{
+		// Catch-all patterns like **/* or **/*.* match every file
+		if([glob isEqualToString:@"**/*"] || [glob isEqualToString:@"**/*.*"] || [glob isEqualToString:@"*"])
+		{
+			if(watchAll) *watchAll = YES;
+			continue;
+		}
+
 		NSString* ext = extensionFromGlob(glob);
 		if(ext)
 		{
@@ -106,13 +114,16 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 	NSPipe* _stderrPipe;
 	dispatch_queue_t _readQueue;
 	int _nextRequestId;
+	NSString* _serverName;
 	BOOL _initialized;
+	BOOL _indexing;
 	BOOL _documentFormattingProvider;
 	BOOL _documentRangeFormattingProvider;
 	BOOL _completionResolveProvider;
 	BOOL _renameProvider;
 	BOOL _codeActionProvider;
 	BOOL _codeActionResolveProvider;
+	NSArray<NSString*>* _executeCommands;
 	NSString* _workingDirectory;
 	NSString* _initOptionsJSON;
 	NSMutableDictionary<NSNumber*, void(^)(id)>* _responseCallbacks;
@@ -125,6 +136,8 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 	dispatch_queue_t _scanQueue;
 	NSTimer* _debounceTimer;
 	NSMutableDictionary<NSString*, NSDictionary*>* _pendingChanges; // URI → latest change
+	NSMutableSet* _indexingProgressTokens; // tokens for indexing-related $/progress
+	NSString* _logPrefix;
 }
 - (void)openDocument:(OakDocument*)document languageId:(NSString*)languageId retryCount:(int)retryCount;
 @end
@@ -136,17 +149,34 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 	return _task.isRunning;
 }
 
+- (BOOL)indexing
+{
+	return _indexing;
+}
+
+- (void)setIndexing:(BOOL)flag
+{
+	if(_indexing == flag)
+		return;
+	_indexing = flag;
+	[self postLog:[NSString stringWithFormat:@"indexing state → %@", flag ? @"YES" : @"NO"] source:@"event"];
+	[NSNotificationCenter.defaultCenter postNotificationName:LSPServerStatusDidChangeNotification object:_delegate];
+}
+
 - (instancetype)initWithCommand:(NSString*)command arguments:(NSArray<NSString*>*)arguments workingDirectory:(NSString*)workingDirectory initOptions:(NSString*)initOptionsJSON
 {
 	if(self = [super init])
 	{
+		_serverName = command.lastPathComponent;
+		_logPrefix = [NSString stringWithFormat:@"LSP:%@", _serverName];
 		_workingDirectory = workingDirectory;
 		_initOptionsJSON = initOptionsJSON;
 		_readQueue = dispatch_queue_create("com.macromates.lsp.read", DISPATCH_QUEUE_SERIAL);
 		_nextRequestId = 1;
 		_initialized = NO;
-		_responseCallbacks = [NSMutableDictionary new];
-		_requestMethods    = [NSMutableDictionary new];
+		_responseCallbacks      = [NSMutableDictionary new];
+		_requestMethods         = [NSMutableDictionary new];
+		_indexingProgressTokens = [NSMutableSet new];
 
 		_stdinPipe  = [NSPipe pipe];
 		_stdoutPipe = [NSPipe pipe];
@@ -172,13 +202,16 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 		signal(SIGPIPE, SIG_IGN);
 
 		__weak LSPClient* weakSelf = self;
+		NSString* logPrefix = self.logPrefix;
 		_task.terminationHandler = ^(NSTask* task){
-			NSLog(@"[LSP] Server terminated with status %d", task.terminationStatus);
+			NSLog(@"[%@] Server terminated with status %d", logPrefix, task.terminationStatus);
 			dispatch_async(dispatch_get_main_queue(), ^{
 				LSPClient* strongSelf = weakSelf;
 				if(!strongSelf)
 					return;
 				strongSelf->_initialized = NO;
+				strongSelf->_indexing = NO;
+				[strongSelf->_indexingProgressTokens removeAllObjects];
 				[strongSelf teardownFileWatcher];
 				[strongSelf->_fileWatchRegistrations removeAllObjects];
 				[strongSelf cancelPendingCallbacks];
@@ -190,11 +223,12 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 		NSError* error = nil;
 		if(![_task launchAndReturnError:&error])
 		{
-			NSLog(@"[LSP] Failed to launch server: %@", error.localizedDescription);
+			NSLog(@"[%@] Failed to launch server: %@", self.logPrefix, error.localizedDescription);
 			return nil;
 		}
 
-		NSLog(@"[LSP] Server launched: %@ %@", command, [arguments componentsJoinedByString:@" "]);
+		_logPrefix = [NSString stringWithFormat:@"LSP:%@/%d", _serverName, _task.processIdentifier];
+		NSLog(@"[%@] Server launched: %@ %@", _logPrefix, command, [arguments componentsJoinedByString:@" "]);
 
 		[self startReadLoop];
 		[self startStderrLoop];
@@ -274,12 +308,13 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 - (void)startReadLoop
 {
 	NSFileHandle* handle = _stdoutPipe.fileHandleForReading;
+	NSString* prefix = _logPrefix;
+	__weak LSPClient* weakSelf = self;
 	dispatch_async(_readQueue, ^{
 		NSMutableData* buffer = [NSMutableData data];
 
 		while(true)
 		{
-			// Read until we have a complete Content-Length header
 			NSInteger contentLength = -1;
 			while(true)
 			{
@@ -300,7 +335,7 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 				NSData* chunk = [handle availableData];
 				if(chunk.length == 0)
 				{
-					NSLog(@"[LSP] Server stdout closed");
+					NSLog(@"[%@] Server stdout closed", prefix);
 					return;
 				}
 				[buffer appendData:chunk];
@@ -308,17 +343,16 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 
 			if(contentLength < 0)
 			{
-				NSLog(@"[LSP] Missing Content-Length header");
+				NSLog(@"[%@] Missing Content-Length header", prefix);
 				continue;
 			}
 
-			// Read until we have the full body
 			while((NSInteger)buffer.length < contentLength)
 			{
 				NSData* chunk = [handle availableData];
 				if(chunk.length == 0)
 				{
-					NSLog(@"[LSP] Server stdout closed mid-message");
+					NSLog(@"[%@] Server stdout closed mid-message", prefix);
 					return;
 				}
 				[buffer appendData:chunk];
@@ -330,10 +364,12 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 			try {
 				json msg = json::parse((const char*)bodyData.bytes, (const char*)bodyData.bytes + bodyData.length);
 				dispatch_async(dispatch_get_main_queue(), ^{
-					[self handleMessage:msg];
+					LSPClient* strongSelf = weakSelf;
+					if(strongSelf)
+						[strongSelf handleMessage:msg];
 				});
 			} catch(std::exception const& e) {
-				NSLog(@"[LSP] JSON parse error: %s", e.what());
+				NSLog(@"[%@] JSON parse error: %s", prefix, e.what());
 			}
 		}
 	});
@@ -341,24 +377,31 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 
 - (void)startStderrLoop
 {
+	NSString* prefix = _logPrefix;
 	_stderrPipe.fileHandleForReading.readabilityHandler = ^(NSFileHandle* handle){
 		NSData* data = handle.availableData;
 		if(data.length > 0)
 		{
 			NSString* text = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-			NSLog(@"[LSP][stderr] %@", text);
+			NSLog(@"[%@][stderr] %@", prefix, text);
 		}
 	};
 }
 
 // MARK: - Message dispatch
 
+- (NSString*)logPrefix
+{
+	return _logPrefix;
+}
+
 - (void)postLog:(NSString*)message source:(NSString*)source
 {
-	NSLog(@"[LSP] %@", message);
+	NSLog(@"[%@] %@", self.logPrefix, message);
 	[[NSNotificationCenter defaultCenter] postNotificationName:LSPLogNotification object:self userInfo:@{
 		@"message": message,
-		@"source":  source
+		@"source":  source,
+		@"server":  _serverName ?: @"?"
 	}];
 }
 
@@ -376,7 +419,7 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 			@"message": [NSString stringWithUTF8String:message.c_str()]
 		}];
 	} catch(std::exception const& e) {
-		NSLog(@"[LSP] Failed to parse showMessage: %s", e.what());
+		NSLog(@"[%@] Failed to parse showMessage: %s", self.logPrefix, e.what());
 	}
 }
 
@@ -390,10 +433,10 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 		std::string message = params["message"].get<std::string>();
 
 		NSString* nsMessage = [NSString stringWithUTF8String:message.c_str()];
-		NSLog(@"[LSP] [Server] %@", nsMessage);
-		[[NSNotificationCenter defaultCenter] postNotificationName:LSPLogNotification object:self userInfo:@{@"message": nsMessage, @"type": @(type), @"source": @"server"}];
+		NSLog(@"[%@] [Server] %@", self.logPrefix, nsMessage);
+		[[NSNotificationCenter defaultCenter] postNotificationName:LSPLogNotification object:self userInfo:@{@"message": nsMessage, @"type": @(type), @"source": @"server", @"server": _serverName ?: @"?"}];
 	} catch(std::exception const& e) {
-		NSLog(@"[LSP] Failed to parse logMessage: %s", e.what());
+		NSLog(@"[%@] Failed to parse logMessage: %s", self.logPrefix, e.what());
 	}
 }
 
@@ -428,7 +471,7 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 
 		[[NSNotificationCenter defaultCenter] postNotificationName:LSPProgressNotification object:self userInfo:info];
 	} catch(std::exception const& e) {
-		NSLog(@"[LSP] Failed to parse progress: %s", e.what());
+		NSLog(@"[%@] Failed to parse progress: %s", self.logPrefix, e.what());
 	}
 }
 
@@ -547,15 +590,33 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 			}
 			else if(method == "workspace/configuration")
 			{
-				// Return an array of empty objects matching the items array length
-				json result = json::array();
-				if(msg.contains("params") && msg["params"].contains("items"))
+				BOOL handled = NO;
+
+				// Let delegate handle first (e.g. CopilotManager returns specific config)
+				if([_delegate respondsToSelector:@selector(lspClient:handleServerRequest:params:)])
 				{
-					for(size_t i = 0; i < msg["params"]["items"].size(); ++i)
-						result.push_back(json::object());
+					NSDictionary* params = msg.contains("params") ? [self convertJSON:msg["params"]] : @{};
+					id delegateResult = [_delegate lspClient:self handleServerRequest:to_ns(method) params:params];
+					if(delegateResult)
+					{
+						json response = {{"jsonrpc", "2.0"}, {"id", requestId}, {"result", [self convertToJSON:delegateResult]}};
+						[self sendMessage:response];
+						handled = YES;
+					}
 				}
-				json response = {{"jsonrpc", "2.0"}, {"id", requestId}, {"result", result}};
-				[self sendMessage:response];
+
+				if(!handled)
+				{
+					// Fallback: return an array of empty objects matching the items array length
+					json result = json::array();
+					if(msg.contains("params") && msg["params"].contains("items"))
+					{
+						for(size_t i = 0; i < msg["params"]["items"].size(); ++i)
+							result.push_back(json::object());
+					}
+					json response = {{"jsonrpc", "2.0"}, {"id", requestId}, {"result", result}};
+					[self sendMessage:response];
+				}
 			}
 			else
 			{
@@ -593,7 +654,7 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 			std::string text = msg["params"].contains("message") ? msg["params"]["message"].get<std::string>() : "";
 			int type = msg["params"].contains("type") ? msg["params"]["type"].get<int>() : 3;
 			static char const* const typeNames[] = { "?", "Error", "Warning", "Info", "Log" };
-			[self postLog:[NSString stringWithFormat:@"showMessage [%s] %s", typeNames[type < 5 ? type : 0], text.c_str()] source:@"event"];
+			[self postLog:[NSString stringWithFormat:@"showMessage [%s] %s", typeNames[(type > 0 && type < 5) ? type : 0], text.c_str()] source:@"event"];
 			[self handleShowMessage:msg["params"]];
 		}
 		else if(method == "window/logMessage")
@@ -615,6 +676,50 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 				[logMsg appendFormat:@" (%d%%)", val["percentage"].get<int>()];
 			[self postLog:logMsg source:@"event"];
 			[self handleProgress:msg["params"]];
+
+			// Track indexing-related progress by token
+			id token = nil;
+			if(msg["params"].contains("token"))
+			{
+				auto const& t = msg["params"]["token"];
+				if(t.is_string())
+					token = @(t.get<std::string>().c_str());
+				else if(t.is_number())
+					token = @(t.get<int>());
+			}
+
+			if(kind == "begin" && token)
+			{
+				NSString* lowerTitle = [NSString stringWithUTF8String:title.c_str()].lowercaseString;
+				if([lowerTitle isEqualToString:@"indexing"] || [lowerTitle hasPrefix:@"indexing "]
+				|| [lowerTitle isEqualToString:@"loading packages"] || [lowerTitle isEqualToString:@"loading workspace"]
+				|| [lowerTitle hasPrefix:@"initializ"])
+				{
+					[_indexingProgressTokens addObject:token];
+					[self setIndexing:YES];
+				}
+			}
+			else if(kind == "end" && token)
+			{
+				if([_indexingProgressTokens containsObject:token])
+				{
+					[_indexingProgressTokens removeObject:token];
+					if(_indexingProgressTokens.count == 0)
+						[self setIndexing:NO];
+				}
+			}
+		}
+		else if(method == "indexingStarted")
+		{
+			[self postLog:@"indexingStarted" source:@"event"];
+			[_indexingProgressTokens removeAllObjects];
+			[self setIndexing:YES];
+		}
+		else if(method == "indexingEnded")
+		{
+			[self postLog:@"indexingEnded" source:@"event"];
+			[_indexingProgressTokens removeAllObjects];
+			[self setIndexing:NO];
 		}
 		else
 		{
@@ -668,7 +773,17 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 				_codeActionProvider = caps.contains("codeActionProvider") && !caps["codeActionProvider"].is_null() && (caps["codeActionProvider"].is_boolean() ? caps["codeActionProvider"].get<bool>() : true);
 				if(caps.contains("codeActionProvider") && !caps["codeActionProvider"].is_boolean() && caps["codeActionProvider"].is_object() && caps["codeActionProvider"].contains("resolveProvider"))
 					_codeActionResolveProvider = caps["codeActionProvider"]["resolveProvider"].get<bool>();
-				[logMsg appendFormat:@"  formatting=%d rangeFormatting=%d completionResolve=%d rename=%d codeAction=%d", _documentFormattingProvider, _documentRangeFormattingProvider, _completionResolveProvider, _renameProvider, _codeActionProvider];
+				if(caps.contains("executeCommandProvider") && caps["executeCommandProvider"].is_object() && caps["executeCommandProvider"].contains("commands") && caps["executeCommandProvider"]["commands"].is_array())
+				{
+					NSMutableArray* cmds = [NSMutableArray new];
+					for(auto const& cmd : caps["executeCommandProvider"]["commands"])
+					{
+						if(cmd.is_string())
+							[cmds addObject:@(cmd.get<std::string>().c_str())];
+					}
+					_executeCommands = [cmds copy];
+				}
+				[logMsg appendFormat:@"  formatting=%d rangeFormatting=%d completionResolve=%d rename=%d codeAction=%d execCmds=%lu", _documentFormattingProvider, _documentRangeFormattingProvider, _completionResolveProvider, _renameProvider, _codeActionProvider, (unsigned long)_executeCommands.count];
 			}
 			[self postLog:logMsg source:@"response"];
 		}
@@ -759,7 +874,7 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 	std::string uriStr = params["uri"].get<std::string>();
 	auto const& diagnostics = params["diagnostics"];
 
-	NSLog(@"[LSP] Diagnostics for %s: %lu items", uriStr.c_str(), (unsigned long)diagnostics.size());
+	NSLog(@"[%@] Diagnostics for %s: %lu items", self.logPrefix, uriStr.c_str(), (unsigned long)diagnostics.size());
 
 	NSMutableArray<NSDictionary*>* results = [NSMutableArray arrayWithCapacity:diagnostics.size()];
 
@@ -806,9 +921,11 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 
 - (void)sendInitialize
 {
+	std::string rootUriStr = [NSURL fileURLWithPath:_workingDirectory].absoluteString.UTF8String;
 	json params = {
 		{"processId",    (int)NSProcessInfo.processInfo.processIdentifier},
-		{"rootUri",      [NSURL fileURLWithPath:_workingDirectory].absoluteString.UTF8String},
+		{"rootUri",      rootUriStr},
+		{"workspaceFolders", json::array({{{"uri", rootUriStr}, {"name", _workingDirectory.lastPathComponent.UTF8String}}})},
 		{"initializationOptions", _initOptionsJSON.length ? json::parse(_initOptionsJSON.UTF8String, nullptr, false) : json::object()},
 		{"capabilities", {
 			{"textDocument", {
@@ -851,10 +968,15 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 					{"isPreferredSupport", true}
 				}}
 			}},
+			{"window", {
+				{"workDoneProgress", true}
+			}},
 			{"workspace", {
 				{"didChangeWatchedFiles", {
-					{"dynamicRegistration", true}
-				}}
+					{"dynamicRegistration", true},
+					{"relativePatternSupport", true}
+				}},
+				{"workspaceFolders", true}
 			}}
 		}}
 	};
@@ -867,10 +989,10 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 	{
 		if(retryCount >= 5)
 		{
-			NSLog(@"[LSP] Server failed to initialize after %d retries, giving up on didOpen", retryCount);
+			NSLog(@"[%@] Server failed to initialize after %d retries, giving up on didOpen", self.logPrefix, retryCount);
 			return;
 		}
-		NSLog(@"[LSP] Not yet initialized, deferring didOpen (attempt %d)", retryCount + 1);
+		NSLog(@"[%@] Not yet initialized, deferring didOpen (attempt %d)", self.logPrefix, retryCount + 1);
 		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
 			[self openDocument:document languageId:languageId retryCount:retryCount + 1];
 		});
@@ -1662,7 +1784,7 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 		}
 
 		std::string regId = reg["id"].is_string() ? reg["id"].get<std::string>() : std::to_string(reg["id"].get<int>());
-		NSLog(@"[LSP] Registering file watcher: %s", regId.c_str());
+		NSLog(@"[%@] Registering file watcher: %s", self.logPrefix, regId.c_str());
 
 		if(!_fileWatchRegistrations)
 			_fileWatchRegistrations = [NSMutableDictionary new];
@@ -1680,19 +1802,20 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 				NSMutableSet<NSString*>* extensions = [NSMutableSet new];
 				NSMutableSet<NSString*>* exactNames = [NSMutableSet new];
 				NSString* basePath = nil;
+				BOOL watchAll = NO;
 
 				if(watcher.contains("globPattern"))
 				{
 					auto const& glob = watcher["globPattern"];
 					if(glob.is_string())
 					{
-						extractExtensionsFromGlob(to_ns(glob.get<std::string>()), extensions, exactNames);
+						extractExtensionsFromGlob(to_ns(glob.get<std::string>()), extensions, exactNames, &watchAll);
 					}
 					else if(glob.is_object())
 					{
 						// RelativePattern: {baseUri, pattern}
 						if(glob.contains("pattern"))
-							extractExtensionsFromGlob(to_ns(glob["pattern"].get<std::string>()), extensions, exactNames);
+							extractExtensionsFromGlob(to_ns(glob["pattern"].get<std::string>()), extensions, exactNames, &watchAll);
 
 						if(glob.contains("baseUri"))
 						{
@@ -1714,7 +1837,7 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 									}
 									else
 									{
-										NSLog(@"[LSP] File watch: baseUri '%s' is outside working directory, skipping", baseUri.c_str());
+										NSLog(@"[%@] File watch: baseUri '%s' is outside working directory, skipping", self.logPrefix, baseUri.c_str());
 										continue;
 									}
 								}
@@ -1723,7 +1846,7 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 					}
 					else
 					{
-						NSLog(@"[LSP] File watch: unrecognized globPattern format, skipping");
+						NSLog(@"[%@] File watch: unrecognized globPattern format, skipping", self.logPrefix);
 						continue;
 					}
 				}
@@ -1731,12 +1854,13 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 				registration.extensions = extensions;
 				registration.exactNames = exactNames;
 				registration.basePath = basePath;
+				registration.watchAll = watchAll;
 
 				_fileWatchRegistrations[registration.registrationId] = registration;
 
-				NSLog(@"[LSP] File watch registered: id=%@ extensions=%@ exactNames=%@ kind=%d basePath=%@",
+				NSLog(@"[%@] File watch registered: id=%@ extensions=%@ exactNames=%@ kind=%d basePath=%@ watchAll=%d", self.logPrefix,
 					registration.registrationId, registration.extensions, registration.exactNames,
-					registration.watchKind, registration.basePath ?: _workingDirectory);
+					registration.watchKind, registration.basePath ?: _workingDirectory, registration.watchAll);
 			}
 		}
 
@@ -1771,7 +1895,7 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 
 		std::string regId = unreg["id"].is_string() ? unreg["id"].get<std::string>() : std::to_string(unreg["id"].get<int>());
 		NSString* regIdPrefix = [NSString stringWithFormat:@"%s:", regId.c_str()];
-		NSLog(@"[LSP] Unregistering file watcher: %s", regId.c_str());
+		NSLog(@"[%@] Unregistering file watcher: %s", self.logPrefix, regId.c_str());
 
 		// Remove all per-watcher entries for this registration (keyed as "regId:0", "regId:1", etc.)
 		NSArray<NSString*>* regKeys = _fileWatchRegistrations.allKeys;
@@ -1795,11 +1919,13 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 	NSArray<NSString*>* excludes = [self fileWatchExcludes];
 	_fileWatcher = [[LSPFileWatcher alloc] initWithRootDirectory:_workingDirectory excludes:excludes];
 
-	// Merge extensions and exact names from all registrations
+	// Merge extensions, exact names, and watchAll from all registrations
 	for(LSPFileWatchRegistration* reg in _fileWatchRegistrations.allValues)
 	{
 		[_fileWatcher addExtensions:reg.extensions];
 		[_fileWatcher addExactNames:reg.exactNames];
+		if(reg.watchAll)
+			_fileWatcher.watchAll = YES;
 	}
 
 	if(!_scanQueue)
@@ -2001,7 +2127,7 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 	[self teardownFileWatcher];
 	[_fileWatchRegistrations removeAllObjects];
 
-	NSLog(@"[LSP] Shutting down server");
+	NSLog(@"[%@] Shutting down server", self.logPrefix);
 	[self sendRequest:@"shutdown" params:json::object()];
 
 	// Give server 2s to respond, then send exit

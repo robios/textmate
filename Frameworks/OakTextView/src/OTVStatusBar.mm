@@ -427,6 +427,17 @@ static NSButton* OakCreateImageToggleButton (NSImage* image, NSString* accessibi
 			NSForegroundColorAttributeName: NSColor.secondaryLabelColor,
 		}]];
 	}
+	else if([status isEqualToString:@"indexing"])
+	{
+		[attrTitle appendAttributedString:[[NSAttributedString alloc] initWithString:@"◉ " attributes:@{
+			NSFontAttributeName: font,
+			NSForegroundColorAttributeName: [NSColor systemOrangeColor],
+		}]];
+		[attrTitle appendAttributedString:[[NSAttributedString alloc] initWithString:@"indexing" attributes:@{
+			NSFontAttributeName: font,
+			NSForegroundColorAttributeName: NSColor.secondaryLabelColor,
+		}]];
+	}
 	else
 	{
 		// Semaphore: always show all three categories with colored dots

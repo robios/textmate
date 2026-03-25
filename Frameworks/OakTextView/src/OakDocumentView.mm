@@ -361,23 +361,7 @@ static NSString* const kFoldingsColumnIdentifier  = @"foldings";
 		[textScrollView setBackgroundColor:[NSColor colorWithCGColor:theme->background(to_s(self.document.fileType))]];
 		[textScrollView setScrollerKnobStyle:theme->is_dark() ? NSScrollerKnobStyleLight : NSScrollerKnobStyleDark];
 
-		if(@available(macOS 10.14, *))
-		{
-			[_textView setIbeamCursor:NSCursor.IBeamCursor];
-		}
-		else
-		{
-			if(theme->is_dark())
-			{
-				NSImage* whiteIBeamImage = [NSImage imageNamed:@"IBeam white" inSameBundleAsClass:[self class]];		
-				[whiteIBeamImage setSize:NSCursor.IBeamCursor.image.size];
-				[_textView setIbeamCursor:[[NSCursor alloc] initWithImage:whiteIBeamImage hotSpot:NSMakePoint(4, 9)]];
-			}
-			else
-			{
-				[_textView setIbeamCursor:NSCursor.IBeamCursor];
-			}
-		}
+		[_textView setIbeamCursor:NSCursor.IBeamCursor];
 
 		[self updateGutterViewFont:self]; // trigger update of gutter view’s line number font
 		auto const& styles = theme->gutter_styles();
@@ -395,12 +379,7 @@ static NSString* const kFoldingsColumnIdentifier  = @"foldings";
 		gutterView.selectionBorderColor      = [NSColor colorWithCGColor:styles.selectionBorder];
 		gutterScrollView.backgroundColor     = gutterView.backgroundColor;
 
-		// Use dynamic system separator color so it adapts to Light/Dark Mode.
-		if(@available(macOS 10.14, *)) {
-		        gutterDividerView.activeBackgroundColor = [NSColor separatorColor];
-		} else {
-		        gutterDividerView.activeBackgroundColor = [NSColor colorWithCGColor:styles.divider];
-		}
+		gutterDividerView.activeBackgroundColor = [NSColor separatorColor];
 
 		[gutterView setNeedsDisplay:YES];
 	}
@@ -1121,6 +1100,10 @@ static NSString* const kFoldingsColumnIdentifier  = @"foldings";
 		NSMenuItem* restart = [[NSMenuItem alloc] initWithTitle:@"Restart Server" action:@selector(lspRestartServer:) keyEquivalent:@""];
 		restart.target = self;
 		[menu addItem:restart];
+
+		NSMenuItem* reindex = [[NSMenuItem alloc] initWithTitle:@"Re-index Workspace" action:@selector(lspReindexWorkspace:) keyEquivalent:@""];
+		reindex.target = self;
+		[menu addItem:reindex];
 	}
 
 	NSDictionary* counts = [lsp diagnosticCountsForDocument:doc];
@@ -1145,6 +1128,11 @@ static NSString* const kFoldingsColumnIdentifier  = @"foldings";
 - (void)lspRestartServer:(id)sender
 {
 	[[LSPManager sharedManager] restartServerForDocument:self.document];
+}
+
+- (void)lspReindexWorkspace:(id)sender
+{
+	[[LSPManager sharedManager] reindexWorkspaceForDocument:self.document];
 }
 
 - (void)lspNextDiagnostic:(id)sender

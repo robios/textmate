@@ -38,6 +38,9 @@
 	NSNumber* type = note.userInfo[@"type"];
 	int level = type ? type.intValue : 3; // Default to Info
 	NSString* source = note.userInfo[@"source"] ?: @"LSP";
+	NSString* server = note.userInfo[@"server"];
+	if(server.length)
+		message = [NSString stringWithFormat:@"[%@] %@", server, message];
 
 	dispatch_async(dispatch_get_main_queue(), ^{
 		[OakLogPanel.shared logWithMessage:message level:level source:source];

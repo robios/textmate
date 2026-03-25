@@ -21,6 +21,7 @@ NSNotificationName const CopilotLogNotification             = @"CopilotLogNotifi
 	NSInteger _restartCount;
 	CopilotStatus _status;
 	NSString* _username;
+	BOOL _checkingAuth;
 }
 @end
 
@@ -195,6 +196,7 @@ NSNotificationName const CopilotLogNotification             = @"CopilotLogNotifi
 	[self log:@"Copilot agent terminated"];
 
 	_client = nil;
+	_checkingAuth = NO;
 	[_openURIs removeAllObjects];
 	[_documentVersions removeAllObjects];
 
@@ -229,22 +231,24 @@ NSNotificationName const CopilotLogNotification             = @"CopilotLogNotifi
 {
 	if([method isEqualToString:@"workspace/configuration"])
 	{
-		[self log:@"Responding to workspace/configuration request"];
-
-		// Copilot expects an array of configuration objects, one per requested section.
-		// We reply with a single object covering the sections it typically asks for.
-		NSArray* items = params[@"items"];
-		NSUInteger count = items ? items.count : 1;
-
-		NSMutableArray* configs = [NSMutableArray arrayWithCapacity:count];
-		NSDictionary* config = @{
-			@"github.copilot.enable": @{@"*": @YES},
-			@"github.copilot.editor.enableAutoCompletions": @YES,
-			@"github.copilot.advanced": @{},
-		};
-		for(NSUInteger i = 0; i < count; i++)
-			[configs addObject:config];
-
+		NSArray* items = params[@"items"] ?: @[];
+		NSMutableArray* configs = [NSMutableArray arrayWithCapacity:items.count];
+		for(NSDictionary* item in items)
+		{
+			NSString* section = item[@"section"] ?: @"";
+			if([section isEqualToString:@"github.copilot"])
+			{
+				[configs addObject:@{
+					@"enable": @{@"*": @YES},
+					@"editor.enableAutoCompletions": @YES,
+					@"advanced": @{},
+				}];
+			}
+			else
+			{
+				[configs addObject:@{}];
+			}
+		}
 		return configs;
 	}
 
@@ -276,10 +280,15 @@ NSNotificationName const CopilotLogNotification             = @"CopilotLogNotifi
 
 - (void)checkAuthStatus
 {
+	if(_checkingAuth)
+		return;
+	_checkingAuth = YES;
+
 	[self log:@"Checking Copilot auth status"];
 
 	// copilot-node-server uses direct JSON-RPC methods, not workspace/executeCommand
 	[_client sendCustomRequest:@"checkStatus" params:@{} completion:^(id result) {
+		self->_checkingAuth = NO;
 		if(![result isKindOfClass:[NSDictionary class]])
 		{
 			[self log:@"checkStatus returned unexpected result"];

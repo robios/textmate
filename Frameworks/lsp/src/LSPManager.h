@@ -39,6 +39,7 @@ extern NSString* const LSPServerStatusDidChangeNotification;
 - (NSString*)serverStatusForDocument:(OakDocument*)document;
 - (NSString*)serverNameForDocument:(OakDocument*)document;
 - (void)restartServerForDocument:(OakDocument*)document;
+- (void)reindexWorkspaceForDocument:(OakDocument*)document;
 @end
 
 #endif /* LSP_MANAGER_H_POC */

@@ -3,7 +3,11 @@
 
 static NSArray<NSString*>* const kDefaultExcludes = @[
 	@".git", @".hg", @".svn",
-	@"build", @"dist", @".cache"
+	@"node_modules", @"vendor", @".vendor",
+	@"build", @"dist", @".cache",
+	@"__pycache__", @".tox", @".venv", @"venv",
+	@".mypy_cache", @".next", @".nuxt",
+	@"target", @"Pods",
 ];
 
 @interface LSPFileWatcher ()
@@ -72,20 +76,23 @@ static NSArray<NSString*>* const kDefaultExcludes = @[
 	return NO;
 }
 
-- (BOOL)fileMatchesFilters:(NSString*)path
+- (BOOL)fileMatchesFilters:(NSString*)path watchAll:(BOOL)watchAll extensions:(NSSet<NSString*>*)extensions exactNames:(NSSet<NSString*>*)exactNames
 {
-	NSString* filename = path.lastPathComponent;
-
-	if([_exactNames containsObject:filename])
+	if(watchAll)
 		return YES;
 
-	if(_extensions.count)
+	NSString* filename = path.lastPathComponent;
+
+	if([exactNames containsObject:filename])
+		return YES;
+
+	if(extensions.count)
 	{
 		NSString* ext = path.pathExtension;
 		if(ext.length)
 		{
 			NSString* dotExt = [@"." stringByAppendingString:ext.lowercaseString];
-			if([_extensions containsObject:dotExt])
+			if([extensions containsObject:dotExt])
 				return YES;
 		}
 	}
@@ -93,7 +100,12 @@ static NSArray<NSString*>* const kDefaultExcludes = @[
 	return NO;
 }
 
-- (NSDictionary<NSString*, NSValue*>*)scanDirectory:(NSString*)directory
+- (BOOL)fileMatchesFilters:(NSString*)path
+{
+	return [self fileMatchesFilters:path watchAll:_watchAll extensions:_extensions exactNames:_exactNames];
+}
+
+- (NSDictionary<NSString*, NSValue*>*)scanDirectory:(NSString*)directory watchAll:(BOOL)watchAll extensions:(NSSet<NSString*>*)extensions exactNames:(NSSet<NSString*>*)exactNames
 {
 	NSMutableDictionary<NSString*, NSValue*>* result = [NSMutableDictionary new];
 	NSFileManager* fm = [NSFileManager defaultManager];
@@ -121,7 +133,7 @@ static NSArray<NSString*>* const kDefaultExcludes = @[
 			continue;
 
 		NSString* path = url.path;
-		if(![self fileMatchesFilters:path])
+		if(![self fileMatchesFilters:path watchAll:watchAll extensions:extensions exactNames:exactNames])
 			continue;
 
 		struct stat st;
@@ -134,6 +146,11 @@ static NSArray<NSString*>* const kDefaultExcludes = @[
 	}
 
 	return result;
+}
+
+- (NSDictionary<NSString*, NSValue*>*)scanDirectory:(NSString*)directory
+{
+	return [self scanDirectory:directory watchAll:_watchAll extensions:_extensions exactNames:_exactNames];
 }
 
 - (void)populateSnapshotFromScan:(NSDictionary<NSString*, NSValue*>*)scan
@@ -154,8 +171,13 @@ static NSArray<NSString*>* const kDefaultExcludes = @[
 
 - (void)performInitialScanOnQueue:(dispatch_queue_t)queue completion:(void(^)(void))completion
 {
+	// Snapshot filter state for thread-safe access on background queue
+	BOOL watchAll = _watchAll;
+	NSSet<NSString*>* extensions = [_extensions copy];
+	NSSet<NSString*>* exactNames = [_exactNames copy];
+
 	dispatch_async(queue, ^{
-		NSDictionary<NSString*, NSValue*>* result = [self scanDirectory:_rootDirectory];
+		NSDictionary<NSString*, NSValue*>* result = [self scanDirectory:_rootDirectory watchAll:watchAll extensions:extensions exactNames:exactNames];
 
 		NSUInteger count = result.count;
 		if(count > 10000)
@@ -236,8 +258,12 @@ static NSArray<NSString*>* const kDefaultExcludes = @[
 
 - (void)asyncDiffForChangedDirectory:(NSString*)dirPath onQueue:(dispatch_queue_t)queue completion:(void(^)(NSArray<NSDictionary*>*))completion
 {
+	BOOL watchAll = _watchAll;
+	NSSet<NSString*>* extensions = [_extensions copy];
+	NSSet<NSString*>* exactNames = [_exactNames copy];
+
 	dispatch_async(queue, ^{
-		NSDictionary<NSString*, NSValue*>* currentState = [self scanDirectory:dirPath];
+		NSDictionary<NSString*, NSValue*>* currentState = [self scanDirectory:dirPath watchAll:watchAll extensions:extensions exactNames:exactNames];
 		dispatch_async(dispatch_get_main_queue(), ^{
 			NSArray<NSDictionary*>* changes = [self diffScanResult:currentState forDirectory:dirPath];
 			if(completion)

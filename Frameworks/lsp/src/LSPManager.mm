@@ -146,6 +146,7 @@ static std::string detectWorkspaceRoot (std::string const& filePath)
 	NSMutableSet<NSUUID*>*                                   _openDocuments;
 	NSMutableDictionary<NSUUID*, NSTimer*>*                  _changeTimers;
 	NSMutableDictionary<NSString*, NSArray<NSDictionary*>*>* _diagnosticsByURI;
+	NSMutableSet<NSString*>* _clearCacheRoots;
 }
 @end
 
@@ -170,6 +171,7 @@ static std::string detectWorkspaceRoot (std::string const& filePath)
 		_openDocuments      = [NSMutableSet new];
 		_changeTimers       = [NSMutableDictionary new];
 		_diagnosticsByURI   = [NSMutableDictionary new];
+		_clearCacheRoots    = [NSMutableSet new];
 
 		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(applicationWillTerminate:) name:NSApplicationWillTerminateNotification object:nil];
 	}
@@ -179,6 +181,16 @@ static std::string detectWorkspaceRoot (std::string const& filePath)
 - (void)applicationWillTerminate:(NSNotification*)notification
 {
 	[self shutdownAll];
+}
+
+- (NSString*)rootForClient:(LSPClient*)client
+{
+	for(NSString* root in _clients)
+	{
+		if(_clients[root] == client)
+			return root;
+	}
+	return nil;
 }
 
 - (LSPClient*)clientForDocument:(OakDocument*)document
@@ -222,6 +234,26 @@ static std::string detectWorkspaceRoot (std::string const& filePath)
 
 	std::string initOpts = settings.get("lspInitOptions", "");
 	NSString* initOptsJSON = initOpts.empty() ? nil : to_ns(initOpts);
+
+	if([_clearCacheRoots containsObject:root])
+	{
+		[_clearCacheRoots removeObject:root];
+		// Merge clearCache:true into initializationOptions for servers like Intelephense
+		if(initOptsJSON.length)
+		{
+			NSData* data = [initOptsJSON dataUsingEncoding:NSUTF8StringEncoding];
+			NSMutableDictionary* opts = [[NSJSONSerialization JSONObjectWithData:data options:0 error:nil] mutableCopy];
+			if(!opts)
+				opts = [NSMutableDictionary new];
+			opts[@"clearCache"] = @YES;
+			NSData* merged = [NSJSONSerialization dataWithJSONObject:opts options:0 error:nil];
+			initOptsJSON = [[NSString alloc] initWithData:merged encoding:NSUTF8StringEncoding];
+		}
+		else
+		{
+			initOptsJSON = @"{\"clearCache\":true}";
+		}
+	}
 
 	client = [[LSPClient alloc] initWithCommand:executable arguments:args workingDirectory:root initOptions:initOptsJSON];
 	client.delegate = self;
@@ -711,6 +743,8 @@ static std::string detectWorkspaceRoot (std::string const& filePath)
 	LSPClient* client = _documentClients[document.identifier];
 	if(!client)
 		return nil;
+	if(client.initialized && client.indexing)
+		return @"indexing";
 	if(client.initialized)
 		return @"running";
 	if(client.running)
@@ -764,15 +798,7 @@ static std::string detectWorkspaceRoot (std::string const& filePath)
 	}
 
 	// Remove client from _clients so a new one will be created
-	NSString* rootToRemove = nil;
-	for(NSString* root in _clients)
-	{
-		if(_clients[root] == client)
-		{
-			rootToRemove = root;
-			break;
-		}
-	}
+	NSString* rootToRemove = [self rootForClient:client];
 	if(rootToRemove)
 		[_clients removeObjectForKey:rootToRemove];
 
@@ -795,6 +821,36 @@ static std::string detectWorkspaceRoot (std::string const& filePath)
 		[self documentDidOpen:doc];
 
 	[NSNotificationCenter.defaultCenter postNotificationName:LSPServerStatusDidChangeNotification object:self];
+}
+
+- (void)reindexWorkspaceForDocument:(OakDocument*)document
+{
+	LSPClient* client = _documentClients[document.identifier];
+	if(!client)
+		return;
+
+	// Check if server advertises a reindex-like command
+	for(NSString* cmd in client.executeCommands)
+	{
+		NSString* lower = cmd.lowercaseString;
+		if([lower containsString:@"reindex"] || [lower containsString:@"index.workspace"] || [lower containsString:@"index-workspace"])
+		{
+			NSLog(@"[LSP:%@] Re-index: using server command '%@'", client.serverName, cmd);
+			[client executeCommand:cmd arguments:nil completion:^(id result) {
+				if(!result)
+					NSLog(@"[LSP:%@] Re-index command '%@' failed or returned null", client.serverName, cmd);
+			}];
+			return;
+		}
+	}
+	NSLog(@"[LSP:%@] Re-index: restarting with clearCache", client.serverName);
+
+	// Fallback: restart with clearCache in initializationOptions
+	NSString* rootToFlag = [self rootForClient:client];
+	if(rootToFlag)
+		[_clearCacheRoots addObject:rootToFlag];
+
+	[self restartServerForDocument:document];
 }
 
 - (NSArray<NSDictionary*>*)diagnosticsForDocument:(OakDocument*)document atLine:(NSUInteger)line character:(NSUInteger)character endLine:(NSUInteger)endLine endCharacter:(NSUInteger)endCharacter
@@ -838,18 +894,10 @@ static std::string detectWorkspaceRoot (std::string const& filePath)
 
 - (void)lspClientDidTerminate:(LSPClient*)client
 {
-	NSLog(@"[LSP] Handling server termination, cleaning up client");
+	NSLog(@"[LSP:%@] Handling server termination, cleaning up client", client.serverName);
 
 	// Find and remove the dead client from _clients
-	NSString* rootToRemove = nil;
-	for(NSString* root in _clients)
-	{
-		if(_clients[root] == client)
-		{
-			rootToRemove = root;
-			break;
-		}
-	}
+	NSString* rootToRemove = [self rootForClient:client];
 	if(rootToRemove)
 		[_clients removeObjectForKey:rootToRemove];
 

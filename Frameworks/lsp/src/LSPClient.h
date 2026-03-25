@@ -24,14 +24,17 @@ extern NSString* const LSPShowMessageRequestNotification;
 
 @interface LSPClient : NSObject
 @property (nonatomic, weak) id<LSPClientDelegate> delegate;
+@property (nonatomic, readonly) NSString* serverName;
 @property (nonatomic, readonly) BOOL initialized;
 @property (nonatomic, readonly) BOOL running;
+@property (nonatomic, readonly) BOOL indexing;
 @property (nonatomic, readonly) BOOL documentFormattingProvider;
 @property (nonatomic, readonly) BOOL documentRangeFormattingProvider;
 @property (nonatomic, readonly) BOOL completionResolveProvider;
 @property (nonatomic, readonly) BOOL renameProvider;
 @property (nonatomic, readonly) BOOL codeActionProvider;
 @property (nonatomic, readonly) BOOL codeActionResolveProvider;
+@property (nonatomic, readonly) NSArray<NSString*>* executeCommands;
 - (instancetype)initWithCommand:(NSString*)command arguments:(NSArray<NSString*>*)arguments workingDirectory:(NSString*)workingDirectory initOptions:(NSString*)initOptionsJSON;
 - (void)openDocument:(OakDocument*)document languageId:(NSString*)languageId;
 - (void)documentDidChange:(OakDocument*)document version:(int)version;
