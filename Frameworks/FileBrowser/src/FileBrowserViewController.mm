@@ -1183,9 +1183,17 @@ static NSMutableIndexSet* MutableLongestCommonSubsequence (NSArray* lhs, NSArray
 {
 	if([state isKindOfClass:[NSData class]])
 	{
-		NSKeyedUnarchiver* coder = [[NSKeyedUnarchiver alloc] initForReadingFromData:state error:nil];
+		NSError* error = nil;
+		NSKeyedUnarchiver* coder = [[NSKeyedUnarchiver alloc] initForReadingFromData:state error:&error];
 		if(coder)
+		{
+			coder.requiresSecureCoding = NO;
 			[self restoreStateWithCoder:coder];
+		}
+		else
+		{
+			NSLog(@"[FileBrowser] Failed to unarchive session state: %@", error);
+		}
 	}
 	else if([state isKindOfClass:[NSDictionary class]])
 	{
