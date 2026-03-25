@@ -2,6 +2,7 @@
 #import "Keys.h"
 #import <OakFoundation/NSString Additions.h>
 #import <ns/ns.h>
+#import <io/environment.h>
 #import <io/path.h>
 #import <text/tokenize.h>
 
@@ -99,21 +100,15 @@ static NSArray<FormatterEntry*>* DefaultFormatterTable ()
 
 - (void)detectAll
 {
+	std::string const& envPath = oak::basic_environment().at("PATH");
 	std::vector<std::string> searchPaths;
-
-	std::string homePath = to_s(NSHomeDirectory());
-	searchPaths.push_back("/opt/homebrew/bin");
-	searchPaths.push_back("/usr/local/bin");
-	searchPaths.push_back(homePath + "/.local/bin");
-
-	if(char const* envPath = getenv("PATH"))
+	for(auto const& p : text::tokenize(envPath.begin(), envPath.end(), ':'))
 	{
-		for(auto const& p : text::tokenize(envPath, envPath + strlen(envPath), ':'))
-		{
-			if(!p.empty())
-				searchPaths.push_back(p);
-		}
+		if(!p.empty())
+			searchPaths.push_back(p);
 	}
+
+	NSLog(@"[Formatters] Detecting formatters in %zu search paths", searchPaths.size());
 
 	for(FormatterEntry* entry in _entries)
 	{
@@ -126,9 +121,13 @@ static NSArray<FormatterEntry*>* DefaultFormatterTable ()
 			if(path::is_executable(candidate))
 			{
 				entry.detectedPath = [NSString stringWithCxxString:candidate];
+				NSLog(@"[Formatters] Found %s at %s", exe.c_str(), candidate.c_str());
 				break;
 			}
 		}
+
+		if(!entry.detectedPath)
+			NSLog(@"[Formatters] %s not found in any search path", exe.c_str());
 	}
 }
 

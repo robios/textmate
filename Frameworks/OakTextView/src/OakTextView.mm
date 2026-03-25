@@ -53,6 +53,7 @@
 #import <lsp/LSPManager.h>
 #import <lsp/LSPClient.h>
 #import <lsp/CopilotManager.h>
+#import <io/environment.h>
 #import <io/exec.h>
 #import <Find/Find.h>
 
@@ -5794,10 +5795,11 @@ static NSString* runCustomFormatter (std::string const& command, NSString* input
 	// Build environment from TM variables
 	NSMutableDictionary* env = [NSMutableDictionary dictionaryWithDictionary:[[NSProcessInfo processInfo] environment]];
 
-	// Prepend common tool paths for GUI launch contexts
-	NSString* existingPath = env[@"PATH"] ?: @"/usr/bin:/bin";
-	NSString* localBin = [NSHomeDirectory() stringByAppendingPathComponent:@".local/bin"];
-	env[@"PATH"] = [NSString stringWithFormat:@"/opt/homebrew/bin:/usr/local/bin:%@:%@", localBin, existingPath];
+	// Use TextMate's environment PATH which includes package manager paths
+	auto const& tmEnv = oak::basic_environment();
+	auto pathIt = tmEnv.find("PATH");
+	if(pathIt != tmEnv.end())
+		env[@"PATH"] = [NSString stringWithCxxString:pathIt->second];
 
 	for(auto const& [key, value] : variables)
 		env[[NSString stringWithCxxString:key]] = [NSString stringWithCxxString:value];

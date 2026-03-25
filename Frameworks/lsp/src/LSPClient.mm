@@ -2,6 +2,7 @@
 #import "LSPFileWatcher.h"
 #import "LSPFileWatchRegistration.h"
 #import <io/FSEventsManager.h>
+#import <io/environment.h>
 #import <nlohmann/json.hpp>
 #import <oak/debug.h>
 #import <ns/ns.h>
@@ -159,11 +160,12 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 		_task.standardError      = _stderrPipe;
 		_task.currentDirectoryURL = [NSURL fileURLWithPath:workingDirectory];
 
-		// Inherit current environment and ensure homebrew paths are available
+		// Use TextMate's environment which includes package manager paths
 		NSMutableDictionary* env = [NSProcessInfo.processInfo.environment mutableCopy];
-		NSString* path = env[@"PATH"] ?: @"/usr/bin:/bin";
-		if(![path containsString:@"/opt/homebrew/bin"])
-			env[@"PATH"] = [@"/opt/homebrew/bin:/opt/homebrew/sbin:" stringByAppendingString:path];
+		auto const& tmEnv = oak::basic_environment();
+		auto it = tmEnv.find("PATH");
+		if(it != tmEnv.end())
+			env[@"PATH"] = to_ns(it->second);
 		_task.environment = env;
 
 		// SIGPIPE kills the process before @try/@catch can handle broken pipe writes
