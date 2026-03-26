@@ -1176,12 +1176,15 @@ static std::string shell_quote (std::vector<std::string> paths)
 						done = YES;
 					}];
 
-				NSDate* timeout = [NSDate dateWithTimeIntervalSinceNow:3.0];
+				// Brief synchronous wait: the LSP callback arrives on the main queue via
+				// dispatch_async, so we pump the run loop to let it through. Capped at 100ms
+				// to avoid freezing the UI — fast formatters respond well within this window.
+				NSDate* timeout = [NSDate dateWithTimeIntervalSinceNow:0.1];
 				while(!done && [timeout timeIntervalSinceNow] > 0)
-					CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.05, true);
+					CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.01, true);
 
 				if(!done)
-					NSLog(@"[LSP] Format-on-save timed out after 3 seconds");
+					NSLog(@"[LSP] Format-on-save skipped: server did not respond within 100ms");
 
 				if(receivedEdits.count > 0)
 				{

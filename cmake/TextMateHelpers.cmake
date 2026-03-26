@@ -102,6 +102,9 @@ endfunction()
 # Test generation using bin/gen_test (Ruby script that generates runners
 # from void test_*() and void benchmark_*() signatures)
 function(textmate_add_tests FRAMEWORK_TARGET)
+  if(NOT BUILD_TESTING)
+    return()
+  endif()
   file(GLOB _test_sources
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/t_*.cc"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/t_*.mm")

@@ -1,4 +1,5 @@
 #import "Keys.h"
+#import <OakAppKit/OakPasteboard.h>
 #import <OakTabBarView/OakTabBarView.h>
 #import <BundlesManager/BundlesManager.h>
 
@@ -140,10 +141,6 @@ NSString* const kUserDefaultsFontSmoothingKey                 = @"fontSmoothing"
 NSString* const kUserDefaultsHideStatusBarKey                 = @"hideStatusBar";
 NSString* const kUserDefaultsTabItemMinWidthKey               = @"tabItemMinWidth";
 NSString* const kUserDefaultsTabItemMaxWidthKey               = @"tabItemMaxWidth";
-NSString* const kUserDefaultsDisablePersistentClipboardHistory = @"disablePersistentClipboardHistory";
-NSString* const kUserDefaultsClipboardHistoryKeepAtLeast      = @"clipboardHistoryKeepAtLeast";
-NSString* const kUserDefaultsClipboardHistoryKeepAtMost       = @"clipboardHistoryKeepAtMost";
-NSString* const kUserDefaultsClipboardHistoryDaysToKeep       = @"clipboardHistoryDaysToKeep";
 NSString* const kUserDefaultsKeepSearchResultsOnDoubleClick   = @"keepSearchResultsOnDoubleClick";
 NSString* const kUserDefaultsAlwaysFindInDocument             = @"alwaysFindInDocument";
 NSString* const kUserDefaultsDisableFolderStateRestore        = @"disableFolderStateRestore";

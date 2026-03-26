@@ -1,6 +1,5 @@
 #import "OakPasteboard.h"
 #import "OakPasteboardSelector.h"
-#import <Preferences/Keys.h>
 #import <crash/info.h>
 #import <ns/ns.h>
 #import <oak/oak.h>
@@ -21,6 +20,11 @@ NSString* const kUserDefaultsFindIgnoreCase        = @"findIgnoreCase";
 NSString* const OakFindIgnoreWhitespaceOption      = @"ignoreWhitespace";
 NSString* const OakFindFullWordsOption             = @"fullWordMatch";
 NSString* const OakFindRegularExpressionOption     = @"regularExpression";
+
+NSString* const kUserDefaultsDisablePersistentClipboardHistory = @"disablePersistentClipboardHistory";
+NSString* const kUserDefaultsClipboardHistoryKeepAtLeast       = @"clipboardHistoryKeepAtLeast";
+NSString* const kUserDefaultsClipboardHistoryKeepAtMost        = @"clipboardHistoryKeepAtMost";
+NSString* const kUserDefaultsClipboardHistoryDaysToKeep        = @"clipboardHistoryDaysToKeep";
 
 
 // ===========

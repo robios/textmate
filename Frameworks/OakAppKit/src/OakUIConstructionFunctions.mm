@@ -14,7 +14,6 @@ NSFont* OakControlFont ()
 
 NSTextField* OakCreateLabel (NSString* label, NSFont* font, NSTextAlignment alignment, NSLineBreakMode lineBreakMode)
 {
-	// Modern API is always available on macOS 14.0+
 	NSTextField* res = [NSTextField labelWithString:label];
 	[[res cell] setLineBreakMode:lineBreakMode];
 	res.alignment = alignment;
@@ -25,7 +24,6 @@ NSTextField* OakCreateLabel (NSString* label, NSFont* font, NSTextAlignment alig
 
 NSButton* OakCreateCheckBox (NSString* label)
 {
-	// Modern API is always available on macOS 14.0+
 	NSButton* res = [NSButton checkboxWithTitle:(label ?: @"") target:nil action:nil];
 	// When we have a row that only contains checkboxes (e.g. Find options), nothing restrains the height of that row
 	[res setContentHuggingPriority:NSLayoutPriorityDefaultHigh forOrientation:NSLayoutConstraintOrientationVertical];
@@ -195,7 +193,6 @@ OakRolloverButton* OakCreateCloseButton (NSString* accessibilityLabel)
 
 	if(self.style == OakBackgroundFillViewStyleHeader)
 	{
-		// Modern visual effect API is always available on macOS 14.0+
 		NSVisualEffectView* effectView = [[NSVisualEffectView alloc] initWithFrame:[self bounds]];
 		effectView.material     = NSVisualEffectMaterialHeaderView;
 		effectView.blendingMode = NSVisualEffectBlendingModeBehindWindow;

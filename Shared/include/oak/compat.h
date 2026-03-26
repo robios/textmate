@@ -34,7 +34,7 @@ namespace oak
 		} else {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-			return vfork();
+			return ::vfork();
 #pragma clang diagnostic pop
 		}
 	}

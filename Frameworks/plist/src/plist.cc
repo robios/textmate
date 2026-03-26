@@ -160,6 +160,7 @@ namespace plist
 	{
 		struct create_cf_property_list_t
 		{
+			CFPropertyListRef operator() (std::monostate) const                { return CFRetain(kCFBooleanFalse); }
 			CFPropertyListRef operator() (bool flag) const                     { return CFRetain(flag ? kCFBooleanTrue : kCFBooleanFalse); }
 			CFPropertyListRef operator() (int32_t i) const                     { return CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &i); }
 			CFPropertyListRef operator() (uint64_t i) const                    { return CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt64Type, &i); }
@@ -301,6 +302,7 @@ namespace plist
 	static bool convert_to (oak::date_t const& from, plist::any_t& to)         { to = from; return true; }
 	static bool convert_to (plist::array_t const& from, plist::any_t& to)      { to = from; return true; }
 	static bool convert_to (plist::dictionary_t const& from, plist::any_t& to) { to = from; return true; }
+	static bool convert_to (std::monostate, plist::any_t& to)                  { to = plist::any_t(); return true; }
 
 	template <typename T> bool convert_to (T const& from, T& to)             { to = from; return true;  }
 	template <typename T, typename U> bool convert_to (T const& from, U& to) {            return false; }
@@ -319,6 +321,7 @@ namespace plist
 		bool operator() (oak::date_t const& date) const         { return convert_to(date,  ref); }
 		bool operator() (plist::array_t const& array) const     { return convert_to(array, ref); }
 		bool operator() (plist::dictionary_t const& dict) const { return convert_to(dict,  ref); }
+		bool operator() (std::monostate m) const                { return convert_to(m,     ref); }
 	};
 
 	template <typename T>

@@ -18,7 +18,7 @@ namespace io
 		dispatch_group_t _group = nullptr;
 		io::process_t _process;
 		std::string _output, _error;
-		int _status;
+		int _status = 0;
 	};
 
 } /* io */

@@ -91,7 +91,12 @@ namespace plist
 			else if([type isEqualToString:@"link"])
 			{
 				entry.set_type(entry_type_t::link);
-				entry.set_link(((NSString*)node[@"link"]).UTF8String);
+				// .UTF8String on nil returns NULL, which crashes std::string construction
+			NSString* link = node[@"link"];
+			if(link)
+				entry.set_link(link.UTF8String);
+			else
+				continue;
 			}
 			else if([type isEqualToString:@"missing"])
 			{

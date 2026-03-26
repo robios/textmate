@@ -8,6 +8,7 @@ namespace
 {
 	struct is_composite
 	{
+		bool operator() (std::monostate) const                  { return false; }
 		bool operator() (bool flag) const                       { return false; }
 		bool operator() (int32_t i) const                       { return false; }
 		bool operator() (uint64_t i) const                      { return false; }
@@ -20,6 +21,7 @@ namespace
 
 	struct fits_single_line
 	{
+		bool operator() (std::monostate) const                { return true; }
 		bool operator() (bool flag) const                     { return true; }
 		bool operator() (int32_t i) const                     { return true; }
 		bool operator() (uint64_t i) const                    { return true; }
@@ -190,6 +192,7 @@ namespace
 		bool is_key;
 
 		std::string indent_string () const                           { return std::string(indent, '\t'); }
+		std::string operator() (std::monostate) const                { return "null"; }
 		std::string operator() (bool flag) const                     { return flag ? ":true" : ":false"; }
 		std::string operator() (int32_t i) const                     { return std::to_string(i); }
 		std::string operator() (uint64_t i) const                    { return std::to_string(i); }

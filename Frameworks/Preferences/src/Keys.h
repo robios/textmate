@@ -97,12 +97,6 @@ extern NSString* const kUserDefaultsHideStatusBarKey;
 extern NSString* const kUserDefaultsTabItemMinWidthKey;
 extern NSString* const kUserDefaultsTabItemMaxWidthKey;
 
-// Clipboard
-extern NSString* const kUserDefaultsDisablePersistentClipboardHistory;
-extern NSString* const kUserDefaultsClipboardHistoryKeepAtLeast;
-extern NSString* const kUserDefaultsClipboardHistoryKeepAtMost;
-extern NSString* const kUserDefaultsClipboardHistoryDaysToKeep;
-
 // Find
 extern NSString* const kUserDefaultsKeepSearchResultsOnDoubleClick;
 extern NSString* const kUserDefaultsAlwaysFindInDocument;

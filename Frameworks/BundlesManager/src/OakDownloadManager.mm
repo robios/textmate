@@ -375,7 +375,7 @@ static NSString* GetHardwareInfo (int field, BOOL isInteger = NO)
 // = Helper Methods =
 // ==================
 
-- (NSString*)signingKeyForPublicKeyString:(NSString*)publicKeyString
+- (id)signingKeyForPublicKeyString:(NSString*)publicKeyString
 {
 	id res = nil;
 	if(NSData* publicKeyData = [publicKeyString dataUsingEncoding:NSUTF8StringEncoding])
@@ -389,7 +389,10 @@ static NSString* GetHardwareInfo (int field, BOOL isInteger = NO)
 		if(err == errSecSuccess)
 		{
 			if(SecKeyRef publicKey = (SecKeyRef)CFArrayGetValueAtIndex(items, 0))
-				res = (__bridge id)publicKey;
+			{
+				CFRetain(publicKey); // CFArrayGetValueAtIndex returns unretained; retain before array release
+				res = (__bridge_transfer id)publicKey;
+			}
 			CFRelease(items);
 		}
 		else
@@ -415,6 +418,9 @@ static NSString* GetHardwareInfo (int field, BOOL isInteger = NO)
 		if(SecKeyRef publicKey = (SecKeyRef)CFBridgingRetain([self signingKeyForPublicKeyString:publicKeyString]))
 		{
 			CFErrorRef err = nullptr;
+			// TODO: migrate to SecKeyVerifySignature when Security Transform APIs are removed
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
 			if(SecTransformRef verifier = SecVerifyTransformCreate(publicKey, (CFDataRef)signatureData, &err))
 			{
 				if(SecTransformSetAttribute(verifier, kSecTransformInputAttributeName, (CFDataRef)contentData, &err))
@@ -430,10 +436,13 @@ static NSString* GetHardwareInfo (int field, BOOL isInteger = NO)
 				}
 				CFRelease(verifier);
 			}
+#pragma clang diagnostic pop
 			else
 			{
 				os_log_error(OS_LOG_DEFAULT, "SecVerifyTransformCreate: %{public}@", err);
 			}
+			if(err)
+				CFRelease(err);
 			CFRelease(publicKey);
 		}
 	}

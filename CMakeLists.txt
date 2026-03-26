@@ -78,6 +78,7 @@ add_compile_options(
 )
 
 # Helpers
+include(CTest)
 include(cmake/TextMateHelpers.cmake)
 
 # Code signing identity

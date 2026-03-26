@@ -21,7 +21,7 @@ debug: swift-build-debug
 	ninja -C build-debug
 
 release: swift-build-release
-	cmake -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release
+	cmake -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
 	ninja -C build-release
 
 run: debug

@@ -27,7 +27,7 @@
 
 @class OakCommand;
 
-@interface BundleEditor () <NSWindowDelegate, OakTextViewDelegate, NSEditor>
+@interface BundleEditor () <NSWindowDelegate, OakTextViewDelegate>
 {
 	NSViewController*      _browserViewController;
 	NSViewController*      _documentViewController;
@@ -117,6 +117,7 @@ namespace
 	{
 		expand_visitor_t (std::map<std::string, std::string> const& variables) : _variables(variables) { }
 
+		void operator() (std::monostate) const                 { }
 		void operator() (bool value) const                     { }
 		void operator() (int32_t value) const                  { }
 		void operator() (uint64_t value) const                 { }
@@ -146,6 +147,8 @@ static be::entry_ptr parent_for_column (NSBrowser* aBrowser, NSInteger aColumn, 
 	return entry;
 }
 
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wincomplete-implementation"
 @implementation BundleEditor
 + (instancetype)sharedInstance
 {
@@ -1061,3 +1064,4 @@ static NSString* DescriptionForChanges (std::map<bundles::item_ptr, plist::dicti
 	[documentView.textView updateEnvironment:res];
 }
 @end
+#pragma clang diagnostic pop

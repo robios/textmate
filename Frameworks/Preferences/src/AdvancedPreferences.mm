@@ -1,5 +1,6 @@
 #import "AdvancedPreferences.h"
 #import "Keys.h"
+#import <OakAppKit/OakPasteboard.h>
 #import <OakAppKit/OakUIConstructionFunctions.h>
 #import <MenuBuilder/MenuBuilder.h>
 

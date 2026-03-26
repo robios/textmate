@@ -1006,10 +1006,8 @@ static KVDB* commandPaletteFrecencyDB ()
 	{
 		NSString* path = [item.actionIdentifier substringFromIndex:7];
 		[NSWorkspace.sharedWorkspace activateFileViewerSelectingURLs:@[[NSURL fileURLWithPath:path]]];
-		goto updateFrecency;
 	}
-
-	switch(item.category)
+	else switch(item.category)
 	{
 		case OakCommandPaletteCategoryMenuAction:
 		{
@@ -1029,23 +1027,22 @@ static KVDB* commandPaletteFrecencyDB ()
 		}
 		case OakCommandPaletteCategoryBundleCommand:
 		{
-			NSString* uuid = [item.actionIdentifier stringByReplacingOccurrencesOfString:@"bundle:" withString:@""];
+			NSString* uuid = [item.actionIdentifier substringFromIndex:7]; // "bundle:"
 			[NSApp sendAction:@selector(performBundleItemWithUUIDStringFrom:) to:nil from:@{ @"representedObject": uuid }];
 			break;
 		}
 		case OakCommandPaletteCategoryRecentProject:
 		{
-			NSString* path = [item.actionIdentifier stringByReplacingOccurrencesOfString:@"project:" withString:@""];
+			NSString* path = [item.actionIdentifier substringFromIndex:8]; // "project:"
 			OakOpenDocuments(@[path]);
 			break;
 		}
 		case OakCommandPaletteCategoryGoToLine:
 		{
-			NSString* lineStr = [item.actionIdentifier stringByReplacingOccurrencesOfString:@"line:" withString:@""];
+			NSString* lineStr = [item.actionIdentifier substringFromIndex:5]; // "line:"
 			NSInteger lineNumber = lineStr.integerValue;
 			if(lineNumber > 0)
 			{
-				// Use selectAndCenter: — same as performGoToLine:
 				NSString* selStr = [NSString stringWithFormat:@"%ld", (long)lineNumber];
 				[NSApp sendAction:@selector(selectAndCenter:) to:nil from:selStr];
 			}
@@ -1065,7 +1062,7 @@ static KVDB* commandPaletteFrecencyDB ()
 		}
 		case OakCommandPaletteCategorySetting:
 		{
-			NSString* selectorName = [item.actionIdentifier stringByReplacingOccurrencesOfString:@"setting:" withString:@""];
+			NSString* selectorName = [item.actionIdentifier substringFromIndex:8]; // "setting:"
 			SEL action = NSSelectorFromString(selectorName);
 			if(action)
 				[NSApp sendAction:action to:nil from:self];
@@ -1086,7 +1083,7 @@ static KVDB* commandPaletteFrecencyDB ()
 		}
 		case OakCommandPaletteCategoryBundleEditor:
 		{
-			NSString* uuid = [item.actionIdentifier stringByReplacingOccurrencesOfString:@"bundleeditor:" withString:@""];
+			NSString* uuid = [item.actionIdentifier substringFromIndex:13]; // "bundleeditor:"
 			[[BundleEditor sharedInstance] revealBundleItem:bundles::lookup(to_s(uuid))];
 			break;
 		}
@@ -1094,7 +1091,6 @@ static KVDB* commandPaletteFrecencyDB ()
 			break;
 	}
 
-updateFrecency:
 	// Update frecency
 	KVDB* db = commandPaletteFrecencyDB();
 	NSDictionary* existing = [db objectForKey:item.actionIdentifier];

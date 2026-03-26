@@ -4,6 +4,7 @@ namespace
 {
 	struct create_cf_property_list
 	{
+		CFPropertyListRef operator() (std::monostate) const                { return CFRetain(kCFBooleanFalse); }
 		CFPropertyListRef operator() (bool flag) const                     { return CFRetain(flag ? kCFBooleanTrue : kCFBooleanFalse); }
 		CFPropertyListRef operator() (int32_t i) const                     { return CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &i); }
 		CFPropertyListRef operator() (uint64_t i) const                    { return CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt64Type, &i); }

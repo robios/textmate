@@ -76,7 +76,7 @@ static NSButton* OakCreateHistoryButton (NSString* toolTip)
 	return res;
 }
 
-@interface Find () <OakFindServerProtocol, OakUserDefaultsObserver, NSWindowDelegate, NSMenuDelegate, NSEditor>
+@interface Find () <OakFindServerProtocol, OakUserDefaultsObserver, NSWindowDelegate, NSMenuDelegate>
 {
 	NSObjectController*        _objectController;
 
@@ -142,6 +142,8 @@ static NSButton* OakCreateHistoryButton (NSString* toolTip)
 - (void)didReplace:(NSUInteger)aNumber occurrencesOf:(NSString*)aFindString with:(NSString*)aReplacementString;
 @end
 
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wincomplete-implementation"
 @implementation Find
 + (NSSet*)keyPathsForValuesAffectingCanIgnoreWhitespace  { return [NSSet setWithObject:@"regularExpression"]; }
 + (NSSet*)keyPathsForValuesAffectingIgnoreWhitespace     { return [NSSet setWithObject:@"regularExpression"]; }
@@ -1400,3 +1402,4 @@ static NSButton* OakCreateHistoryButton (NSString* toolTip)
 	return res;
 }
 @end
+#pragma clang diagnostic pop

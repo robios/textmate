@@ -16,13 +16,14 @@ namespace plist
 	struct any_t
 	{
 		using variant_type = std::variant<
+			std::monostate,
 			bool, int32_t, uint64_t, std::string, std::vector<char>, oak::date_t,
 			array_t, dictionary_t
 		>;
 
 		variant_type data;
 
-		any_t () : data(false) { }
+		any_t () : data(std::monostate{}) { }
 		any_t (bool v) : data(v) { }
 		any_t (int32_t v) : data(v) { }
 		any_t (uint64_t v) : data(v) { }
@@ -48,7 +49,7 @@ namespace plist
 		any_t& operator= (array_t v)             { data = std::move(v); return *this; }
 		any_t& operator= (dictionary_t v)        { data = std::move(v); return *this; }
 
-		bool empty () const { return std::holds_alternative<bool>(data) && !std::get<bool>(data); }
+		bool empty () const { return std::holds_alternative<std::monostate>(data); }
 
 		bool operator== (any_t const& rhs) const { return data == rhs.data; }
 		bool operator!= (any_t const& rhs) const { return data != rhs.data; }

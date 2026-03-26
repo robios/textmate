@@ -254,7 +254,7 @@ static NSButton* OakCreateImageToggleButton (NSImage* image, NSString* accessibi
 			grammars.emplace(item->name(), item);
 	}
 
-	for(auto pair : grammars)
+	for(auto const& pair : grammars)
 	{
 		if(!pair.second->hidden_from_user())
 		{
@@ -489,13 +489,15 @@ static NSButton* OakCreateImageToggleButton (NSImage* image, NSString* accessibi
 {
 	_lspErrorFlash = YES;
 	[_lspErrorFlashTimer invalidate];
+	__weak typeof(self) weakSelf = self;
 	_lspErrorFlashTimer = [NSTimer scheduledTimerWithTimeInterval:3.0 repeats:NO block:^(NSTimer* timer){
-		self->_lspErrorFlash = NO;
-		self->_lspErrorFlashTimer = nil;
-		// Trigger a status bar refresh to restore normal state
+		__strong typeof(weakSelf) strongSelf = weakSelf;
+		if(!strongSelf)
+			return;
+		strongSelf->_lspErrorFlash = NO;
+		strongSelf->_lspErrorFlashTimer = nil;
 		[NSNotificationCenter.defaultCenter postNotificationName:@"LSPServerStatusDidChange" object:nil];
 	}];
-	// Re-render with flash state
 	[NSNotificationCenter.defaultCenter postNotificationName:@"LSPServerStatusDidChange" object:nil];
 }
 
@@ -542,5 +544,7 @@ static NSButton* OakCreateImageToggleButton (NSImage* image, NSString* accessibi
 {
 	[NSNotificationCenter.defaultCenter removeObserver:self];
 	self.recordingTimer = nil;
+	[_lspErrorFlashTimer invalidate];
+	_lspErrorFlashTimer = nil;
 }
 @end

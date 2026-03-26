@@ -183,6 +183,7 @@ void test_single_line_comment ()
 
 struct actual_type_t
 {
+	char const* operator() (std::monostate) const                  { return "std::monostate";      }
 	char const* operator() (bool flag) const                       { return "bool";                }
 	char const* operator() (int32_t i) const                       { return "int32_t";             }
 	char const* operator() (uint64_t i) const                      { return "uint64_t";            }

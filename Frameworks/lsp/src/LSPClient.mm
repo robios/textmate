@@ -135,6 +135,7 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 	int _nextRequestId;
 	NSString* _serverName;
 	BOOL _initialized;
+	int _initializeRequestId;
 	BOOL _indexing;
 	BOOL _documentFormattingProvider;
 	BOOL _documentRangeFormattingProvider;
@@ -232,9 +233,6 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 		_task.standardError      = _stderrPipe;
 		_task.currentDirectoryURL = [NSURL fileURLWithPath:workingDirectory];
 		_task.environment = env;
-
-		// SIGPIPE kills the process before @try/@catch can handle broken pipe writes
-		signal(SIGPIPE, SIG_IGN);
 
 		__weak LSPClient* weakSelf = self;
 		_task.terminationHandler = ^(NSTask* task){
@@ -838,7 +836,7 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 				}];
 			}
 		}
-		else if(!_initialized && msg.contains("result"))
+		else if(!_initialized && reqId == _initializeRequestId && msg.contains("result"))
 		{
 			_initialized = YES;
 
@@ -1071,6 +1069,7 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 			}}
 		}}
 	};
+	_initializeRequestId = _nextRequestId;
 	[self sendRequest:@"initialize" params:params];
 }
 
@@ -1307,7 +1306,7 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 		else if(strcmp([obj objCType], @encode(double)) == 0 || strcmp([obj objCType], @encode(float)) == 0)
 			return json([obj doubleValue]);
 		else
-			return json([obj intValue]);
+			return json([obj longLongValue]);
 	}
 	else if([obj isKindOfClass:[NSNull class]])
 		return json(nullptr);
@@ -2210,6 +2209,25 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 	_fileWatcher = nil;
 }
 
+- (void)dealloc
+{
+	// Safety net: clean up resources if -shutdown was never called or the
+	// server outlived its owner.  The readability handler retains a block
+	// that captures a weak self, but NSFileHandle keeps dispatching until
+	// the handler is explicitly nilled — which also prevents the pipe's
+	// file descriptor from being closed.
+	_stderrPipe.fileHandleForReading.readabilityHandler = nil;
+
+	if(_task.isRunning)
+		[_task terminate];
+
+	[_debounceTimer invalidate];
+	if(_fsEventsObserver)
+		[FSEventsManager.sharedInstance removeObserver:_fsEventsObserver];
+
+	[_responseCallbacks removeAllObjects];
+}
+
 - (void)shutdown
 {
 	if(!_task.isRunning)
@@ -2222,11 +2240,16 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 	[self sendRequest:@"shutdown" params:json::object()];
 
 	// Give server 2s to respond, then send exit
+	__weak LSPClient* weakSelf = self;
 	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-		[self sendNotification:@"exit" params:json::object()];
+		LSPClient* strongSelf = weakSelf;
+		if(!strongSelf)
+			return;
+		[strongSelf sendNotification:@"exit" params:json::object()];
 		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-			if(self->_task.isRunning)
-				[self->_task terminate];
+			LSPClient* innerSelf = weakSelf;
+			if(innerSelf && innerSelf->_task.isRunning)
+				[innerSelf->_task terminate];
 		});
 	});
 }

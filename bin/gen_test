@@ -10,7 +10,7 @@ ARGV.each do |file|
     ns = p.basename.sub(/\.[^.]+$/, '')
     lineno, includes, body = 1, [ ], [ ]
 
-    p.each_line do |line|
+    p.each_line(encoding: "UTF-8") do |line|
       if line =~ /^\s*#(include|import)\b/
         includes << "#line #{lineno} \"#{p.realpath}\"\n"
         includes << line.sub(/"(.*?)"/) { '"' + File.expand_path($1, p.parent) + '"' }
