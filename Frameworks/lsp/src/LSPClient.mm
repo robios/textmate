@@ -223,11 +223,11 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 		__weak LSPClient* weakSelf = self;
 		NSString* logPrefix = self.logPrefix;
 		_task.terminationHandler = ^(NSTask* task){
-			NSLog(@"[%@] Server terminated with status %d", logPrefix, task.terminationStatus);
 			dispatch_async(dispatch_get_main_queue(), ^{
 				LSPClient* strongSelf = weakSelf;
 				if(!strongSelf)
 					return;
+				[strongSelf postLog:[NSString stringWithFormat:@"Server terminated with status %d", task.terminationStatus] source:task.terminationStatus == 0 ? @"event" : @"error"];
 				strongSelf->_initialized = NO;
 				strongSelf->_indexing = NO;
 				[strongSelf->_indexingProgressTokens removeAllObjects];
@@ -242,12 +242,12 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 		NSError* error = nil;
 		if(![_task launchAndReturnError:&error])
 		{
-			NSLog(@"[%@] Failed to launch server: %@", self.logPrefix, error.localizedDescription);
+			[self postLog:[NSString stringWithFormat:@"Failed to launch server: %@", error.localizedDescription] source:@"error"];
 			return nil;
 		}
 
 		_logPrefix = [NSString stringWithFormat:@"LSP:%@/%d", _serverName, _task.processIdentifier];
-		NSLog(@"[%@] Server launched: %@ %@", _logPrefix, command, [arguments componentsJoinedByString:@" "]);
+		[self postLog:[NSString stringWithFormat:@"Server launched: %@ %@", command, [arguments componentsJoinedByString:@" "]] source:@"event"];
 
 		[self startReadLoop];
 		[self startStderrLoop];
@@ -327,8 +327,20 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 - (void)startReadLoop
 {
 	NSFileHandle* handle = _stdoutPipe.fileHandleForReading;
-	NSString* prefix = _logPrefix;
+	NSString* logPrefix = _logPrefix;
 	__weak LSPClient* weakSelf = self;
+
+	// Helper: post to log panel if client is alive, else fall back to NSLog
+	void (^logOrFallback)(NSString*, NSString*) = ^(NSString* message, NSString* source){
+		dispatch_async(dispatch_get_main_queue(), ^{
+			LSPClient* strongSelf = weakSelf;
+			if(strongSelf)
+				[strongSelf postLog:message source:source];
+			else
+				NSLog(@"[%@] %@", logPrefix, message);
+		});
+	};
+
 	dispatch_async(_readQueue, ^{
 		NSMutableData* buffer = [NSMutableData data];
 
@@ -354,7 +366,7 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 				NSData* chunk = [handle availableData];
 				if(chunk.length == 0)
 				{
-					NSLog(@"[%@] Server stdout closed", prefix);
+					logOrFallback(@"Server stdout closed", @"error");
 					return;
 				}
 				[buffer appendData:chunk];
@@ -362,7 +374,7 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 
 			if(contentLength < 0)
 			{
-				NSLog(@"[%@] Missing Content-Length header", prefix);
+				logOrFallback(@"Missing Content-Length header", @"error");
 				continue;
 			}
 
@@ -371,7 +383,7 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 				NSData* chunk = [handle availableData];
 				if(chunk.length == 0)
 				{
-					NSLog(@"[%@] Server stdout closed mid-message", prefix);
+					logOrFallback(@"Server stdout closed mid-message", @"error");
 					return;
 				}
 				[buffer appendData:chunk];
@@ -389,11 +401,11 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 					try {
 						[strongSelf handleMessage:msg];
 					} catch(std::exception const& e) {
-						NSLog(@"[%@] handleMessage exception: %s", prefix, e.what());
+						[strongSelf postLog:[NSString stringWithFormat:@"handleMessage exception: %s", e.what()] source:@"error"];
 					}
 				});
 			} catch(std::exception const& e) {
-				NSLog(@"[%@] JSON parse error: %s", prefix, e.what());
+				logOrFallback([NSString stringWithFormat:@"JSON parse error: %s", e.what()], @"error");
 			}
 		}
 	});
@@ -401,13 +413,20 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 
 - (void)startStderrLoop
 {
-	NSString* prefix = _logPrefix;
+	NSString* logPrefix = _logPrefix;
+	__weak LSPClient* weakSelf = self;
 	_stderrPipe.fileHandleForReading.readabilityHandler = ^(NSFileHandle* handle){
 		NSData* data = handle.availableData;
 		if(data.length > 0)
 		{
-			NSString* text = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-			NSLog(@"[%@][stderr] %@", prefix, text);
+			NSString* message = [NSString stringWithFormat:@"[stderr] %@", [[[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]];
+			dispatch_async(dispatch_get_main_queue(), ^{
+				LSPClient* strongSelf = weakSelf;
+				if(strongSelf)
+					[strongSelf postLog:message source:@"error"];
+				else
+					NSLog(@"[%@] %@", logPrefix, message);
+			});
 		}
 	};
 }
@@ -443,7 +462,7 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 			@"message": [NSString stringWithUTF8String:message.c_str()]
 		}];
 	} catch(std::exception const& e) {
-		NSLog(@"[%@] Failed to parse showMessage: %s", self.logPrefix, e.what());
+		[self postLog:[NSString stringWithFormat:@"Failed to parse showMessage: %s", e.what()] source:@"error"];
 	}
 }
 
@@ -460,7 +479,7 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 		NSLog(@"[%@] [Server] %@", self.logPrefix, nsMessage);
 		[[NSNotificationCenter defaultCenter] postNotificationName:LSPLogNotification object:self userInfo:@{@"message": nsMessage, @"type": @(type), @"source": @"server", @"server": _serverName ?: @"?"}];
 	} catch(std::exception const& e) {
-		NSLog(@"[%@] Failed to parse logMessage: %s", self.logPrefix, e.what());
+		[self postLog:[NSString stringWithFormat:@"Failed to parse logMessage: %s", e.what()] source:@"error"];
 	}
 }
 
@@ -495,7 +514,7 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 
 		[[NSNotificationCenter defaultCenter] postNotificationName:LSPProgressNotification object:self userInfo:info];
 	} catch(std::exception const& e) {
-		NSLog(@"[%@] Failed to parse progress: %s", self.logPrefix, e.what());
+		[self postLog:[NSString stringWithFormat:@"Failed to parse progress: %s", e.what()] source:@"error"];
 	}
 }
 
@@ -765,7 +784,7 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 	{
 		if(!msg["id"].is_number_integer())
 		{
-			NSLog(@"[%@] Ignoring response with non-integer id: %s", self.logPrefix, msg["id"].dump().c_str());
+			[self postLog:[NSString stringWithFormat:@"Ignoring response with non-integer id: %s", msg["id"].dump().c_str()] source:@"error"];
 			return;
 		}
 		int reqId = msg["id"].get<int>();
@@ -909,7 +928,7 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 	std::string uriStr = params["uri"].get<std::string>();
 	auto const& diagnostics = params["diagnostics"];
 
-	NSLog(@"[%@] Diagnostics for %s: %lu items", self.logPrefix, uriStr.c_str(), (unsigned long)diagnostics.size());
+	[self postLog:[NSString stringWithFormat:@"Diagnostics for %s: %lu items", uriStr.c_str(), (unsigned long)diagnostics.size()] source:@"event"];
 
 	NSMutableArray<NSDictionary*>* results = [NSMutableArray arrayWithCapacity:diagnostics.size()];
 
@@ -1028,10 +1047,10 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 	{
 		if(retryCount >= 5)
 		{
-			NSLog(@"[%@] Server failed to initialize after %d retries, giving up on didOpen", self.logPrefix, retryCount);
+			[self postLog:[NSString stringWithFormat:@"Server failed to initialize after %d retries, giving up on didOpen", retryCount] source:@"error"];
 			return;
 		}
-		NSLog(@"[%@] Not yet initialized, deferring didOpen (attempt %d)", self.logPrefix, retryCount + 1);
+		[self postLog:[NSString stringWithFormat:@"Not yet initialized, deferring didOpen (attempt %d)", retryCount + 1] source:@"event"];
 		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
 			[self openDocument:document languageId:languageId retryCount:retryCount + 1];
 		});
@@ -1823,7 +1842,7 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 		}
 
 		std::string regId = reg["id"].is_string() ? reg["id"].get<std::string>() : std::to_string(reg["id"].get<int>());
-		NSLog(@"[%@] Registering file watcher: %s", self.logPrefix, regId.c_str());
+		[self postLog:[NSString stringWithFormat:@"Registering file watcher: %s", regId.c_str()] source:@"event"];
 
 		if(!_fileWatchRegistrations)
 			_fileWatchRegistrations = [NSMutableDictionary new];
@@ -1876,7 +1895,7 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 									}
 									else
 									{
-										NSLog(@"[%@] File watch: baseUri '%s' is outside working directory, skipping", self.logPrefix, baseUri.c_str());
+										[self postLog:[NSString stringWithFormat:@"File watch: baseUri '%s' is outside working directory, skipping", baseUri.c_str()] source:@"event"];
 										continue;
 									}
 								}
@@ -1885,7 +1904,7 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 					}
 					else
 					{
-						NSLog(@"[%@] File watch: unrecognized globPattern format, skipping", self.logPrefix);
+						[self postLog:@"File watch: unrecognized globPattern format, skipping" source:@"event"];
 						continue;
 					}
 				}
@@ -1897,9 +1916,9 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 
 				_fileWatchRegistrations[registration.registrationId] = registration;
 
-				NSLog(@"[%@] File watch registered: id=%@ extensions=%@ exactNames=%@ kind=%d basePath=%@ watchAll=%d", self.logPrefix,
+				[self postLog:[NSString stringWithFormat:@"File watch registered: id=%@ extensions=%@ exactNames=%@ kind=%d basePath=%@ watchAll=%d",
 					registration.registrationId, registration.extensions, registration.exactNames,
-					registration.watchKind, registration.basePath ?: _workingDirectory, registration.watchAll);
+					registration.watchKind, registration.basePath ?: _workingDirectory, registration.watchAll] source:@"event"];
 			}
 		}
 
@@ -1934,7 +1953,7 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 
 		std::string regId = unreg["id"].is_string() ? unreg["id"].get<std::string>() : std::to_string(unreg["id"].get<int>());
 		NSString* regIdPrefix = [NSString stringWithFormat:@"%s:", regId.c_str()];
-		NSLog(@"[%@] Unregistering file watcher: %s", self.logPrefix, regId.c_str());
+		[self postLog:[NSString stringWithFormat:@"Unregistering file watcher: %s", regId.c_str()] source:@"event"];
 
 		// Remove all per-watcher entries for this registration (keyed as "regId:0", "regId:1", etc.)
 		NSArray<NSString*>* regKeys = _fileWatchRegistrations.allKeys;
@@ -2166,7 +2185,7 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 	[self teardownFileWatcher];
 	[_fileWatchRegistrations removeAllObjects];
 
-	NSLog(@"[%@] Shutting down server", self.logPrefix);
+	[self postLog:@"Shutting down server" source:@"event"];
 	[self sendRequest:@"shutdown" params:json::object()];
 
 	// Give server 2s to respond, then send exit
