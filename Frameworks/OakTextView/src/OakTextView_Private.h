@@ -343,7 +343,9 @@ private:
 	size_t _renameCaret;
 	text::pos_t _renamePos;
 
-	// = LSP Code Actions (S2: completion handler replaces boolean flag) =
+	// Nilable one-shot flag: set before applyWorkspaceEdit so handleApplyEditRequest
+	// can auto-ACK the server's mirrored workspace/applyEdit request. Block (not BOOL)
+	// to allow future post-edit logic (e.g. scroll to change, toast).
 	void (^_codeActionEditCompletion)(void);
 
 	// = LSP Workspace Edit (S3: instance-scoped, replaces static local) =
@@ -426,10 +428,10 @@ private:
 - (OakTooltipContent*)createTooltipContentFromHover:(NSDictionary*)hover;
 - (NSAttributedString*)parseMarkdownToAttributedString:(NSString*)markdown;
 - (NSAttributedString*)parseMarkdownDocumentation:(NSString*)text;
-- (void)showLSPHoverTooltipWithContent:(NSDictionary*)hover atIndex:(ng::index_t)index __attribute__((deprecated("Use showLSPHoverTooltip:atRect: instead")));
 @end
 
 @interface OakTextView (LSP)
+- (IBAction)lspCodeActions:(id)sender;
 - (OakThemeEnvironment*)lspTheme;
 - (NSDictionary*)bestDefinitionLocation:(NSArray<NSDictionary*>*)locations currentURI:(NSString*)currentUri;
 @end

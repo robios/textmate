@@ -62,22 +62,44 @@ static NSDictionary<NSString*, NSArray<NSDictionary*>*>* editsFromWorkspaceEdit 
 	settings_t const settings = settings_for_path(filePath, fileType, directory);
 	std::string excludePattern = settings.get(kSettingsLSPDefinitionExcludePatternKey, "");
 
+	NSRegularExpression* regex = nil;
+	if(!excludePattern.empty())
+	{
+		NSString* pattern = to_ns(excludePattern);
+		regex = [NSRegularExpression regularExpressionWithPattern:pattern options:0 error:nil];
+		if(!regex)
+			[self showToolTip:[NSString stringWithFormat:@"Invalid lspDefinitionExcludePattern: %@", pattern]];
+	}
+
 	NSDictionary* best = locations.firstObject;
 
-	if(excludePattern.empty())
-		return best;
-
-	NSString* pattern = to_ns(excludePattern);
-
-	for(NSDictionary* l in locations)
+	for(NSUInteger i = 1; i < locations.count; i++)
 	{
+		NSDictionary* l = locations[i];
 		NSString* uri = l[@"uri"];
+		NSString* bestUri = best[@"uri"];
 
-		BOOL bestExcluded = [best[@"uri"] rangeOfString:pattern options:NSRegularExpressionSearch].location != NSNotFound;
-		BOOL curExcluded = [uri rangeOfString:pattern options:NSRegularExpressionSearch].location != NSNotFound;
+		BOOL bestIsCurrent = currentUri && [bestUri isEqualToString:currentUri];
+		BOOL curIsCurrent = currentUri && [uri isEqualToString:currentUri];
 
-		if(bestExcluded && !curExcluded)
+		// Prefer location in the current file
+		if(!bestIsCurrent && curIsCurrent)
+		{
 			best = l;
+			continue;
+		}
+		if(bestIsCurrent && !curIsCurrent)
+			continue;
+
+		// Among equally-ranked locations, prefer non-excluded over excluded
+		if(regex)
+		{
+			BOOL bestExcluded = [regex firstMatchInString:bestUri options:0 range:NSMakeRange(0, bestUri.length)] != nil;
+			BOOL curExcluded = [regex firstMatchInString:uri options:0 range:NSMakeRange(0, uri.length)] != nil;
+
+			if(bestExcluded && !curExcluded)
+				best = l;
+		}
 	}
 
 	return best;
@@ -116,7 +138,8 @@ static NSDictionary<NSString*, NSArray<NSDictionary*>*>* editsFromWorkspaceEdit 
 				return;
 			}
 
-			NSDictionary* loc = [strongSelf bestDefinitionLocation:locations currentURI:nil];
+			NSString* currentUri = strongSelf.document.path ? [NSURL fileURLWithPath:strongSelf.document.path].absoluteString : nil;
+			NSDictionary* loc = [strongSelf bestDefinitionLocation:locations currentURI:currentUri];
 
 			NSString* uri = loc[@"uri"];
 			NSUInteger line = [loc[@"line"] unsignedIntegerValue];
@@ -216,7 +239,7 @@ static NSDictionary<NSString*, NSArray<NSDictionary*>*>* editsFromWorkspaceEdit 
 				if(!lines)
 				{
 					NSString* fileContent = [NSString stringWithContentsOfFile:filePath encoding:NSUTF8StringEncoding error:nil];
-					// R2: Use componentsSeparatedByString:@"\n" — TextMate normalizes to \n internally
+					fileContent = [fileContent stringByReplacingOccurrencesOfString:@"\r" withString:@""];
 					lines = fileContent ? [fileContent componentsSeparatedByString:@"\n"] : @[];
 					fileLines[filePath] = lines;
 				}
@@ -436,6 +459,7 @@ static NSDictionary<NSString*, NSArray<NSDictionary*>*>* editsFromWorkspaceEdit 
 		if(!lines)
 		{
 			NSString* fileContent = [NSString stringWithContentsOfFile:filePath encoding:NSUTF8StringEncoding error:nil];
+			fileContent = [fileContent stringByReplacingOccurrencesOfString:@"\r" withString:@""];
 			lines = fileContent ? [fileContent componentsSeparatedByString:@"\n"] : @[];
 			fileLines[filePath] = lines;
 		}

@@ -74,5 +74,4 @@ enum OTVFontSmoothing : NSUInteger
 - (void)performBundleItem:(bundles::item_ptr)anItem;
 - (void)updateEnvironment:(std::map<std::string, std::string>&)res;
 
-- (IBAction)lspCodeActions:(id)sender;
 @end

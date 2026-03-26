@@ -85,6 +85,23 @@
 						strongSelf->_lspHoverCache = [NSMutableDictionary new];
 					if(cacheKey.length > 0)
 					{
+						if(strongSelf->_lspHoverCache.count >= 50)
+						{
+							// Evict oldest entry
+							NSString* oldestKey = nil;
+							NSDate* oldestDate = [NSDate date];
+							for(NSString* key in strongSelf->_lspHoverCache)
+							{
+								NSDate* date = strongSelf->_lspHoverCache[key][@"_cachedAt"];
+								if(date && [date compare:oldestDate] == NSOrderedAscending)
+								{
+									oldestDate = date;
+									oldestKey = key;
+								}
+							}
+							if(oldestKey)
+								[strongSelf->_lspHoverCache removeObjectForKey:oldestKey];
+						}
 						strongSelf->_lspHoverCache[cacheKey] = @{
 							@"content": content ?: [NSNull null],
 							@"_cachedAt": [NSDate date]
@@ -256,16 +273,6 @@
 	[_lspHoverTooltip showIn:self at:viewRect content:content];
 }
 
-- (void)showLSPHoverTooltipWithContent:(NSDictionary*)hover atIndex:(ng::index_t)index
-{
-	OakTooltipContent* content = [self createTooltipContentFromHover:hover];
-
-	ng::range_t wordRange = ng::extend(*documentView, index, kSelectionExtendToWord).last();
-	CGRect wordRect = documentView->rect_for_range(wordRange.min().index, wordRange.max().index);
-	NSRect viewRect = NSRectFromCGRect(wordRect);
-
-	[self showLSPHoverTooltip:content atRect:viewRect];
-}
 
 - (NSMutableAttributedString*)syntaxHighlight:(NSString*)code withGrammar:(NSString*)grammarScope
 {

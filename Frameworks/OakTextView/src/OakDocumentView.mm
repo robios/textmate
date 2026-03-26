@@ -1,4 +1,5 @@
 #import "OakDocumentView.h"
+#import "OakTextView_Private.h"
 #import "GutterView.h"
 #import "OakSwiftUI-Swift.h"
 #import <lsp/LSPClient.h>

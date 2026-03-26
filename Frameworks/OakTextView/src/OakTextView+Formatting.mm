@@ -3,6 +3,106 @@
 #import <lsp/LSPManager.h>
 #import <Preferences/FormatterRegistry.h>
 #import <Preferences/Keys.h>
+#import <io/environment.h>
+
+static NSString* runCustomFormatter (std::string const& command, NSString* inputText, std::map<std::string, std::string> const& variables, NSString** outError)
+{
+	NSTask* task = [[NSTask alloc] init];
+	task.launchPath = @"/bin/sh";
+	task.arguments = @[@"-c", [NSString stringWithCxxString:command]];
+
+	NSMutableDictionary* env = [NSMutableDictionary dictionaryWithDictionary:[[NSProcessInfo processInfo] environment]];
+
+	auto const& tmEnv = oak::basic_environment();
+	auto pathIt = tmEnv.find("PATH");
+	if(pathIt != tmEnv.end())
+		env[@"PATH"] = [NSString stringWithCxxString:pathIt->second];
+
+	for(auto const& [key, value] : variables)
+		env[[NSString stringWithCxxString:key]] = [NSString stringWithCxxString:value];
+
+	task.environment = env;
+
+	auto it = variables.find("TM_PROJECT_DIRECTORY");
+	if(it == variables.end())
+		it = variables.find("TM_DIRECTORY");
+	if(it != variables.end())
+		task.currentDirectoryURL = [NSURL fileURLWithPath:[NSString stringWithCxxString:it->second]];
+
+	NSPipe* stdinPipe  = [NSPipe pipe];
+	NSPipe* stdoutPipe = [NSPipe pipe];
+	NSPipe* stderrPipe = [NSPipe pipe];
+
+	task.standardInput  = stdinPipe;
+	task.standardOutput = stdoutPipe;
+	task.standardError  = stderrPipe;
+
+	@try {
+		[task launch];
+	}
+	@catch(NSException* e) {
+		if(outError)
+			*outError = [NSString stringWithFormat:@"Failed to launch formatter: %@", e.reason];
+		return nil;
+	}
+
+	__block NSData* outputData = nil;
+	__block NSData* errorData = nil;
+
+	dispatch_group_t group = dispatch_group_create();
+	dispatch_queue_t bgQueue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
+
+	dispatch_group_async(group, bgQueue, ^{
+		NSData* inputData = [inputText dataUsingEncoding:NSUTF8StringEncoding];
+		[stdinPipe.fileHandleForWriting writeData:inputData];
+		[stdinPipe.fileHandleForWriting closeFile];
+	});
+
+	dispatch_group_async(group, bgQueue, ^{
+		outputData = [stdoutPipe.fileHandleForReading readDataToEndOfFile];
+	});
+
+	dispatch_group_async(group, bgQueue, ^{
+		errorData = [stderrPipe.fileHandleForReading readDataToEndOfFile];
+	});
+
+	NSDate* deadline = [NSDate dateWithTimeIntervalSinceNow:3.0];
+	while(task.isRunning && [deadline timeIntervalSinceNow] > 0)
+		CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.05, true);
+
+	if(task.isRunning)
+	{
+		[task terminate];
+		[task waitUntilExit];
+		dispatch_group_wait(group, dispatch_time(DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC));
+		if(outError)
+			*outError = @"Formatter timed out";
+		return nil;
+	}
+
+	dispatch_group_wait(group, DISPATCH_TIME_FOREVER);
+
+	if(task.terminationStatus != 0)
+	{
+		if(outError)
+		{
+			NSString* errStr = [[NSString alloc] initWithData:errorData encoding:NSUTF8StringEncoding];
+			*outError = [errStr componentsSeparatedByString:@"\n"].firstObject ?: @"Formatter failed";
+		}
+		return nil;
+	}
+
+	NSString* output = [[NSString alloc] initWithData:outputData encoding:NSUTF8StringEncoding];
+
+	if(!output || output.length == 0)
+	{
+		if(outError)
+			*outError = @"Formatter returned empty output";
+		return nil;
+	}
+
+	return output;
+}
 
 @implementation OakTextView (Formatting)
 
