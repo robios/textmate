@@ -357,17 +357,28 @@ BOOL HasDocumentWindow (NSArray* windows)
 				{ @"Reformat Text",                        @selector(reformatText:)                     },
 				{ @"Reformat Text and Justify",            @selector(reformatTextAndJustify:)           },
 				{ @"Unwrap Paragraph",                     @selector(unwrapText:)                       },
+				{ @"Format Code / Selection",              @selector(lspFormatDocument:) },
 				{ /* -------- */ },
 				{ @"Filter Through Command…",              @selector(orderFrontRunCommandWindow:), @"|" },
 				{ /* -------- */ },
-				{ @"Go to Definition",                     @selector(lspGoToDefinition:),           @"d", .modifierFlags = NSEventModifierFlagCommand|NSEventModifierFlagOption },
-				{ @"Show Hover Info",                      @selector(lspShowHoverInfo:) },
-				{ @"Find References",                      @selector(lspFindReferences:),           @"r", .modifierFlags = NSEventModifierFlagCommand|NSEventModifierFlagControl },
-				{ @"Rename Symbol",                        @selector(lspRename:),                   @"r", .modifierFlags = NSEventModifierFlagCommand|NSEventModifierFlagShift },
-				{ @"Code Actions",                         @selector(lspCodeActions:),              @".", .modifierFlags = NSEventModifierFlagCommand },
-				{ /* -------- */ },
-				{ @"Format Code / Selection",              @selector(lspFormatDocument:) },
-				{ @"Complete",                              @selector(lspComplete:),                 .modifierFlags = NSEventModifierFlagOption, .key = NSTabCharacter },
+				{ @"LSP",
+					.submenu = {
+						{ @"Go to Definition",                     @selector(lspGoToDefinition:),           @"d", .modifierFlags = NSEventModifierFlagCommand|NSEventModifierFlagOption },
+						{ @"Show Hover Info",                      @selector(lspShowHoverInfo:) },
+						{ @"Find References",                      @selector(lspFindReferences:),           @"r", .modifierFlags = NSEventModifierFlagCommand|NSEventModifierFlagControl },
+						{ @"Rename Symbol",                        @selector(lspRename:),                   @"r", .modifierFlags = NSEventModifierFlagCommand|NSEventModifierFlagShift },
+						{ @"Code Actions",                         @selector(lspCodeActions:),              @".", .modifierFlags = NSEventModifierFlagCommand },
+						{ @"Complete",                              @selector(lspComplete:),                 .modifierFlags = NSEventModifierFlagOption, .key = NSTabCharacter },
+						{ /* -------- */ },
+						{ @"Restart Server",                       @selector(lspRestartServer:) },
+						{ @"Re-index Workspace",                   @selector(lspReindexWorkspace:) },
+						{ /* -------- */ },
+						{ @"Next Diagnostic",                      @selector(lspNextDiagnostic:) },
+						{ @"Previous Diagnostic",                  @selector(lspPrevDiagnostic:) },
+						{ /* -------- */ },
+						{ @"Debug Panel",                          @selector(toggleLogPanel), .target = [LSPBridge class] },
+					}
+				},
 				{ /* -------- */ },
 				{ @"Copilot Complete",                      @selector(lspCopilotComplete:),          .modifierFlags = NSEventModifierFlagOption, .key = 0x1B },
 			}
@@ -618,10 +629,6 @@ BOOL HasDocumentWindow (NSArray* windows)
 	[OakCommitWindowServer sharedInstance]; // Setup server
 
 	[LSPBridge setup];
-	NSMenu* viewMenu = [[[NSApp mainMenu] itemWithTitle:@"View"] submenu];
-	[viewMenu addItem:[NSMenuItem separatorItem]];
-	NSMenuItem* debugItem = [viewMenu addItemWithTitle:@"LSP Debug Panel" action:@selector(toggleLogPanel) keyEquivalent:@""];
-	[debugItem setTarget:[LSPBridge class]];
 
 	self.didFinishLaunching = YES;
 }
