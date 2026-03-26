@@ -5742,10 +5742,13 @@ static NSDictionary<NSString*, NSArray<NSDictionary*>*>* editsFromWorkspaceEdit 
 	OakDocument* doc = self.document;
 	LSPManager* lsp = [LSPManager sharedManager];
 
+	// Errors are now surfaced via LSPShowMessageNotification toast
+	void(^commandErrorHandler)(id) = ^(id result){ };
+
 	// Bare Command object (no edit, command is a plain string)
 	if([action[@"_isCommand"] boolValue])
 	{
-		[lsp executeCommand:action[@"command"] arguments:action[@"arguments"] forDocument:doc completion:nil];
+		[lsp executeCommand:action[@"command"] arguments:action[@"arguments"] forDocument:doc completion:commandErrorHandler];
 		return;
 	}
 
@@ -5757,7 +5760,7 @@ static NSDictionary<NSString*, NSArray<NSDictionary*>*>* editsFromWorkspaceEdit 
 		if(action[@"command"] && [action[@"command"] isKindOfClass:[NSDictionary class]])
 		{
 			NSDictionary* cmd = action[@"command"];
-			[lsp executeCommand:cmd[@"command"] arguments:cmd[@"arguments"] forDocument:doc completion:nil];
+			[lsp executeCommand:cmd[@"command"] arguments:cmd[@"arguments"] forDocument:doc completion:commandErrorHandler];
 		}
 		return;
 	}
@@ -5771,6 +5774,8 @@ static NSDictionary<NSString*, NSArray<NSDictionary*>*>* editsFromWorkspaceEdit 
 				OakTextView* strongSelf = weakSelf;
 				if(!strongSelf)
 					return;
+				if(!resolved)
+				return;
 				if(resolved[@"edit"])
 				{
 					strongSelf->_didApplyCodeActionEdit = YES;
@@ -5779,7 +5784,7 @@ static NSDictionary<NSString*, NSArray<NSDictionary*>*>* editsFromWorkspaceEdit 
 				if(resolved[@"command"] && [resolved[@"command"] isKindOfClass:[NSDictionary class]])
 				{
 					NSDictionary* cmd = resolved[@"command"];
-					[lsp executeCommand:cmd[@"command"] arguments:cmd[@"arguments"] forDocument:doc completion:nil];
+					[lsp executeCommand:cmd[@"command"] arguments:cmd[@"arguments"] forDocument:doc completion:commandErrorHandler];
 				}
 			});
 		}];
@@ -5788,7 +5793,7 @@ static NSDictionary<NSString*, NSArray<NSDictionary*>*>* editsFromWorkspaceEdit 
 	{
 		// No edit, no resolve — just execute the command directly
 		NSDictionary* cmd = action[@"command"];
-		[lsp executeCommand:cmd[@"command"] arguments:cmd[@"arguments"] forDocument:doc completion:nil];
+		[lsp executeCommand:cmd[@"command"] arguments:cmd[@"arguments"] forDocument:doc completion:commandErrorHandler];
 	}
 }
 

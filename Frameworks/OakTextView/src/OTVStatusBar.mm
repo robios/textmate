@@ -64,6 +64,8 @@ static NSButton* OakCreateImageToggleButton (NSImage* image, NSString* accessibi
 @property (nonatomic) NSArray<NSLayoutConstraint*>* lspVisibleConstraints;
 @property (nonatomic) NSArray<NSLayoutConstraint*>* lspHiddenConstraints;
 @property (nonatomic) BOOL lspVisible;
+@property (nonatomic) BOOL lspErrorFlash;
+@property (nonatomic) NSTimer* lspErrorFlashTimer;
 @end
 
 @implementation OTVStatusBar
@@ -465,9 +467,36 @@ static NSButton* OakCreateImageToggleButton (NSImage* image, NSString* accessibi
 		[attrTitle appendAttributedString:[[NSAttributedString alloc] initWithString:[NSString stringWithFormat:@"%lu", (unsigned long)info] attributes:countAttrs]];
 	}
 
+	if(_lspErrorFlash)
+	{
+		attrTitle = [NSMutableAttributedString new];
+		[attrTitle appendAttributedString:[[NSAttributedString alloc] initWithString:@"◉ " attributes:@{
+			NSFontAttributeName: font,
+			NSForegroundColorAttributeName: [NSColor systemRedColor],
+		}]];
+		[attrTitle appendAttributedString:[[NSAttributedString alloc] initWithString:@"error" attributes:@{
+			NSFontAttributeName: font,
+			NSForegroundColorAttributeName: NSColor.secondaryLabelColor,
+		}]];
+	}
+
 	NSMenuItem* displayItem = [[NSMenuItem alloc] initWithTitle:@"" action:NULL keyEquivalent:@""];
 	displayItem.attributedTitle = attrTitle;
 	[[self.lspPopUp cell] setMenuItem:displayItem];
+}
+
+- (void)flashLspError
+{
+	_lspErrorFlash = YES;
+	[_lspErrorFlashTimer invalidate];
+	_lspErrorFlashTimer = [NSTimer scheduledTimerWithTimeInterval:3.0 repeats:NO block:^(NSTimer* timer){
+		self->_lspErrorFlash = NO;
+		self->_lspErrorFlashTimer = nil;
+		// Trigger a status bar refresh to restore normal state
+		[NSNotificationCenter.defaultCenter postNotificationName:@"LSPServerStatusDidChange" object:nil];
+	}];
+	// Re-render with flash state
+	[NSNotificationCenter.defaultCenter postNotificationName:@"LSPServerStatusDidChange" object:nil];
 }
 
 - (void)updateCopilotDisplayItem:(NSInteger)status

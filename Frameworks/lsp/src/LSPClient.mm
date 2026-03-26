@@ -201,33 +201,55 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 		_stdoutPipe = [NSPipe pipe];
 		_stderrPipe = [NSPipe pipe];
 
-		_task = [[NSTask alloc] init];
-		_task.executableURL      = [NSURL fileURLWithPath:command];
-		_task.arguments          = arguments ?: @[];
-		_task.standardInput      = _stdinPipe;
-		_task.standardOutput     = _stdoutPipe;
-		_task.standardError      = _stderrPipe;
-		_task.currentDirectoryURL = [NSURL fileURLWithPath:workingDirectory];
-
-		// Use TextMate's environment which includes package manager paths
+		// Build environment first — we need PATH for executable resolution
 		NSMutableDictionary* env = [NSProcessInfo.processInfo.environment mutableCopy];
 		auto const& tmEnv = oak::basic_environment();
 		auto it = tmEnv.find("PATH");
 		if(it != tmEnv.end())
 			env[@"PATH"] = to_ns(it->second);
+
+		// Resolve bare command names via PATH
+		NSString* resolvedCommand = command;
+		if(![command hasPrefix:@"/"])
+		{
+			NSString* path = env[@"PATH"] ?: @"/usr/bin:/bin:/usr/sbin:/sbin";
+			for(NSString* dir in [path componentsSeparatedByString:@":"])
+			{
+				NSString* candidate = [dir stringByAppendingPathComponent:command];
+				if([[NSFileManager defaultManager] isExecutableFileAtPath:candidate])
+				{
+					resolvedCommand = candidate;
+					break;
+				}
+			}
+		}
+
+		_task = [[NSTask alloc] init];
+		_task.executableURL      = [NSURL fileURLWithPath:resolvedCommand];
+		_task.arguments          = arguments ?: @[];
+		_task.standardInput      = _stdinPipe;
+		_task.standardOutput     = _stdoutPipe;
+		_task.standardError      = _stderrPipe;
+		_task.currentDirectoryURL = [NSURL fileURLWithPath:workingDirectory];
 		_task.environment = env;
 
 		// SIGPIPE kills the process before @try/@catch can handle broken pipe writes
 		signal(SIGPIPE, SIG_IGN);
 
 		__weak LSPClient* weakSelf = self;
-		NSString* logPrefix = self.logPrefix;
 		_task.terminationHandler = ^(NSTask* task){
 			dispatch_async(dispatch_get_main_queue(), ^{
 				LSPClient* strongSelf = weakSelf;
 				if(!strongSelf)
 					return;
 				[strongSelf postLog:[NSString stringWithFormat:@"Server terminated with status %d", task.terminationStatus] source:task.terminationStatus == 0 ? @"event" : @"error"];
+				if(task.terminationStatus != 0)
+				{
+					[[NSNotificationCenter defaultCenter] postNotificationName:LSPShowMessageNotification object:strongSelf userInfo:@{
+						@"type": @1,
+						@"message": [NSString stringWithFormat:@"LSP server crashed (exit %d)", task.terminationStatus]
+					}];
+				}
 				strongSelf->_initialized = NO;
 				strongSelf->_indexing = NO;
 				[strongSelf->_indexingProgressTokens removeAllObjects];
@@ -804,6 +826,13 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 				[_responseCallbacks removeObjectForKey:key];
 				callback(nil);
 			}
+
+			// Surface error to user via toast
+			std::string errMsg = err.value("message", std::string("unknown error"));
+			[[NSNotificationCenter defaultCenter] postNotificationName:LSPShowMessageNotification object:self userInfo:@{
+				@"type": @1,
+				@"message": @(errMsg.c_str())
+			}];
 		}
 		else if(!_initialized && msg.contains("result"))
 		{

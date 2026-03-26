@@ -41,12 +41,24 @@ struct LogView: View {
 			HStack(spacing: 12) {
 				TextField("Filter…", text: $searchText)
 					.textFieldStyle(RoundedBorderTextFieldStyle())
+					.overlay(alignment: .trailing) {
+						if !searchText.isEmpty {
+							Button {
+								searchText = ""
+							} label: {
+								Image(systemName: "xmark.circle.fill")
+									.foregroundStyle(.secondary)
+							}
+							.buttonStyle(.plain)
+							.padding(.trailing, 4)
+						}
+					}
 
 				Toggle("Auto-scroll", isOn: $autoScroll)
 					.toggleStyle(.switch)
 					.controlSize(.small)
 
-				Button("Clear") {
+				Button("Clear log") {
 					model.clear()
 					selection.removeAll()
 				}

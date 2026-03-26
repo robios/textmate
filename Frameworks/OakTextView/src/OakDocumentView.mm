@@ -1,6 +1,7 @@
 #import "OakDocumentView.h"
 #import "GutterView.h"
 #import "OakSwiftUI-Swift.h"
+#import <lsp/LSPClient.h>
 #import <lsp/LSPManager.h>
 #import <lsp/CopilotManager.h>
 #import "OTVStatusBar.h"
@@ -108,6 +109,7 @@ static NSString* const kFoldingsColumnIdentifier  = @"foldings";
 
 		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(lspDiagnosticsDidChange:) name:LSPDiagnosticsDidChangeNotification object:nil];
 		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(lspServerStatusDidChange:) name:LSPServerStatusDidChangeNotification object:nil];
+		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(lspShowMessage:) name:LSPShowMessageNotification object:nil];
 		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(copilotStatusDidChange:) name:CopilotStatusDidChangeNotification object:nil];
 	}
 	return self;
@@ -946,6 +948,13 @@ static NSString* const kFoldingsColumnIdentifier  = @"foldings";
 - (void)lspServerStatusDidChange:(NSNotification*)notification
 {
 	[self updateLSPStatusBar];
+}
+
+- (void)lspShowMessage:(NSNotification*)notification
+{
+	NSNumber* type = notification.userInfo[@"type"];
+	if(type && type.intValue == 1 && _statusBar)
+		[_statusBar flashLspError];
 }
 
 - (void)copilotStatusDidChange:(NSNotification*)notification
