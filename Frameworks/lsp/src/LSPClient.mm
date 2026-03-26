@@ -816,8 +816,9 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 		if(msg.contains("error"))
 		{
 			auto const& err = msg["error"];
+			int errCode = err.value("code", 0);
 			[self postLog:[NSString stringWithFormat:@"%@ (id=%d) error %d: %s",
-				method ?: @"?", reqId, err.value("code", 0), err.value("message", std::string("unknown")).c_str()] source:@"error"];
+				method ?: @"?", reqId, errCode, err.value("message", std::string("unknown")).c_str()] source:@"error"];
 
 			NSNumber* key = @(reqId);
 			void(^callback)(id) = _responseCallbacks[key];
@@ -827,12 +828,15 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 				callback(nil);
 			}
 
-			// Surface error to user via toast
-			std::string errMsg = err.value("message", std::string("unknown error"));
-			[[NSNotificationCenter defaultCenter] postNotificationName:LSPShowMessageNotification object:self userInfo:@{
-				@"type": @1,
-				@"message": @(errMsg.c_str())
-			}];
+			// RequestCancelled (-32800) and ContentModified (-32801) are expected, don't toast
+			if(errCode != -32800 && errCode != -32801)
+			{
+				std::string errMsg = err.value("message", std::string("unknown error"));
+				[[NSNotificationCenter defaultCenter] postNotificationName:LSPShowMessageNotification object:self userInfo:@{
+					@"type": @1,
+					@"message": @(errMsg.c_str())
+				}];
+			}
 		}
 		else if(!_initialized && msg.contains("result"))
 		{

@@ -566,6 +566,7 @@ private:
 	size_t _ghostTextCaret;
 	int _ghostTextRequestId;
 	NSTimer* _ghostTextTimer;
+	CGFloat _ghostTextExtraHeight;
 
 	// =================
 	// = Accessibility =
@@ -583,6 +584,7 @@ private:
 - (void)scheduleCopilotGhostText;
 - (void)clearGhostText;
 - (BOOL)hasGhostText;
+- (CGFloat)ghostTextExtraHeight;
 - (void)acceptGhostText;
 - (NSImage*)imageForRanges:(ng::ranges_t const&)ranges imageRect:(NSRect*)outRect;
 @property (nonatomic, readonly) ng::ranges_t markedRanges;
@@ -690,7 +692,8 @@ struct refresh_helper_t
 				auto damagedRects = documentView->end_refresh_cycle(merge(documentView->ranges(), [_self markedRanges]), [_self visibleRect], [_self liveSearchRanges]);
 
 				NSRect r = [[_self enclosingScrollView] documentVisibleRect];
-				NSSize newSize = NSMakeSize(std::max(NSWidth(r), documentView->width()), std::max(NSHeight(r), documentView->height()));
+				CGFloat extraH = [_self hasGhostText] ? [_self ghostTextExtraHeight] : 0;
+				NSSize newSize = NSMakeSize(std::max(NSWidth(r), documentView->width()), std::max(NSHeight(r), documentView->height() + extraH));
 				if(!NSEqualSizes([_self frame].size, newSize))
 					[_self setFrameSize:newSize];
 
@@ -1385,12 +1388,42 @@ doScroll:
 		return NULL;
 	};
 
-	documentView->draw(ng::context_t(context, _showInvisibles ? documentView->invisibles_map : NULL_STR, [spellingDotImage CGImageForProposedRect:NULL context:[NSGraphicsContext currentContext] hints:nil], foldingDotsFactory), aRect, [self isFlipped], merge(documentView->ranges(), [self markedRanges]), _liveSearchRanges);
+	auto ngContext = ng::context_t(context, _showInvisibles ? documentView->invisibles_map : NULL_STR, [spellingDotImage CGImageForProposedRect:NULL context:[NSGraphicsContext currentContext] hints:nil], foldingDotsFactory);
+	auto selection = merge(documentView->ranges(), [self markedRanges]);
 
-	// Draw Copilot ghost text
-	if(_ghostText && _ghostTextCaret <= documentView->size())
+	BOOL hasMultiLineGhost = _ghostText && _ghostTextCaret <= documentView->size() && _ghostTextExtraHeight > 0;
+
+	if(hasMultiLineGhost)
 	{
+		CGRect caretRect = documentView->rect_at_index(ng::index_t(_ghostTextCaret));
+		CGFloat splitY = CGRectGetMaxY(caretRect);
+
+		// Pass 1: draw everything above and including the cursor line
+		CGContextSaveGState(context);
+		CGContextClipToRect(context, CGRectMake(NSMinX(aRect), NSMinY(aRect), NSWidth(aRect), splitY - NSMinY(aRect)));
+		documentView->draw(ngContext, aRect, [self isFlipped], selection, _liveSearchRanges);
+		CGContextRestoreGState(context);
+
+		// Draw ghost text in the gap
 		[self drawGhostText:context inRect:aRect];
+
+		// Pass 2: draw everything below cursor line, shifted down
+		CGContextSaveGState(context);
+		CGFloat bottomStart = splitY + _ghostTextExtraHeight;
+		CGRect bottomClip = CGRectMake(NSMinX(aRect), bottomStart, NSWidth(aRect), NSMaxY(aRect) - bottomStart);
+		CGContextClipToRect(context, bottomClip);
+		CGContextTranslateCTM(context, 0, _ghostTextExtraHeight);
+		// Adjust the dirty rect upward to match the pre-shift coordinate space
+		NSRect shiftedRect = NSOffsetRect(aRect, 0, -_ghostTextExtraHeight);
+		documentView->draw(ngContext, shiftedRect, [self isFlipped], selection, _liveSearchRanges);
+		CGContextRestoreGState(context);
+	}
+	else
+	{
+		documentView->draw(ngContext, aRect, [self isFlipped], selection, _liveSearchRanges);
+
+		if(_ghostText && _ghostTextCaret <= documentView->size())
+			[self drawGhostText:context inRect:aRect];
 	}
 
 	// Draw definition highlight underline when Cmd-hovering
@@ -3304,12 +3337,18 @@ static NSTouchBarItemIdentifier kOTVTouchBarItemIdentifierAddRemoveBookmark  = @
 
 - (void)insertTab:(id)sender
 {
-	// Ghost text always wins when visible (user sees the suggestion and expects Tab to accept it)
-	if([self hasGhostText])
+	// Priority: snippet navigation > tab triggers > ghost text > indent
+	if([self hasGhostText] && !documentView->disallow_tab_expansion())
 	{
-		[self acceptGhostText];
-		return;
+		auto const& items = items_for_tab_expansion(documentView, documentView->ranges(), to_s([self scopeAttributes]), nullptr);
+		if(items.empty())
+		{
+			[self acceptGhostText];
+			return;
+		}
 	}
+
+	[self clearGhostText];
 
 	AUTO_REFRESH;
 	if(![self expandTabTrigger:sender])
@@ -6248,9 +6287,12 @@ static std::multimap<std::pair<size_t, size_t>, std::string> replacementsFromTex
 		// Compute the suffix: strip the prefix that's already typed (before cursor)
 		NSString* label = fullText;
 		NSUInteger rangeStartChar = [range[@"start"][@"character"] unsignedIntegerValue];
-		NSUInteger prefixLen = cursorChar - rangeStartChar;
-		if(prefixLen > 0 && prefixLen < fullText.length)
-			label = [fullText substringFromIndex:prefixLen];
+		if(cursorChar > rangeStartChar)
+		{
+			NSUInteger prefixLen = cursorChar - rangeStartChar;
+			if(prefixLen < fullText.length)
+				label = [fullText substringFromIndex:prefixLen];
+		}
 
 		NSString* firstLine = [label componentsSeparatedByString:@"\n"].firstObject;
 		NSArray* fullLines = [fullText componentsSeparatedByString:@"\n"];
@@ -6293,17 +6335,16 @@ static std::multimap<std::pair<size_t, size_t>, std::string> replacementsFromTex
 	CGFloat fontSize = font.pointSize * (documentView ? documentView->font_scale_factor() : 1.0);
 	NSFont* scaledFont = [NSFont fontWithDescriptor:font.fontDescriptor size:fontSize];
 
-	// Ghost text color: theme foreground at 40% opacity
 	NSColor* ghostColor;
 	if(self.theme)
 	{
 		auto styles = self.theme->styles_for_scope("comment");
 		CGColorRef fg = styles.foreground();
 		if(fg)
-			ghostColor = [[NSColor colorWithCGColor:fg] colorWithAlphaComponent:0.6];
+			ghostColor = [[NSColor colorWithCGColor:fg] colorWithAlphaComponent:0.4];
 	}
 	if(!ghostColor)
-		ghostColor = [NSColor.secondaryLabelColor colorWithAlphaComponent:0.5];
+		ghostColor = [NSColor.secondaryLabelColor colorWithAlphaComponent:0.4];
 
 	NSDictionary* attrs = @{
 		NSFontAttributeName: scaledFont,
@@ -6317,6 +6358,12 @@ static std::multimap<std::pair<size_t, size_t>, std::string> replacementsFromTex
 	CGFloat y = CGRectGetMinY(caretRect);
 	CGFloat lineHeight = CGRectGetHeight(caretRect);
 
+	// Precompute BOL position for subsequent line alignment
+	text::pos_t caretPos = documentView->convert(_ghostTextCaret);
+	size_t bol = documentView->begin(caretPos.line);
+	CGRect bolRect = documentView->rect_at_index(ng::index_t(bol));
+	CGFloat bolX = CGRectGetMinX(bolRect);
+
 	for(NSUInteger i = 0; i < lines.count; i++)
 	{
 		NSString* line = lines[i];
@@ -6326,24 +6373,14 @@ static std::multimap<std::pair<size_t, size_t>, std::string> replacementsFromTex
 			continue;
 		}
 
-		CGFloat drawX = (i == 0) ? x : CGRectGetMinX(caretRect);
-		// Only draw if the line intersects the dirty rect
+		CGFloat drawX = (i == 0) ? x : bolX;
+
 		if(y + lineHeight >= NSMinY(aRect) && y <= NSMaxY(aRect))
 		{
-			// For subsequent lines, align to column 0 + indentation of current line
-			if(i > 0)
-			{
-				text::pos_t caretPos = documentView->convert(_ghostTextCaret);
-				size_t bol = documentView->begin(caretPos.line);
-				CGRect bolRect = documentView->rect_at_index(ng::index_t(bol));
-				drawX = CGRectGetMinX(bolRect);
-			}
-
 			NSAttributedString* attrStr = [[NSAttributedString alloc] initWithString:line attributes:attrs];
 			CTLineRef ctLine = CTLineCreateWithAttributedString((__bridge CFAttributedStringRef)attrStr);
 
 			CGContextSaveGState(ctx);
-			// Flipped coordinates: translate and flip for CTLineDraw
 			CGContextSetTextMatrix(ctx, CGAffineTransformMakeScale(1.0, -1.0));
 			CGFloat baseline = y + scaledFont.ascender;
 			CGContextSetTextPosition(ctx, drawX, baseline);
@@ -6362,6 +6399,13 @@ static std::multimap<std::pair<size_t, size_t>, std::string> replacementsFromTex
 	[self clearGhostText];
 
 	if(!documentView)
+		return;
+
+	// Don't auto-trigger during snippet navigation
+	if(documentView->disallow_tab_expansion())
+		return;
+
+	if(documentView->ranges().size() > 1)
 		return;
 
 	CopilotManager* copilot = CopilotManager.sharedManager;
@@ -6407,6 +6451,8 @@ static std::multimap<std::pair<size_t, size_t>, std::string> replacementsFromTex
 		if(!strongSelf || !strongSelf->documentView)
 			return;
 
+		strongSelf->_ghostTextRequestId = 0;
+
 		size_t currentCaret = strongSelf->documentView->ranges().last().last.index;
 		if(currentCaret != requestCaret)
 			return;
@@ -6437,20 +6483,48 @@ static std::multimap<std::pair<size_t, size_t>, std::string> replacementsFromTex
 	if(!insertText.length)
 		return;
 
+	// Only show ghost text when cursor is at or near end of line
+	size_t caret = documentView->ranges().last().last.index;
+	text::pos_t caretPos = documentView->convert(caret);
+	size_t eol = documentView->eol(caretPos.line);
+	std::string lineAfterCursor = documentView->substr(caret, eol);
+	if(!lineAfterCursor.empty() && lineAfterCursor.find_first_not_of(" \t)}]>;,") != std::string::npos)
+		return;
+
 	NSDictionary* range = item[@"range"];
 	if(range)
 	{
 		size_t caret = documentView->ranges().last().last.index;
 		text::pos_t caretPos = documentView->convert(caret);
 		NSUInteger rangeStartChar = [range[@"start"][@"character"] unsignedIntegerValue];
-		NSUInteger prefixLen = caretPos.column - rangeStartChar;
-		if(prefixLen > 0 && prefixLen < insertText.length)
-			insertText = [insertText substringFromIndex:prefixLen];
+		if(caretPos.column > rangeStartChar)
+		{
+			NSUInteger prefixLen = caretPos.column - rangeStartChar;
+			if(prefixLen < insertText.length)
+				insertText = [insertText substringFromIndex:prefixLen];
+		}
 	}
 
 	_ghostText = insertText;
 	_ghostTextItem = item;
 	_ghostTextCaret = documentView->ranges().last().last.index;
+
+	// Calculate extra height for multi-line ghost text
+	NSUInteger lineCount = [[insertText componentsSeparatedByString:@"\n"] count];
+	if(lineCount > 1)
+	{
+		CGRect caretRect = documentView->rect_at_index(ng::index_t(_ghostTextCaret));
+		_ghostTextExtraHeight = (lineCount - 1) * CGRectGetHeight(caretRect);
+
+		// Expand frame to accommodate pushed-down content
+		NSRect r = [[self enclosingScrollView] documentVisibleRect];
+		NSSize newSize = NSMakeSize(std::max(NSWidth(r), documentView->width()), std::max(NSHeight(r), documentView->height() + _ghostTextExtraHeight));
+		[self setFrameSize:newSize];
+	}
+	else
+	{
+		_ghostTextExtraHeight = 0;
+	}
 
 	[[CopilotManager sharedManager] sendDidShowCompletion:item];
 
@@ -6462,12 +6536,22 @@ static std::multimap<std::pair<size_t, size_t>, std::string> replacementsFromTex
 	if(!_ghostText)
 		return;
 
+	BOOL hadExtraHeight = _ghostTextExtraHeight > 0;
+
 	_ghostText = nil;
 	_ghostTextItem = nil;
 	_ghostTextCaret = 0;
+	_ghostTextExtraHeight = 0;
 	[_ghostTextTimer invalidate];
 	_ghostTextTimer = nil;
 	_ghostTextRequestId = 0;
+
+	if(hadExtraHeight && documentView)
+	{
+		NSRect r = [[self enclosingScrollView] documentVisibleRect];
+		NSSize newSize = NSMakeSize(std::max(NSWidth(r), documentView->width()), std::max(NSHeight(r), documentView->height()));
+		[self setFrameSize:newSize];
+	}
 
 	[self setNeedsDisplay:YES];
 }
@@ -6475,6 +6559,11 @@ static std::multimap<std::pair<size_t, size_t>, std::string> replacementsFromTex
 - (BOOL)hasGhostText
 {
 	return _ghostText != nil;
+}
+
+- (CGFloat)ghostTextExtraHeight
+{
+	return _ghostTextExtraHeight;
 }
 
 - (void)acceptGhostText
@@ -6507,9 +6596,20 @@ static std::multimap<std::pair<size_t, size_t>, std::string> replacementsFromTex
 
 	[[CopilotManager sharedManager] sendAcceptanceTelemetry:item];
 
+	BOOL hadExtraHeight = _ghostTextExtraHeight > 0;
+
 	_ghostText = nil;
 	_ghostTextItem = nil;
 	_ghostTextCaret = 0;
+	_ghostTextExtraHeight = 0;
+	_ghostTextRequestId = 0;
+
+	if(hadExtraHeight)
+	{
+		NSRect r = [[self enclosingScrollView] documentVisibleRect];
+		NSSize newSize = NSMakeSize(std::max(NSWidth(r), documentView->width()), std::max(NSHeight(r), documentView->height()));
+		[self setFrameSize:newSize];
+	}
 }
 
 - (void)showLSPCompletionPopupWithSuggestions:(NSArray<NSDictionary*>*)suggestions prefixLength:(NSUInteger)prefixLen autoInsertSingle:(BOOL)autoInsertSingle
