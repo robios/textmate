@@ -268,6 +268,15 @@ static std::string detectWorkspaceRoot (std::string const& filePath)
 	if([_openDocuments containsObject:docId])
 		return;
 
+	NSString* langId = languageIdForScope(document.fileType);
+	if([langId isEqualToString:@"plaintext"] && document.path)
+		langId = languageIdForExtension(document.path.pathExtension);
+
+	// Don't connect plaintext files — prevents unscoped lspCommand
+	// from launching a server for every file type
+	if([langId isEqualToString:@"plaintext"])
+		return;
+
 	LSPClient* client = [self clientForDocument:document];
 	if(!client)
 		return;
@@ -276,9 +285,6 @@ static std::string detectWorkspaceRoot (std::string const& filePath)
 	_documentClients[docId]  = client;
 	_documentVersions[docId] = @1;
 
-	NSString* langId = languageIdForScope(document.fileType);
-	if([langId isEqualToString:@"plaintext"] && document.path)
-		langId = languageIdForExtension(document.path.pathExtension);
 	[client openDocument:document languageId:langId];
 }
 
@@ -880,12 +886,12 @@ static std::string detectWorkspaceRoot (std::string const& filePath)
 
 #pragma mark - LSPClientDelegate
 
-- (void)lspClient:(LSPClient*)client didReceiveApplyEditRequest:(NSDictionary*)workspaceEdit requestId:(int)requestId
+- (void)lspClient:(LSPClient*)client didReceiveApplyEditRequest:(NSDictionary*)workspaceEdit requestId:(id)requestId
 {
 	dispatch_async(dispatch_get_main_queue(), ^{
 		NSDictionary* userInfo = @{
 			@"workspaceEdit": workspaceEdit,
-			@"requestId": @(requestId),
+			@"requestId": requestId ?: [NSNull null],
 			@"client": client
 		};
 		[NSNotificationCenter.defaultCenter postNotificationName:@"LSPApplyEditRequest" object:self userInfo:userInfo];

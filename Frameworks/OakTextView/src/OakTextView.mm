@@ -5236,9 +5236,9 @@ static NSDictionary<NSString*, NSArray<NSDictionary*>*>* editsFromWorkspaceEdit 
 			{
 				NSDictionary* start = result[@"start"];
 				NSDictionary* end = result[@"end"];
+				size_t startIdx = lspPositionToOffset(*strongSelf->documentView, [start[@"line"] integerValue], [start[@"character"] integerValue]);
+				size_t endIdx = lspPositionToOffset(*strongSelf->documentView, [end[@"line"] integerValue], [end[@"character"] integerValue]);
 				std::string const freshBuf = strongSelf->documentView->substr();
-				size_t startIdx = strongSelf->documentView->convert(text::pos_t([start[@"line"] integerValue], [start[@"character"] integerValue]));
-				size_t endIdx = strongSelf->documentView->convert(text::pos_t([end[@"line"] integerValue], [end[@"character"] integerValue]));
 				if(startIdx < endIdx && endIdx <= freshBuf.size())
 					placeholder = to_ns(freshBuf.substr(startIdx, endIdx - startIdx));
 			}
@@ -5249,9 +5249,9 @@ static NSDictionary<NSString*, NSArray<NSDictionary*>*>* editsFromWorkspaceEdit 
 				NSDictionary* end = range[@"end"];
 				if(start && end)
 				{
+					size_t startIdx = lspPositionToOffset(*strongSelf->documentView, [start[@"line"] integerValue], [start[@"character"] integerValue]);
+					size_t endIdx = lspPositionToOffset(*strongSelf->documentView, [end[@"line"] integerValue], [end[@"character"] integerValue]);
 					std::string const freshBuf = strongSelf->documentView->substr();
-					size_t startIdx = strongSelf->documentView->convert(text::pos_t([start[@"line"] integerValue], [start[@"character"] integerValue]));
-					size_t endIdx = strongSelf->documentView->convert(text::pos_t([end[@"line"] integerValue], [end[@"character"] integerValue]));
 					if(startIdx < endIdx && endIdx <= freshBuf.size())
 						placeholder = to_ns(freshBuf.substr(startIdx, endIdx - startIdx));
 				}
@@ -5521,8 +5521,15 @@ static NSDictionary<NSString*, NSArray<NSDictionary*>*>* editsFromWorkspaceEdit 
 				NSUInteger endLine = [end[@"line"] unsignedIntegerValue];
 				NSUInteger endChar = [end[@"character"] unsignedIntegerValue];
 
-				if(startLine >= mutableLines.count || endLine >= mutableLines.count)
+				if(startLine >= mutableLines.count)
 					continue;
+
+				// LSP positions past end-of-document mean "end of document"
+				if(endLine >= mutableLines.count)
+				{
+					endLine = mutableLines.count - 1;
+					endChar = mutableLines[endLine].length;
+				}
 
 				NSString* prefix = [mutableLines[startLine] substringToIndex:MIN(startChar, mutableLines[startLine].length)];
 				NSString* suffix = [mutableLines[endLine] substringFromIndex:MIN(endChar, mutableLines[endLine].length)];
@@ -5544,12 +5551,15 @@ static NSDictionary<NSString*, NSArray<NSDictionary*>*>* editsFromWorkspaceEdit 
 
 - (void)handleApplyEditRequest:(NSNotification*)notification
 {
-	int requestId = [notification.userInfo[@"requestId"] intValue];
+	id requestId = notification.userInfo[@"requestId"];
 	LSPClient* client = notification.userInfo[@"client"];
 
+	if(!client || !requestId || requestId == [NSNull null])
+		return;
+
 	// Deduplicate: only the first observer to see this requestId handles it
-	static int lastHandledRequestId = -1;
-	if(requestId == lastHandledRequestId)
+	static id lastHandledRequestId = nil;
+	if(lastHandledRequestId && [requestId isEqual:lastHandledRequestId])
 		return;
 
 	// Guard against double-apply: if performCodeAction already applied an edit
@@ -5895,6 +5905,19 @@ static NSString* runCustomFormatter (std::string const& command, NSString* input
 // = LSP Formatting =
 // ==================
 
+// LSP positions past end-of-document mean "end of document".
+// buffer.convert() clamps line to lines()-1 then column to eol,
+// which maps e.g. {lastLine+1, 0} to start-of-last-line instead
+// of buffer.size(). We must handle out-of-range lines ourselves.
+static size_t lspPositionToOffset (ng::buffer_api_t const& buffer, NSInteger line, NSInteger character)
+{
+	if(line < 0)
+		return 0;
+	if(line >= (NSInteger)buffer.lines())
+		return buffer.size();
+	return std::min(buffer.convert(text::pos_t(line, std::max<NSInteger>(0, character))), buffer.size());
+}
+
 static std::multimap<std::pair<size_t, size_t>, std::string> replacementsFromTextEdits (ng::buffer_api_t const& buffer, NSArray<NSDictionary*>* edits)
 {
 	std::multimap<std::pair<size_t, size_t>, std::string> replacements;
@@ -5907,10 +5930,8 @@ static std::multimap<std::pair<size_t, size_t>, std::string> replacementsFromTex
 		if(!start || !end || !newText)
 			continue;
 
-		size_t from = buffer.convert(text::pos_t([start[@"line"] integerValue], [start[@"character"] integerValue]));
-		size_t to   = buffer.convert(text::pos_t([end[@"line"] integerValue], [end[@"character"] integerValue]));
-		from = std::min(from, buffer.size());
-		to   = std::min(to, buffer.size());
+		size_t from = lspPositionToOffset(buffer, [start[@"line"] integerValue], [start[@"character"] integerValue]);
+		size_t to   = lspPositionToOffset(buffer, [end[@"line"] integerValue], [end[@"character"] integerValue]);
 		if(from > to) std::swap(from, to);
 
 		replacements.emplace(std::make_pair(from, to), to_s(newText));

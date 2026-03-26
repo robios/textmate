@@ -9,7 +9,7 @@
 - (void)lspClient:(LSPClient*)client didReceiveDiagnostics:(NSArray<NSDictionary*>*)diagnostics forDocumentURI:(NSString*)uri;
 @optional
 - (void)lspClientDidTerminate:(LSPClient*)client;
-- (void)lspClient:(LSPClient*)client didReceiveApplyEditRequest:(NSDictionary*)workspaceEdit requestId:(int)requestId;
+- (void)lspClient:(LSPClient*)client didReceiveApplyEditRequest:(NSDictionary*)workspaceEdit requestId:(id)requestId;
 - (void)lspClientDidInitialize:(LSPClient*)client;
 - (id)lspClient:(LSPClient*)client handleServerRequest:(NSString*)method params:(NSDictionary*)params;
 - (void)lspClient:(LSPClient*)client didReceiveNotification:(NSString*)method params:(NSDictionary*)params;
@@ -54,8 +54,8 @@ extern NSString* const LSPShowMessageRequestNotification;
 - (void)resolveCodeAction:(NSDictionary*)codeAction completion:(void(^)(NSDictionary*))callback;
 - (void)executeCommand:(NSString*)command arguments:(NSArray*)arguments completion:(void(^)(id))callback;
 - (void)cancelRequest:(int)requestId;
-- (void)respondToApplyEdit:(int)requestId applied:(BOOL)applied failureReason:(NSString*)reason;
-- (void)respondToShowMessageRequest:(int)requestId action:(NSDictionary*)action;
+- (void)respondToApplyEdit:(id)requestId applied:(BOOL)applied failureReason:(NSString*)reason;
+- (void)respondToShowMessageRequest:(id)requestId action:(NSDictionary*)action;
 
 // Generic JSON-RPC methods for non-standard LSP extensions (e.g., Copilot)
 - (int)sendCustomRequest:(NSString*)method params:(NSDictionary*)params completion:(void(^)(id))callback;

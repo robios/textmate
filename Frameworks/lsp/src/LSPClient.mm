@@ -17,6 +17,25 @@ NSString* const LSPShowMessageRequestNotification = @"LSPShowMessageRequestNotif
 
 using json = nlohmann::json;
 
+// JSON-RPC id can be string, integer, or null
+static id jsonIdToObjC (json const& j)
+{
+	if(j.is_string())
+		return @(j.get<std::string>().c_str());
+	if(j.is_number_integer())
+		return @(j.get<int64_t>());
+	return nil;
+}
+
+static json objCIdToJson (id obj)
+{
+	if([obj isKindOfClass:NSNumber.class])
+		return [obj longLongValue];
+	if([obj isKindOfClass:NSString.class])
+		return [obj UTF8String];
+	return nullptr;
+}
+
 static NSString* fileFromURI (std::string const& uri)
 {
 	auto slash = uri.rfind('/');
@@ -365,8 +384,13 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 				json msg = json::parse((const char*)bodyData.bytes, (const char*)bodyData.bytes + bodyData.length);
 				dispatch_async(dispatch_get_main_queue(), ^{
 					LSPClient* strongSelf = weakSelf;
-					if(strongSelf)
+					if(!strongSelf)
+						return;
+					try {
 						[strongSelf handleMessage:msg];
+					} catch(std::exception const& e) {
+						NSLog(@"[%@] handleMessage exception: %s", prefix, e.what());
+					}
 				});
 			} catch(std::exception const& e) {
 				NSLog(@"[%@] JSON parse error: %s", prefix, e.what());
@@ -483,8 +507,9 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 
 		if(msg.contains("id"))
 		{
-			int requestId = msg["id"].get<int>();
-			[self postLog:[NSString stringWithFormat:@"%s (id=%d)", method.c_str(), requestId] source:@"event"];
+			json requestId = msg["id"];
+			id objcRequestId = jsonIdToObjC(requestId);
+			[self postLog:[NSString stringWithFormat:@"%s (id=%s)", method.c_str(), requestId.dump().c_str()] source:@"event"];
 
 			if(method == "workspace/applyEdit")
 			{
@@ -494,7 +519,7 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 
 				if(edit && [_delegate respondsToSelector:@selector(lspClient:didReceiveApplyEditRequest:requestId:)])
 				{
-					[_delegate lspClient:self didReceiveApplyEditRequest:edit requestId:requestId];
+					[_delegate lspClient:self didReceiveApplyEditRequest:edit requestId:objcRequestId];
 				}
 				else
 				{
@@ -553,7 +578,7 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 						@"message": to_ns(message),
 						@"actions": actions,
 						@"actionTitles": actionTitles,
-						@"requestId": @(requestId)
+						@"requestId": objcRequestId ?: [NSNull null]
 					}];
 			}
 			else if(method == "window/showDocument")
@@ -644,6 +669,11 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 		}
 		else if(method == "textDocument/publishDiagnostics")
 		{
+			if(!msg.contains("params") || !msg["params"].contains("uri") || !msg["params"].contains("diagnostics"))
+			{
+				[self postLog:@"publishDiagnostics missing params/uri/diagnostics" source:@"error"];
+				return;
+			}
 			auto const& diags = msg["params"]["diagnostics"];
 			NSString* file = fileFromURI(msg["params"]["uri"].get<std::string>());
 			[self postLog:[NSString stringWithFormat:@"publishDiagnostics  %@  %lu items", file, (unsigned long)diags.size()] source:@"event"];
@@ -733,6 +763,11 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 	}
 	else if(msg.contains("id"))
 	{
+		if(!msg["id"].is_number_integer())
+		{
+			NSLog(@"[%@] Ignoring response with non-integer id: %s", self.logPrefix, msg["id"].dump().c_str());
+			return;
+		}
 		int reqId = msg["id"].get<int>();
 		NSString* method = _requestMethods[@(reqId)];
 		[_requestMethods removeObjectForKey:@(reqId)];
@@ -741,7 +776,7 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 		{
 			auto const& err = msg["error"];
 			[self postLog:[NSString stringWithFormat:@"%@ (id=%d) error %d: %s",
-				method ?: @"?", reqId, err["code"].get<int>(), err["message"].get<std::string>().c_str()] source:@"error"];
+				method ?: @"?", reqId, err.value("code", 0), err.value("message", std::string("unknown")).c_str()] source:@"error"];
 
 			NSNumber* key = @(reqId);
 			void(^callback)(id) = _responseCallbacks[key];
@@ -880,10 +915,14 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 
 	for(auto const& diag : diagnostics)
 	{
-		int line     = diag["range"]["start"]["line"].get<int>();
-		int col      = diag["range"]["start"]["character"].get<int>();
-		int endLine  = diag["range"]["end"]["line"].get<int>();
-		int endCol   = diag["range"]["end"]["character"].get<int>();
+		if(!diag.contains("range") || !diag.contains("message"))
+			continue;
+
+		auto const& range = diag["range"];
+		int line     = range.value("/start/line"_json_pointer, 0);
+		int col      = range.value("/start/character"_json_pointer, 0);
+		int endLine  = range.value("/end/line"_json_pointer, 0);
+		int endCol   = range.value("/end/character"_json_pointer, 0);
 		int severity = diag.value("severity", 1);
 		std::string message = diag["message"].get<std::string>();
 
@@ -1120,7 +1159,7 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 	[self sendNotification:@"$/cancelRequest" params:params];
 }
 
-- (void)respondToApplyEdit:(int)requestId applied:(BOOL)applied failureReason:(NSString*)reason
+- (void)respondToApplyEdit:(id)requestId applied:(BOOL)applied failureReason:(NSString*)reason
 {
 	json result = {{"applied", (bool)applied}};
 	if(!applied && reason)
@@ -1128,16 +1167,16 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 
 	json response = {
 		{"jsonrpc", "2.0"},
-		{"id",      requestId},
+		{"id",      objCIdToJson(requestId)},
 		{"result",  result}
 	};
 	[self sendMessage:response];
 }
 
-- (void)respondToShowMessageRequest:(int)requestId action:(NSDictionary*)action
+- (void)respondToShowMessageRequest:(id)requestId action:(NSDictionary*)action
 {
 	json result = action ? [self convertToJSON:action] : json(nullptr);
-	json response = {{"jsonrpc", "2.0"}, {"id", requestId}, {"result", result}};
+	json response = {{"jsonrpc", "2.0"}, {"id", objCIdToJson(requestId)}, {"result", result}};
 	[self sendMessage:response];
 }
 

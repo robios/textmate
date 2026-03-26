@@ -73,15 +73,15 @@
 	NSNumber* type = note.userInfo[@"type"];
 	NSArray<NSDictionary*>* actions = note.userInfo[@"actions"];
 	NSArray<NSString*>* actionTitles = note.userInfo[@"actionTitles"];
-	NSNumber* requestId = note.userInfo[@"requestId"];
+	id requestId = note.userInfo[@"requestId"];
 	LSPClient* client = (LSPClient*)note.object;
 
-	if(!client || !requestId)
+	if(!client || !requestId || requestId == [NSNull null])
 		return;
 
 	if(!message || !actionTitles || actionTitles.count == 0)
 	{
-		[client respondToShowMessageRequest:requestId.intValue action:nil];
+		[client respondToShowMessageRequest:requestId action:nil];
 		return;
 	}
 
@@ -101,38 +101,15 @@
 					}
 				}
 			}
-			[client respondToShowMessageRequest:requestId.intValue action:selectedAction];
+			[client respondToShowMessageRequest:requestId action:selectedAction];
 		}];
 	});
 }
 
 - (void)handleProgress:(NSNotification*)note
 {
-	NSString* kind = note.userInfo[@"kind"];
-	NSString* title = [note.userInfo[@"title"] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-	NSString* message = [note.userInfo[@"message"] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-	NSNumber* percentage = note.userInfo[@"percentage"];
-
-	if([kind isEqualToString:@"end"])
-		return;
-
-	NSMutableString* display = [NSMutableString string];
-	if(title.length > 0) [display appendString:title];
-	if(message.length > 0) {
-		if(display.length > 0) [display appendString:@": "];
-		[display appendString:message];
-	}
-	if(percentage) {
-		if(display.length > 0) [display appendString:@" "];
-		[display appendFormat:@"(%d%%)", percentage.intValue];
-	}
-
-	if(display.length > 0)
-	{
-		dispatch_async(dispatch_get_main_queue(), ^{
-			[OakNotificationManager.shared showWithMessage:display type:3];
-		});
-	}
+	// Progress is logged via LSPLogNotification; toasting is too noisy
+	// for ephemeral operations like lint passes that complete instantly.
 }
 
 @end
