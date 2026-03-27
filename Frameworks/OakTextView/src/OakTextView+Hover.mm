@@ -8,6 +8,7 @@
 #import <text/utf16.h>
 #import <bundles/bundles.h>
 
+
 @implementation OakTextView (Hover)
 
 - (void)lspShowHoverInfo:(id)sender
@@ -24,6 +25,8 @@
 {
 	if(!documentView)
 		return;
+
+	[self dismissLSPHoverPanel];
 
 	OakDocument* doc = self.document;
 	if(!doc)
@@ -48,9 +51,10 @@
 				{
 					ng::range_t wordRange = ng::extend(*documentView, index, kSelectionExtendToWord).last();
 					CGRect wordRect = documentView->rect_for_range(wordRange.min().index, wordRange.max().index);
-					NSRect viewRect = NSRectFromCGRect(wordRect);
-
-					[self showLSPHoverTooltip:content atRect:viewRect];
+					[self showLSPHoverTooltip:content atRect:NSRectFromCGRect(wordRect)];
+					_lspHoverHighlightRange = wordRange;
+					[self setNeedsDisplayInRect:NSRectFromCGRect(wordRect)];
+					
 					return;
 				}
 			}
@@ -69,154 +73,69 @@
 		character:pos.column
 		completion:^(NSDictionary* hover) {
 			OakTextView* strongSelf = weakSelf;
-			if(!strongSelf || !hover)
+			if(!strongSelf || !strongSelf->documentView || !hover)
 				return;
 
 			strongSelf->_lspHoverRequestId = 0;
 
-			dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-				OakTooltipContent* content = [strongSelf createTooltipContentFromHover:hover];
+			NSString* grammarScope = to_ns(strongSelf->documentView->file_type());
+			OakTooltipContent* content = [strongSelf createTooltipContentFromHover:hover grammarScope:grammarScope];
 
-				dispatch_async(dispatch_get_main_queue(), ^{
-					if(!strongSelf || !strongSelf->documentView)
-						return;
-
-					if(!strongSelf->_lspHoverCache)
-						strongSelf->_lspHoverCache = [NSMutableDictionary new];
-					if(cacheKey.length > 0)
+			if(!strongSelf->_lspHoverCache)
+				strongSelf->_lspHoverCache = [NSMutableDictionary new];
+			if(cacheKey.length > 0)
+			{
+				if(strongSelf->_lspHoverCache.count >= 50)
+				{
+					NSString* oldestKey = nil;
+					NSDate* oldestDate = [NSDate date];
+					for(NSString* key in strongSelf->_lspHoverCache)
 					{
-						if(strongSelf->_lspHoverCache.count >= 50)
+						NSDate* date = strongSelf->_lspHoverCache[key][@"_cachedAt"];
+						if(date && [date compare:oldestDate] == NSOrderedAscending)
 						{
-							// Evict oldest entry
-							NSString* oldestKey = nil;
-							NSDate* oldestDate = [NSDate date];
-							for(NSString* key in strongSelf->_lspHoverCache)
-							{
-								NSDate* date = strongSelf->_lspHoverCache[key][@"_cachedAt"];
-								if(date && [date compare:oldestDate] == NSOrderedAscending)
-								{
-									oldestDate = date;
-									oldestKey = key;
-								}
-							}
-							if(oldestKey)
-								[strongSelf->_lspHoverCache removeObjectForKey:oldestKey];
+							oldestDate = date;
+							oldestKey = key;
 						}
-						strongSelf->_lspHoverCache[cacheKey] = @{
-							@"content": content ?: [NSNull null],
-							@"_cachedAt": [NSDate date]
-						};
 					}
+					if(oldestKey)
+						[strongSelf->_lspHoverCache removeObjectForKey:oldestKey];
+				}
+				strongSelf->_lspHoverCache[cacheKey] = @{
+					@"content": content ?: [NSNull null],
+					@"_cachedAt": [NSDate date]
+				};
+			}
 
-					if(content)
-					{
-						ng::range_t wordRange = ng::extend(*strongSelf->documentView, index, kSelectionExtendToWord).last();
-						CGRect wordRect = strongSelf->documentView->rect_for_range(wordRange.min().index, wordRange.max().index);
-						NSRect viewRect = NSRectFromCGRect(wordRect);
-						[strongSelf showLSPHoverTooltip:content atRect:viewRect];
-					}
-				});
-			});
+			if(content)
+			{
+				ng::range_t wordRange = ng::extend(*strongSelf->documentView, index, kSelectionExtendToWord).last();
+				CGRect wordRect = strongSelf->documentView->rect_for_range(wordRange.min().index, wordRange.max().index);
+				[strongSelf showLSPHoverTooltip:content atRect:NSRectFromCGRect(wordRect)];
+				strongSelf->_lspHoverHighlightRange = wordRange;
+				[strongSelf setNeedsDisplayInRect:NSRectFromCGRect(wordRect)];
+			}
 		}];
 }
 
-- (NSAttributedString*)parseMarkdownDocumentation:(NSString*)text
-{
-	NSArray* sections = [text componentsSeparatedByString:@"\n\n---\n\n"];
-	if(sections.count > 1)
-	{
-		NSMutableArray* unique = [NSMutableArray new];
-		NSMutableSet* seen = [NSMutableSet new];
-		for(NSString* section in sections)
-		{
-			NSString* trimmed = [section stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-			if(trimmed.length > 0 && ![seen containsObject:trimmed])
-			{
-				[seen addObject:trimmed];
-				[unique addObject:trimmed];
-			}
-		}
-		text = [unique componentsJoinedByString:@"\n\n---\n\n"];
-	}
-
-	NSMutableAttributedString* combined = [[NSMutableAttributedString alloc] init];
-	NSString* grammarScope = documentView ? to_ns(documentView->file_type()) : nil;
-
-	static NSRegularExpression* codeBlockRegex = [NSRegularExpression regularExpressionWithPattern:@"```(\\w+)?\\n([\\s\\S]*?)\\n```" options:0 error:nil];
-	NSArray* codeMatches = [codeBlockRegex matchesInString:text options:0 range:NSMakeRange(0, text.length)];
-
-	NSString* bodyText = text;
-	if(codeMatches.count > 0)
-	{
-		NSTextCheckingResult* firstMatch = codeMatches[0];
-		NSString* signature = [text substringWithRange:[firstMatch rangeAtIndex:2]];
-		signature = [signature stringByReplacingOccurrencesOfString:@"<?php\n" withString:@""];
-		signature = [signature stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-
-		if(signature.length > 0)
-			[combined appendAttributedString:[self syntaxHighlight:signature withGrammar:grammarScope]];
-
-		NSMutableString* remaining = [text mutableCopy];
-		for(NSTextCheckingResult* match in [codeMatches reverseObjectEnumerator])
-			[remaining replaceCharactersInRange:[match rangeAtIndex:0] withString:@""];
-		bodyText = [remaining stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-		bodyText = [bodyText stringByReplacingOccurrencesOfString:@"---" withString:@""];
-		bodyText = [bodyText stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-	}
-
-	if(bodyText.length > 0)
-	{
-		if(combined.length > 0)
-			[combined appendAttributedString:[[NSAttributedString alloc] initWithString:@"\n\n" attributes:@{}]];
-
-		if(codeMatches.count == 0)
-			[combined appendAttributedString:[self syntaxHighlight:bodyText withGrammar:grammarScope]];
-		else
-			[combined appendAttributedString:[self parseMarkdownToAttributedString:bodyText]];
-	}
-
-	return combined.length > 0 ? combined : nil;
-}
-
-- (OakTooltipContent*)createTooltipContentFromHover:(NSDictionary*)hover
+- (OakTooltipContent*)createTooltipContentFromHover:(NSDictionary*)hover grammarScope:(NSString*)grammarScope
 {
 	NSString* value = hover[@"value"];
 	if(!value.length)
 		return nil;
 
-	if(value.length > 420)
-		value = [[value substringToIndex:420] stringByAppendingString:@"\n... (truncated)"];
-
 	NSString* kind = hover[@"kind"];
 	NSString* language = hover[@"language"];
 	BOOL isMarkdown = [kind isEqualToString:@"markdown"];
 
-	NSAttributedString* title = nil;
-	NSAttributedString* body = [[NSAttributedString alloc] initWithString:@""];
+	NSMutableArray<OakTooltipSection*>* sections = [NSMutableArray new];
 
 	if(isMarkdown)
 	{
-		NSArray* sections = [value componentsSeparatedByString:@"\n\n---\n\n"];
-		if(sections.count > 1)
-		{
-			NSMutableArray* unique = [NSMutableArray new];
-			NSMutableSet* seen = [NSMutableSet new];
-			for(NSString* section in sections)
-			{
-				NSString* trimmed = [section stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-				if(trimmed.length > 0 && ![seen containsObject:trimmed])
-				{
-					[seen addObject:trimmed];
-					[unique addObject:trimmed];
-				}
-			}
-			value = [unique componentsJoinedByString:@"\n\n---\n\n"];
-		}
-
+		// Extract code blocks for "Signature" section
 		static NSRegularExpression* codeBlockRegex = [NSRegularExpression regularExpressionWithPattern:@"```(?:\\w+)?\\n([\\s\\S]*?)\\n```" options:0 error:nil];
 		NSArray* codeMatches = [codeBlockRegex matchesInString:value options:0 range:NSMakeRange(0, value.length)];
 
-		NSString* bodyText = value;
 		if(codeMatches.count > 0)
 		{
 			NSTextCheckingResult* firstMatch = codeMatches[0];
@@ -224,40 +143,66 @@
 			signature = [signature stringByReplacingOccurrencesOfString:@"<?php\n" withString:@""];
 			signature = [signature stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
 
-			NSString* grammarScope = documentView ? to_ns(documentView->file_type()) : nil;
-			title = [self syntaxHighlight:signature withGrammar:grammarScope];
-
-			NSMutableString* remaining = [value mutableCopy];
-			for(NSTextCheckingResult* match in [codeMatches reverseObjectEnumerator])
-				[remaining replaceCharactersInRange:[match rangeAtIndex:0] withString:@""];
-			bodyText = [remaining stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-			bodyText = [bodyText stringByReplacingOccurrencesOfString:@"---" withString:@""];
-			bodyText = [bodyText stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+			if(signature.length > 0)
+			{
+				NSAttributedString* highlighted = [self syntaxHighlight:signature withGrammar:grammarScope];
+				[sections addObject:[[OakTooltipSection alloc] initWithLabel:@"Signature" content:highlighted]];
+			}
 		}
 
+		// Remove code blocks to get remaining text
+		NSMutableString* remaining = [value mutableCopy];
+		for(NSTextCheckingResult* match in [codeMatches reverseObjectEnumerator])
+			[remaining replaceCharactersInRange:[match rangeAtIndex:0] withString:@""];
+		NSString* bodyText = [remaining stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+
 		if(bodyText.length > 0)
-			body = [self parseMarkdownToAttributedString:bodyText];
+		{
+			// Deduplicate --- separated chunks, then merge into one Documentation section
+			NSArray<NSString*>* chunks = [bodyText componentsSeparatedByString:@"\n---\n"];
+			NSMutableArray<NSString*>* uniqueChunks = [NSMutableArray new];
+			NSMutableSet<NSString*>* seen = [NSMutableSet new];
+
+			for(NSString* chunk in chunks)
+			{
+				NSString* trimmed = [chunk stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+				if(trimmed.length > 0 && ![seen containsObject:trimmed])
+				{
+					[seen addObject:trimmed];
+					[uniqueChunks addObject:trimmed];
+				}
+			}
+
+			NSString* merged = [uniqueChunks componentsJoinedByString:@"\n\n"];
+			if(merged.length > 0)
+			{
+				__weak OakTextView* weakParser = self;
+				[sections addObject:[[OakTooltipSection alloc] initWithLabel:@"Documentation" contentProvider:^NSAttributedString* {
+					return [weakParser parseMarkdownToAttributedString:merged] ?: [[NSAttributedString alloc] init];
+				}]];
+			}
+		}
 	}
 	else if(language)
 	{
-		NSString* grammarScope = documentView ? to_ns(documentView->file_type()) : nil;
-		title = [self syntaxHighlight:value withGrammar:grammarScope];
+		NSAttributedString* highlighted = [self syntaxHighlight:value withGrammar:grammarScope];
+		[sections addObject:[[OakTooltipSection alloc] initWithLabel:@"Signature" content:highlighted]];
 	}
 	else if(value.length > 0)
 	{
-		body = [[NSAttributedString alloc]
+		NSAttributedString* plainText = [[NSAttributedString alloc]
 			initWithString:value
 				attributes:@{NSFontAttributeName: [NSFont systemFontOfSize:11]}];
+		[sections addObject:[[OakTooltipSection alloc] initWithLabel:@"Info" content:plainText]];
 	}
 
-	return [[OakTooltipContent alloc]
-		initWithTitle:title
-				 body:body
-		  codeSnippet:nil
-			 language:language];
+	if(sections.count == 0)
+		return nil;
+
+	return [[OakTooltipContent alloc] initWithSections:sections];
 }
 
-- (void)showLSPHoverTooltip:(OakTooltipContent*)content atRect:(NSRect)viewRect
+- (void)showLSPHoverTooltip:(OakTooltipContent*)content atRect:(NSRect)rect
 {
 	if(!content)
 		return;
@@ -270,9 +215,28 @@
 		_lspHoverTooltip.delegate = (id<OakInfoTooltipDelegate>)self;
 	}
 
-	[_lspHoverTooltip showIn:self at:viewRect content:content];
+	[_lspHoverTooltip showIn:self at:rect content:content];
 }
 
+
+
+// MARK: - Dismiss
+
+- (void)dismissLSPHoverPanel
+{
+	[self cancelLSPHoverRequest];
+	if(_lspHoverTooltip.isVisible)
+	{
+		[_lspHoverTooltip dismiss];
+	}
+	if(!_lspHoverHighlightRange.empty() && documentView)
+	{
+		[self setNeedsDisplayInRect:NSRectFromCGRect(documentView->rect_for_range(_lspHoverHighlightRange.min().index, _lspHoverHighlightRange.max().index))];
+		_lspHoverHighlightRange = ng::range_t();
+	}
+}
+
+// MARK: - Syntax Highlighting
 
 - (NSMutableAttributedString*)syntaxHighlight:(NSString*)code withGrammar:(NSString*)grammarScope
 {
@@ -358,9 +322,11 @@
 {
 	NSFont* baseFont = [NSFont systemFontOfSize:11];
 	NSFont* boldFont = [NSFont boldSystemFontOfSize:11];
+	NSFont* headingFont = [NSFont boldSystemFontOfSize:12];
 	NSFont* monoFont = [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];
 	NSColor* textColor = [NSColor labelColor];
 	NSColor* dimColor = [NSColor secondaryLabelColor];
+	NSColor* linkColor = [NSColor linkColor];
 
 	NSMutableAttributedString* result = [[NSMutableAttributedString alloc] init];
 	NSDictionary* baseAttrs = @{NSFontAttributeName: baseFont, NSForegroundColorAttributeName: textColor};
@@ -379,6 +345,11 @@
 			continue;
 		}
 
+		// Skip --- horizontal rules
+		if([[line stringByTrimmingCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@"-"]] length] == 0 && line.length >= 3)
+			continue;
+
+		// Skip symbol-name lines like __Foo\Bar__
 		static NSRegularExpression* symbolNameRegex = [NSRegularExpression regularExpressionWithPattern:@"^_{1,2}[a-zA-Z_$\\\\][a-zA-Z0-9_$:\\\\]*_{1,2}$" options:0 error:nil];
 		if([symbolNameRegex numberOfMatchesInString:line options:0 range:NSMakeRange(0, line.length)] > 0)
 			continue;
@@ -387,9 +358,29 @@
 			[result appendAttributedString:[[NSAttributedString alloc] initWithString:@"\n" attributes:baseAttrs]];
 		firstLine = NO;
 
-		NSMutableAttributedString* lineResult = [self parseInlineMarkdown:line
+		// Headings: ### text or ## text or # text
+		if([line hasPrefix:@"#"])
+		{
+			NSString* headingText = line;
+			while([headingText hasPrefix:@"#"])
+				headingText = [headingText substringFromIndex:1];
+			headingText = [headingText stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+			NSDictionary* headingAttrs = @{NSFontAttributeName: headingFont, NSForegroundColorAttributeName: textColor};
+			[result appendAttributedString:[[NSAttributedString alloc] initWithString:headingText attributes:headingAttrs]];
+			continue;
+		}
+
+		// List items: - text or * text (at line start)
+		NSString* contentLine = line;
+		if(([line hasPrefix:@"- "] || [line hasPrefix:@"* "]) && line.length > 2)
+		{
+			[result appendAttributedString:[[NSAttributedString alloc] initWithString:@"\u2022 " attributes:baseAttrs]];
+			contentLine = [line substringFromIndex:2];
+		}
+
+		NSMutableAttributedString* lineResult = [self parseInlineMarkdown:contentLine
 			baseFont:baseFont boldFont:boldFont monoFont:monoFont
-			textColor:textColor dimColor:dimColor];
+			textColor:textColor dimColor:dimColor linkColor:linkColor];
 
 		[result appendAttributedString:lineResult];
 	}
@@ -405,7 +396,7 @@
 
 - (NSMutableAttributedString*)parseInlineMarkdown:(NSString*)text
 	baseFont:(NSFont*)baseFont boldFont:(NSFont*)boldFont monoFont:(NSFont*)monoFont
-	textColor:(NSColor*)textColor dimColor:(NSColor*)dimColor
+	textColor:(NSColor*)textColor dimColor:(NSColor*)dimColor linkColor:(NSColor*)linkColor
 {
 	NSMutableAttributedString* result = [[NSMutableAttributedString alloc] init];
 	NSDictionary* baseAttrs = @{NSFontAttributeName: baseFont, NSForegroundColorAttributeName: textColor};
@@ -428,6 +419,7 @@
 	{
 		unichar ch = [cleaned characterAtIndex:i];
 
+		// Inline code: `text`
 		if(ch == '`')
 		{
 			NSRange closeRange = [cleaned rangeOfString:@"`" options:0 range:NSMakeRange(i + 1, len - i - 1)];
@@ -440,6 +432,37 @@
 			}
 		}
 
+		// Links: [text](url)
+		if(ch == '[')
+		{
+			NSRange closeBracket = [cleaned rangeOfString:@"](" options:0 range:NSMakeRange(i + 1, len - i - 1)];
+			if(closeBracket.location != NSNotFound)
+			{
+				NSUInteger urlStart = closeBracket.location + 2;
+				if(urlStart < len)
+				{
+					NSRange closeParen = [cleaned rangeOfString:@")" options:0 range:NSMakeRange(urlStart, len - urlStart)];
+					if(closeParen.location != NSNotFound)
+					{
+						NSString* linkText = [cleaned substringWithRange:NSMakeRange(i + 1, closeBracket.location - i - 1)];
+						NSString* urlString = [cleaned substringWithRange:NSMakeRange(urlStart, closeParen.location - urlStart)];
+						NSMutableDictionary* linkAttrs = [NSMutableDictionary dictionaryWithDictionary:@{
+							NSFontAttributeName: baseFont,
+							NSForegroundColorAttributeName: linkColor,
+							NSUnderlineStyleAttributeName: @(NSUnderlineStyleSingle)
+						}];
+						NSURL* url = [NSURL URLWithString:urlString];
+						if(url)
+							linkAttrs[NSLinkAttributeName] = url;
+						[result appendAttributedString:[[NSAttributedString alloc] initWithString:linkText attributes:linkAttrs]];
+						i = closeParen.location + 1;
+						continue;
+					}
+				}
+			}
+		}
+
+		// Bold: **text**
 		if(ch == '*' && i + 1 < len && [cleaned characterAtIndex:i + 1] == '*')
 		{
 			NSRange closeRange = [cleaned rangeOfString:@"**" options:0 range:NSMakeRange(i + 2, len - i - 2)];
@@ -452,6 +475,7 @@
 			}
 		}
 
+		// Italic: _text_
 		if(ch == '_' && i + 1 < len && [cleaned characterAtIndex:i + 1] != '_'
 			&& (i == 0 || [[NSCharacterSet whitespaceCharacterSet] characterIsMember:[cleaned characterAtIndex:i - 1]]))
 		{
@@ -474,11 +498,66 @@
 	return result;
 }
 
+- (NSAttributedString*)parseMarkdownDocumentation:(NSString*)text
+{
+	NSArray* sections = [text componentsSeparatedByString:@"\n\n---\n\n"];
+	if(sections.count > 1)
+	{
+		NSMutableArray* unique = [NSMutableArray new];
+		NSMutableSet* seen = [NSMutableSet new];
+		for(NSString* section in sections)
+		{
+			NSString* trimmed = [section stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+			if(trimmed.length > 0 && ![seen containsObject:trimmed])
+			{
+				[seen addObject:trimmed];
+				[unique addObject:trimmed];
+			}
+		}
+		text = [unique componentsJoinedByString:@"\n\n---\n\n"];
+	}
+
+	NSMutableAttributedString* combined = [[NSMutableAttributedString alloc] init];
+	NSString* grammarScope = documentView ? to_ns(documentView->file_type()) : nil;
+
+	static NSRegularExpression* codeBlockRegex = [NSRegularExpression regularExpressionWithPattern:@"```(\\w+)?\\n([\\s\\S]*?)\\n```" options:0 error:nil];
+	NSArray* codeMatches = [codeBlockRegex matchesInString:text options:0 range:NSMakeRange(0, text.length)];
+
+	NSString* bodyText = text;
+	if(codeMatches.count > 0)
+	{
+		NSTextCheckingResult* firstMatch = codeMatches[0];
+		NSString* signature = [text substringWithRange:[firstMatch rangeAtIndex:2]];
+		signature = [signature stringByReplacingOccurrencesOfString:@"<?php\n" withString:@""];
+		signature = [signature stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+
+		if(signature.length > 0)
+			[combined appendAttributedString:[self syntaxHighlight:signature withGrammar:grammarScope]];
+
+		NSMutableString* remaining = [text mutableCopy];
+		for(NSTextCheckingResult* match in [codeMatches reverseObjectEnumerator])
+			[remaining replaceCharactersInRange:[match rangeAtIndex:0] withString:@""];
+		bodyText = [remaining stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+		bodyText = [bodyText stringByReplacingOccurrencesOfString:@"---" withString:@""];
+		bodyText = [bodyText stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+	}
+
+	if(bodyText.length > 0)
+	{
+		if(combined.length > 0)
+			[combined appendAttributedString:[[NSAttributedString alloc] initWithString:@"\n\n" attributes:@{}]];
+
+		if(codeMatches.count == 0)
+			[combined appendAttributedString:[self syntaxHighlight:bodyText withGrammar:grammarScope]];
+		else
+			[combined appendAttributedString:[self parseMarkdownToAttributedString:bodyText]];
+	}
+
+	return combined.length > 0 ? combined : nil;
+}
+
 - (void)cancelLSPHoverRequest
 {
-	[_lspHoverTimer invalidate];
-	_lspHoverTimer = nil;
-
 	if(_lspHoverRequestId != 0)
 	{
 		[[LSPManager sharedManager] cancelRequest:_lspHoverRequestId forDocument:self.document];
@@ -488,6 +567,11 @@
 
 - (void)infoTooltipDidDismiss:(OakInfoTooltip*)tooltip
 {
+	if(!_lspHoverHighlightRange.empty() && documentView)
+	{
+		[self setNeedsDisplayInRect:NSRectFromCGRect(documentView->rect_for_range(_lspHoverHighlightRange.min().index, _lspHoverHighlightRange.max().index))];
+		_lspHoverHighlightRange = ng::range_t();
+	}
 }
 
 @end

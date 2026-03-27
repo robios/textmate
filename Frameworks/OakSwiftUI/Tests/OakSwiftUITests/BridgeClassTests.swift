@@ -4,38 +4,47 @@ import AppKit
 
 // MARK: - OakTooltipContent
 
-@Test func tooltipContentInitWithBody() {
-    let body = NSAttributedString(string: "Hello world")
-    let content = OakTooltipContent(body: body)
-    #expect(content.body.string == "Hello world")
-    #expect(content.title == nil)
-    #expect(content.codeSnippet == nil)
-    #expect(content.language == nil)
+@Test func tooltipContentInitWithSections() {
+    let section = OakTooltipSection(label: "Signature", content: NSAttributedString(string: "func foo()"))
+    let content = OakTooltipContent(sections: [section])
+    #expect(content.sections.count == 1)
+    #expect(content.sections[0].label == "Signature")
+    #expect(content.sections[0].content.string == "func foo()")
 }
 
-@Test func tooltipContentConvenienceInit() {
-    let body = NSAttributedString(string: "Description")
-    let title = NSAttributedString(string: "MyFunc")
-    let content = OakTooltipContent(
-        title: title,
-        body: body,
-        codeSnippet: "func myFunc() -> Int",
-        language: "swift"
-    )
-    #expect(content.title?.string == "MyFunc")
-    #expect(content.body.string == "Description")
-    #expect(content.codeSnippet == "func myFunc() -> Int")
-    #expect(content.language == "swift")
+@Test func tooltipContentMultipleSections() {
+    let sig = OakTooltipSection(label: "Signature", content: NSAttributedString(string: "func bar()"))
+    let docs = OakTooltipSection(label: "Documentation", content: NSAttributedString(string: "Does bar things"))
+    let content = OakTooltipContent(sections: [sig, docs])
+    #expect(content.sections.count == 2)
+    #expect(content.sections[0].label == "Signature")
+    #expect(content.sections[1].label == "Documentation")
+    #expect(content.sections[1].content.string == "Does bar things")
 }
 
-@Test func tooltipContentPropertiesAreMutable() {
-    let content = OakTooltipContent(body: NSAttributedString(string: "initial"))
-    content.title = NSAttributedString(string: "Updated")
-    content.codeSnippet = "let x = 1"
-    content.language = "swift"
-    #expect(content.title?.string == "Updated")
-    #expect(content.codeSnippet == "let x = 1")
-    #expect(content.language == "swift")
+@Test func tooltipContentEmptySections() {
+    let content = OakTooltipContent(sections: [])
+    #expect(content.sections.isEmpty)
+}
+
+@Test func tooltipSectionEagerContent() {
+    let section = OakTooltipSection(label: "Info", content: NSAttributedString(string: "initial"))
+    #expect(section.label == "Info")
+    #expect(section.content.string == "initial")
+    #expect(section.isEager)
+}
+
+@Test func tooltipSectionLazyContent() {
+    var callCount = 0
+    let section = OakTooltipSection(label: "Docs", contentProvider: {
+        callCount += 1
+        return NSAttributedString(string: "lazy result")
+    })
+    #expect(!section.isEager)
+    #expect(section.content.string == "lazy result")
+    #expect(section.isEager)
+    _ = section.content
+    #expect(callCount == 1)
 }
 
 // MARK: - OakCompletionPopup
@@ -77,14 +86,6 @@ import AppKit
     let tooltip = OakInfoTooltip(theme: theme)
     // Dismissing when no popover exists should not crash
     tooltip.dismiss()
-    #expect(tooltip.isVisible == false)
-}
-
-@Test @MainActor func infoTooltipRepositionWhenNotShown() {
-    let theme = OakThemeEnvironment()
-    let tooltip = OakInfoTooltip(theme: theme)
-    // Repositioning with no popover should not crash
-    tooltip.reposition(to: NSRect(x: 0, y: 0, width: 100, height: 20))
     #expect(tooltip.isVisible == false)
 }
 

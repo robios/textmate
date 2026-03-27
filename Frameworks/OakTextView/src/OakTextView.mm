@@ -427,6 +427,7 @@ static std::string shell_quote (std::vector<std::string> paths)
 {
 	[self clearGhostText];
 	_definitionHighlightRange = ng::range_t();
+	_lspHoverHighlightRange = ng::range_t();
 	_lspHoverCache = nil;
 
 	if(aDocument && [_document isEqual:aDocument])
@@ -469,7 +470,7 @@ static std::string shell_quote (std::vector<std::string> paths)
 		choiceVector.clear();
 
 		[_lspCompletionPopup dismiss];
-		[_lspHoverTooltip dismiss];
+		[self dismissLSPHoverPanel];
 		[_lspReferencesPanel close];
 
 		documentView.reset();
@@ -603,8 +604,7 @@ static std::string shell_quote (std::vector<std::string> paths)
 {
 	[NSNotificationCenter.defaultCenter removeObserver:self];
 	[self unbind:@"scmStatus"];
-	[self cancelLSPHoverRequest];
-	[_lspHoverTooltip dismiss];
+	[self dismissLSPHoverPanel];
 	[self setDocument:nil];
 }
 
@@ -864,6 +864,20 @@ doScroll:
 			[underline stroke];
 		}
 	}
+
+	// Draw LSP hover highlight (filled rounded rect with selection color)
+	if(!_lspHoverHighlightRange.empty() && _lspHoverHighlightRange.max().index <= documentView->size())
+	{
+		CGRect wordRect = documentView->rect_for_range(_lspHoverHighlightRange.min().index, _lspHoverHighlightRange.max().index);
+		NSRect highlightRect = NSInsetRect(NSRectFromCGRect(wordRect), -1.0, -1.0);
+		if(NSIntersectsRect(aRect, highlightRect))
+		{
+			NSColor* selectionColor = [[NSColor selectedTextBackgroundColor] colorWithAlphaComponent:0.4];
+			[selectionColor setFill];
+			NSBezierPath* roundedRect = [NSBezierPath bezierPathWithRoundedRect:highlightRect xRadius:3.0 yRadius:3.0];
+			[roundedRect fill];
+		}
+	}
 }
 
 // =====================
@@ -1063,6 +1077,12 @@ doScroll:
 
 - (void)doCommandBySelector:(SEL)aSelector
 {
+	if(aSelector == @selector(cancelOperation:) && _lspHoverTooltip.isVisible)
+	{
+		[self dismissLSPHoverPanel];
+		return;
+	}
+
 	AUTO_REFRESH;
 	if(![self tryToPerform:aSelector with:self])
 		NSBeep();
@@ -1845,8 +1865,7 @@ static void update_menu_key_equivalents (NSMenu* menu, std::multimap<std::string
 	AUTO_REFRESH;
 
 	// Dismiss hover tooltip on any keystroke
-	[self cancelLSPHoverRequest];
-	[_lspHoverTooltip dismiss];
+	[self dismissLSPHoverPanel];
 
 	// Clear ghost text on any keystroke except Tab (Tab acceptance handled in insertTab:)
 	if(!([self hasGhostText] && [anEvent keyCode] == 48))
@@ -3731,51 +3750,12 @@ static char const* kOakMenuItemTitle = "OakMenuItemTitle";
 		}
 
 		// Dismiss hover tooltip when entering Cmd mode
-		[self cancelLSPHoverRequest];
+		[self dismissLSPHoverPanel];
 		return;
 	}
-
-	// LSP hover: only trigger when mouse is directly over a word character
-	if([[LSPManager sharedManager] hasClientForDocument:self.document])
-	{
-		settings_t const settings = settings_for_path(to_s(_document.virtualPath ?: _document.path), to_s(_document.fileType), to_s(_document.directory ?: [_document.path stringByDeletingLastPathComponent]));
-		bool lspHover = settings.get("lspHover", true);
-
-		if(lspHover && index != _lspHoverIndex)
-		{
-			_lspHoverIndex = index;
-			[self cancelLSPHoverRequest];
-			[_lspHoverTooltip dismiss];
-
-			bool onWord = false;
-			if(index.index < documentView->size())
-			{
-				std::string ch = documentView->substr(index.index, index.index + 1);
-				onWord = !ch.empty() && (isalnum((unsigned char)ch[0]) || ch[0] == '_');
-			}
-
-			if(onWord)
-			{
-				__weak OakTextView* weakSelf = self;
-				_lspHoverTimer = [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:NO block:^(NSTimer* timer) {
-					[weakSelf lspRequestHoverAtIndex:index];
-				}];
-			}
-		}
-		else if(!lspHover)
-		{
-			[self cancelLSPHoverRequest];
-			[_lspHoverTooltip dismiss];
-		}
-	}
 }
 
-- (void)mouseExited:(NSEvent*)anEvent
-{
-	[self cancelLSPHoverRequest];
-	[_lspHoverTooltip dismiss];
-	_lspHoverIndex = ng::index_t();
-}
+
 
 - (void)clearDefinitionHighlight
 {

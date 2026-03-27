@@ -1,94 +1,92 @@
 import AppKit
 import SwiftUI
 
-// ViewModel to hold the current content
-class TooltipViewModel: ObservableObject {
-    @Published var content: OakTooltipContent
-    
-    init(content: OakTooltipContent) {
-        self.content = content
-    }
-}
+// MARK: - OakInfoTooltip
 
-// Root view that observes the view model
-struct TooltipRootView: View {
-    @ObservedObject var viewModel: TooltipViewModel
-    
-    var body: some View {
-        TooltipContentView(content: viewModel.content)
-    }
-}
+private let kMaxWidth: CGFloat = 600
+private let kMaxContentHeight: CGFloat = 350
+private let kTabBarHeight: CGFloat = 32
 
 @MainActor @objc public class OakInfoTooltip: NSObject, NSPopoverDelegate {
-    @objc public weak var delegate: OakInfoTooltipDelegate?
+	@objc public weak var delegate: OakInfoTooltipDelegate?
 
-    private let popover: NSPopover
-    private let theme: OakThemeEnvironment
-    private let viewModel: TooltipViewModel
+	private let popover: NSPopover
+	private let theme: OakThemeEnvironment
 
-    @objc public init(theme: OakThemeEnvironment) {
-        self.theme = theme
-        // Initialize with empty content
-        let emptyContent = OakTooltipContent(body: NSAttributedString())
-        self.viewModel = TooltipViewModel(content: emptyContent)
-        
-        self.popover = NSPopover()
-        self.popover.animates = false // Disable animation for performance
-        self.popover.behavior = .semitransient
-        
-        super.init()
-        
-        // Create the root view with environment object
-        let rootView = TooltipRootView(viewModel: viewModel)
-            .environmentObject(theme)
-        
-        let hostingController = NSHostingController(rootView: rootView)
-        hostingController.sizingOptions = [.preferredContentSize]
-        
-        self.popover.contentViewController = hostingController
-        self.popover.delegate = self
-    }
+	@objc public init(theme: OakThemeEnvironment) {
+		self.theme = theme
 
-    @objc public func show(in view: NSView, at rect: NSRect, content: OakTooltipContent, preferredEdge edge: NSRectEdge) {
-        // Update content model
-        viewModel.content = content
-        
-        // Force layout update for the new content
-        if let controller = popover.contentViewController {
-            controller.view.layoutSubtreeIfNeeded()
-        }
-        
-        // Show or move popover
-        if popover.isShown {
-            popover.positioningRect = rect
-        } else {
-            popover.show(relativeTo: rect, of: view, preferredEdge: edge)
-        }
-    }
-    
-    @objc public func show(in view: NSView, at rect: NSRect, content: OakTooltipContent) {
-        show(in: view, at: rect, content: content, preferredEdge: .maxY)
-    }
+		self.popover = NSPopover()
+		self.popover.behavior = .semitransient
+		self.popover.animates = true
 
-    @objc public func dismiss() {
-        if popover.isShown {
-            popover.close()
-        }
-    }
+		super.init()
+		self.popover.delegate = self
+	}
 
-    @objc public func reposition(to rect: NSRect) {
-        if popover.isShown {
-            popover.positioningRect = rect
-        }
-    }
+	// MARK: - Public API
 
-    @objc public var isVisible: Bool {
-        popover.isShown
-    }
+	@objc public func show(in view: NSView, at rect: NSRect, content: OakTooltipContent) {
+		let hostingController = NSHostingController(
+			rootView: AnyView(
+				TooltipContentView(content: content)
+					.environmentObject(theme)
+			)
+		)
+		hostingController.sizingOptions = [.preferredContentSize]
 
-    nonisolated public func popoverDidClose(_ notification: Notification) {
-        MainActor.assumeIsolated {
-            delegate?.infoTooltipDidDismiss(self)
-        }
-    }
+		// Measure eager sections for width; use max height cap so tab switch doesn't resize
+		let padding: CGFloat = 24
+		let measureWidth = kMaxWidth - padding
+		var maxContentWidth: CGFloat = 0
+		var maxContentHeight: CGFloat = 0
+		for section in content.sections where section.isEager {
+			let boundingRect = section.content.boundingRect(
+				with: NSSize(width: measureWidth, height: .greatestFiniteMagnitude),
+				options: [.usesLineFragmentOrigin, .usesFontLeading]
+			)
+			maxContentWidth = max(maxContentWidth, ceil(boundingRect.width))
+			maxContentHeight = max(maxContentHeight, ceil(boundingRect.height))
+		}
+
+		let contentWidth = min(max(maxContentWidth + padding, 200), kMaxWidth)
+		let tabBar: CGFloat = content.sections.count > 1 ? kTabBarHeight : 0
+		let hasLazy = content.sections.contains { !$0.isEager }
+		let height = hasLazy ? kMaxContentHeight : maxContentHeight + 20
+		let contentHeight = min(height + tabBar, kMaxContentHeight + tabBar)
+
+		popover.contentSize = NSSize(width: contentWidth, height: contentHeight)
+		popover.contentViewController = hostingController
+
+		if popover.isShown {
+			popover.positioningRect = rect
+		} else {
+			popover.show(relativeTo: rect, of: view, preferredEdge: .maxY)
+		}
+	}
+
+	@objc public func dismiss() {
+		guard popover.isShown else { return }
+		popover.close()
+	}
+
+	@objc public var isVisible: Bool {
+		popover.isShown
+	}
+
+	@objc public var isMouseInside: Bool {
+		guard popover.isShown,
+			  let popoverWindow = popover.contentViewController?.view.window else {
+			return false
+		}
+		return popoverWindow.frame.contains(NSEvent.mouseLocation)
+	}
+
+	// MARK: - NSPopoverDelegate
+
+	nonisolated public func popoverDidClose(_ notification: Notification) {
+		MainActor.assumeIsolated {
+			delegate?.infoTooltipDidDismiss(self)
+		}
+	}
 }

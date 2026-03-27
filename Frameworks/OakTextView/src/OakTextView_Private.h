@@ -325,12 +325,11 @@ private:
 	OakInfoTooltip* _lspHoverTooltip;
 	int _lspHoverRequestId;
 	NSMutableDictionary* _lspHoverCache;
+	ng::range_t _lspHoverHighlightRange;
 
 	// = LSP References =
 
 	OakReferencesPanel* _lspReferencesPanel;
-	NSTimer* _lspHoverTimer;
-	ng::index_t _lspHoverIndex;
 
 	// = LSP Rename =
 
@@ -423,9 +422,10 @@ private:
 @interface OakTextView (Hover)
 - (void)lspRequestHoverAtIndex:(ng::index_t)index;
 - (void)cancelLSPHoverRequest;
+- (void)dismissLSPHoverPanel;
 - (NSMutableAttributedString*)syntaxHighlight:(NSString*)code withGrammar:(NSString*)grammarScope;
-- (void)showLSPHoverTooltip:(OakTooltipContent*)content atRect:(NSRect)viewRect;
-- (OakTooltipContent*)createTooltipContentFromHover:(NSDictionary*)hover;
+- (void)showLSPHoverTooltip:(OakTooltipContent*)content atRect:(NSRect)rect;
+- (OakTooltipContent*)createTooltipContentFromHover:(NSDictionary*)hover grammarScope:(NSString*)grammarScope;
 - (NSAttributedString*)parseMarkdownToAttributedString:(NSString*)markdown;
 - (NSAttributedString*)parseMarkdownDocumentation:(NSString*)text;
 @end
