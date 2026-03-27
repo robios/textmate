@@ -176,10 +176,9 @@
 			NSString* merged = [uniqueChunks componentsJoinedByString:@"\n\n"];
 			if(merged.length > 0)
 			{
-				__weak OakTextView* weakParser = self;
-				[sections addObject:[[OakTooltipSection alloc] initWithLabel:@"Documentation" contentProvider:^NSAttributedString* {
-					return [weakParser parseMarkdownToAttributedString:merged] ?: [[NSAttributedString alloc] init];
-				}]];
+				NSAttributedString* parsed = [self parseMarkdownToAttributedString:merged];
+				if(parsed.length > 0)
+					[sections addObject:[[OakTooltipSection alloc] initWithLabel:@"Documentation" content:parsed]];
 			}
 		}
 	}
