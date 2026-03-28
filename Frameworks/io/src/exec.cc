@@ -132,7 +132,15 @@ namespace io
 				success = true;
 		});
 
-		dispatch_group_wait(group, DISPATCH_TIME_FOREVER);
+		static int64_t const kTimeoutNs = 10LL * NSEC_PER_SEC;
+		if(dispatch_group_wait(group, dispatch_time(DISPATCH_TIME_NOW, kTimeoutNs)))
+		{
+			os_log_error(OS_LOG_DEFAULT, "io::exec timed out after 10s: '%{public}s'", text::join(command, " ").c_str());
+			kill(process.pid, SIGTERM);
+			dispatch_group_wait(group, dispatch_time(DISPATCH_TIME_NOW, 1 * NSEC_PER_SEC));
+			kill(process.pid, SIGKILL);
+			dispatch_group_wait(group, dispatch_time(DISPATCH_TIME_NOW, 1 * NSEC_PER_SEC));
+		}
 		dispatch_release(group);
 		return success ? output : NULL_STR;
 	}

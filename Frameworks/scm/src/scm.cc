@@ -363,30 +363,38 @@ namespace scm
 			return info_ptr();
 
 		auto res = std::make_shared<info_t>(path);
+		CFRunLoopRef currentRunLoop = CFRunLoopGetCurrent();
+		weak_info_ptr weakInfo = res;
 
-		__block bool performBackgroundDriverSearch = true;
-		dispatch_sync(cache_access_queue(), ^{
+		// Cache lookup + driver search both run async to avoid blocking main thread.
+		// The caller gets an info_ptr immediately; shared_info is attached via
+		// CFRunLoop callback once the cache/driver lookup completes.
+		dispatch_async(cache_access_queue(), ^{
+			// Check cache first
+			shared_info_ptr cachedInfo;
+			bool needDriverSearch = true;
 			for(std::string cwd = path; cwd != "/"; cwd = path::parent(cwd))
 			{
 				auto it = cache().find(cwd);
 				if(it != cache().end())
 				{
-					if(shared_info_ptr sharedInfo = it->second.lock())
-					{
-						res->set_shared_info(sharedInfo);
-						performBackgroundDriverSearch = cwd != path;
-					}
+					if((cachedInfo = it->second.lock()))
+						needDriverSearch = cwd != path;
 					break;
 				}
 			}
-		});
 
-		if(performBackgroundDriverSearch)
-		{
-			CFRunLoopRef currentRunLoop = CFRunLoopGetCurrent();
+			if(cachedInfo)
+			{
+				CFRunLoopPerformBlock(currentRunLoop, kCFRunLoopCommonModes, ^{
+					if(info_ptr info = weakInfo.lock())
+						info->set_shared_info(cachedInfo);
+				});
+				CFRunLoopWakeUp(currentRunLoop);
+			}
 
-			weak_info_ptr weakInfo = res;
-			dispatch_async(cache_access_queue(), ^{
+			if(needDriverSearch)
+			{
 				if(shared_info_ptr sharedInfo = find_shared_info_for(path))
 				{
 					CFRunLoopPerformBlock(currentRunLoop, kCFRunLoopCommonModes, ^{
@@ -395,8 +403,8 @@ namespace scm
 					});
 					CFRunLoopWakeUp(currentRunLoop);
 				}
-			});
-		}
+			}
+		});
 
 		return res;
 	}

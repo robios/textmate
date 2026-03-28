@@ -4,7 +4,6 @@
 #import <Preferences/FormatterRegistry.h>
 #import <Preferences/Keys.h>
 #import <io/environment.h>
-#include <atomic>
 
 static NSString* runCustomFormatter (std::string const& command, NSString* inputText, std::map<std::string, std::string> const& variables, NSString** outError)
 {
@@ -47,6 +46,9 @@ static NSString* runCustomFormatter (std::string const& command, NSString* input
 		return nil;
 	}
 
+	// Read pipes on background threads BEFORE waitUntilExit to avoid pipe buffer deadlock.
+	// If the child's output exceeds the pipe buffer (~65KB), the child blocks on write.
+	// If we wait for the child first, neither side makes progress → deadlock.
 	__block NSData* outputData = nil;
 	__block NSData* errorData = nil;
 
@@ -67,21 +69,25 @@ static NSString* runCustomFormatter (std::string const& command, NSString* input
 		errorData = [stderrPipe.fileHandleForReading readDataToEndOfFile];
 	});
 
-	NSDate* deadline = [NSDate dateWithTimeIntervalSinceNow:3.0];
-	while(task.isRunning && [deadline timeIntervalSinceNow] > 0)
-		CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.05, true);
+	// Wait for pipe reads + process exit with a hard 5s timeout.
+	// Pipe reads complete when the child closes its end (on exit or terminate).
+	task.terminationHandler = ^(NSTask* t) {
+		// terminationHandler fires after child exits; pipe reads will finish shortly after
+	};
 
-	if(task.isRunning)
+	static int64_t const kTimeoutNs = 5LL * NSEC_PER_SEC;
+	long timedOut = dispatch_group_wait(group, dispatch_time(DISPATCH_TIME_NOW, kTimeoutNs));
+
+	if(timedOut)
 	{
-		[task terminate];
-		[task waitUntilExit];
-		dispatch_group_wait(group, dispatch_time(DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC));
+		if(task.isRunning)
+			[task terminate];
 		if(outError)
 			*outError = @"Formatter timed out";
 		return nil;
 	}
 
-	dispatch_group_wait(group, DISPATCH_TIME_FOREVER);
+	[task waitUntilExit];
 
 	NSString* errStr = errorData.length > 0 ? [[NSString alloc] initWithData:errorData encoding:NSUTF8StringEncoding] : nil;
 #ifndef NDEBUG
@@ -171,25 +177,27 @@ static NSString* runCustomFormatter (std::string const& command, NSString* input
 	}
 
 	// LSP format on save (independent setting)
+	// Callback is dispatched to main queue by LSPClient, so we must pump the
+	// runloop to receive it. A semaphore would deadlock here.
 	if(lspFormatOnSave && [[LSPManager sharedManager] serverSupportsFormattingForDocument:doc])
 	{
 		[[LSPManager sharedManager] flushPendingChangesForDocument:doc];
 
-		auto done = std::make_shared<std::atomic<bool>>(false);
+		__block BOOL done = NO;
 		__block NSArray<NSDictionary*>* receivedEdits = nil;
 
 		[[LSPManager sharedManager] requestFormattingForDocument:doc
 			tabSize:doc.tabSize insertSpaces:doc.softTabs
 			completion:^(NSArray<NSDictionary*>* edits) {
 				receivedEdits = edits;
-				done->store(true, std::memory_order_release);
+				done = YES;
 			}];
 
 		NSDate* timeout = [NSDate dateWithTimeIntervalSinceNow:0.5];
-		while(!done->load(std::memory_order_acquire) && [timeout timeIntervalSinceNow] > 0)
+		while(!done && [timeout timeIntervalSinceNow] > 0)
 			CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.01, true);
 
-		if(!done->load(std::memory_order_acquire))
+		if(!done)
 		{
 			NSLog(@"[LSP] Format-on-save skipped: server did not respond within 500ms");
 			return;
