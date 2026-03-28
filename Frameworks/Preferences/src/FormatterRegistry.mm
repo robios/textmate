@@ -13,9 +13,9 @@ static NSArray<FormatterEntry*>* DefaultFormatterTable ()
 {
 	struct { NSString* glob; NSString* name; NSString* cmd; NSString* exe; } const defaults[] = {
 		{ @"*.swift",                    @"swiftformat",   @"swiftformat --stdinpath \"$TM_FILEPATH\"",           @"swiftformat"   },
-		{ @"*.{js,ts,jsx,tsx,css,json}", @"prettier",      @"prettier --stdin-filepath \"$TM_FILEPATH\"",         @"prettier"      },
-		{ @"*.{html,vue,svelte}",        @"prettier",      @"prettier --stdin-filepath \"$TM_FILEPATH\"",         @"prettier"      },
-		{ @"*.php",                      @"prettier",      @"prettier --parser=php --stdin-filepath \"$TM_FILEPATH\"", @"prettier" },
+		{ @"*.{js,ts,jsx,tsx,css,json}", @"prettier",      @"prettier --ignore-path \"\" --stdin-filepath \"$TM_FILEPATH\"",         @"prettier"      },
+		{ @"*.{html,vue,svelte}",        @"prettier",      @"prettier --ignore-path \"\" --stdin-filepath \"$TM_FILEPATH\"",         @"prettier"      },
+		{ @"*.php",                      @"prettier",      @"prettier --ignore-path \"\" --parser=php --stdin-filepath \"$TM_FILEPATH\"", @"prettier" },
 		{ @"*.py",                       @"black",          @"black -q -",                                         @"black"         },
 		{ @"*.go",                       @"gofmt",          @"gofmt",                                              @"gofmt"         },
 		{ @"*.rs",                       @"rustfmt",        @"rustfmt --edition 2021",                             @"rustfmt"       },

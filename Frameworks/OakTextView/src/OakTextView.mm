@@ -2879,7 +2879,8 @@ static char const* kOakMenuItemTitle = "OakMenuItemTitle";
 
 		BOOL hasCustomFormatter = !formatCommand.empty();
 		BOOL hasAutoFormatter   = !hasCustomFormatter && [[FormatterRegistry sharedInstance] formatCommandForPath:doc.path] != nil;
-		return hasCustomFormatter || hasAutoFormatter;
+		BOOL hasLSP = doc && [[LSPManager sharedManager] serverSupportsFormattingForDocument:doc];
+		return hasCustomFormatter || hasAutoFormatter || hasLSP;
 	}
 	else if([aMenuItem action] == @selector(lspFormatOnly:))
 	{

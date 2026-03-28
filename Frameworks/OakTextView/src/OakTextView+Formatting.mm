@@ -69,24 +69,24 @@ static NSString* runCustomFormatter (std::string const& command, NSString* input
 		errorData = [stderrPipe.fileHandleForReading readDataToEndOfFile];
 	});
 
-	// Wait for pipe reads + process exit with a hard 5s timeout.
-	// Pipe reads complete when the child closes its end (on exit or terminate).
-	task.terminationHandler = ^(NSTask* t) {
-		// terminationHandler fires after child exits; pipe reads will finish shortly after
-	};
+	// Pump the runloop while the process runs (needed for NSTask pipe delivery).
+	// Hard 5s timeout to prevent deadlock if the formatter hangs.
+	NSDate* deadline = [NSDate dateWithTimeIntervalSinceNow:5.0];
+	while(task.isRunning && [deadline timeIntervalSinceNow] > 0)
+		CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.05, true);
 
-	static int64_t const kTimeoutNs = 5LL * NSEC_PER_SEC;
-	long timedOut = dispatch_group_wait(group, dispatch_time(DISPATCH_TIME_NOW, kTimeoutNs));
-
-	if(timedOut)
+	if(task.isRunning)
 	{
-		if(task.isRunning)
-			[task terminate];
+		[task terminate];
+		[task waitUntilExit];
+		dispatch_group_wait(group, dispatch_time(DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC));
 		if(outError)
 			*outError = @"Formatter timed out";
 		return nil;
 	}
 
+	// Process exited — pipe reads should complete quickly now.
+	dispatch_group_wait(group, dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC));
 	[task waitUntilExit];
 
 	NSString* errStr = errorData.length > 0 ? [[NSString alloc] initWithData:errorData encoding:NSUTF8StringEncoding] : nil;
@@ -130,19 +130,21 @@ static NSString* runCustomFormatter (std::string const& command, NSString* input
 	std::string directory = to_s(doc.directory ?: [doc.path stringByDeletingLastPathComponent] ?: @"");
 
 	settings_t const settings = settings_for_path(filePath, fileType, directory);
-	bool formatOnSave    = settings.get(kSettingsFormatOnSaveKey, false);
 	bool lspFormatOnSave = settings.get("lspFormatOnSave", false);
 
-	// Custom formatter on save: explicit formatCommand or auto-detected
-	if(formatOnSave)
+	std::string formatCommand = settings.get(kSettingsFormatCommandKey, "");
+	if(formatCommand.empty())
 	{
-		std::string formatCommand = settings.get(kSettingsFormatCommandKey, "");
-		if(formatCommand.empty())
-		{
-			NSString* autoCommand = [[FormatterRegistry sharedInstance] formatCommandForPath:doc.path];
-			if(autoCommand)
-				formatCommand = to_s(autoCommand);
-		}
+		NSString* autoCommand = [[FormatterRegistry sharedInstance] formatCommandForPath:doc.path];
+		if(autoCommand)
+			formatCommand = to_s(autoCommand);
+	}
+
+	// formatOnSave defaults to true when an auto-detected formatter is available
+	bool formatOnSave = settings.get(kSettingsFormatOnSaveKey, !formatCommand.empty());
+
+	if(formatOnSave || lspFormatOnSave)
+	{
 
 		if(!formatCommand.empty())
 		{
@@ -236,10 +238,7 @@ static NSString* runCustomFormatter (std::string const& command, NSString* input
 
 	if(formatCommand.empty())
 	{
-#ifndef NDEBUG
-		NSLog(@"[Formatter] No custom formatter found for %s", filePath.c_str());
-#endif
-		NSBeep();
+		[self lspFormatOnly:sender];
 		return;
 	}
 
