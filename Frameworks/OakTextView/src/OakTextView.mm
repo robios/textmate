@@ -2879,11 +2879,16 @@ static char const* kOakMenuItemTitle = "OakMenuItemTitle";
 
 		BOOL hasCustomFormatter = !formatCommand.empty();
 		BOOL hasAutoFormatter   = !hasCustomFormatter && [[FormatterRegistry sharedInstance] formatCommandForPath:doc.path] != nil;
+		return hasCustomFormatter || hasAutoFormatter;
+	}
+	else if([aMenuItem action] == @selector(lspFormatOnly:))
+	{
+		OakDocument* doc = self.document;
 		BOOL hasRange = doc && [[LSPManager sharedManager] serverSupportsRangeFormattingForDocument:doc];
 		BOOL hasDoc   = doc && [[LSPManager sharedManager] serverSupportsFormattingForDocument:doc];
-		BOOL showSelection = !hasCustomFormatter && !hasAutoFormatter && [self hasSelection] && hasRange;
+		BOOL showSelection = [self hasSelection] && hasRange;
 		[aMenuItem updateTitle:[NSString stringWithCxxString:format_string::replace(to_s(aMenuItem.title), "\\b(\\w+) / (Selection)\\b", showSelection ? "$2" : "$1")]];
-		return hasCustomFormatter || hasAutoFormatter || showSelection || hasDoc;
+		return hasDoc || showSelection;
 	}
 	else if([aMenuItem action] == @selector(lspRename:))
 	{

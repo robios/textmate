@@ -4,6 +4,7 @@
 #import <Preferences/FormatterRegistry.h>
 #import <Preferences/Keys.h>
 #import <io/environment.h>
+#include <atomic>
 
 static NSString* runCustomFormatter (std::string const& command, NSString* inputText, std::map<std::string, std::string> const& variables, NSString** outError)
 {
@@ -82,13 +83,16 @@ static NSString* runCustomFormatter (std::string const& command, NSString* input
 
 	dispatch_group_wait(group, DISPATCH_TIME_FOREVER);
 
+	NSString* errStr = errorData.length > 0 ? [[NSString alloc] initWithData:errorData encoding:NSUTF8StringEncoding] : nil;
+#ifndef NDEBUG
+	if(errStr.length > 0)
+		NSLog(@"[Formatter] stderr: %@", errStr);
+#endif
+
 	if(task.terminationStatus != 0)
 	{
 		if(outError)
-		{
-			NSString* errStr = [[NSString alloc] initWithData:errorData encoding:NSUTF8StringEncoding];
 			*outError = [errStr componentsSeparatedByString:@"\n"].firstObject ?: @"Formatter failed";
-		}
 		return nil;
 	}
 
@@ -120,66 +124,76 @@ static NSString* runCustomFormatter (std::string const& command, NSString* input
 	std::string directory = to_s(doc.directory ?: [doc.path stringByDeletingLastPathComponent] ?: @"");
 
 	settings_t const settings = settings_for_path(filePath, fileType, directory);
-	bool formatOnSave = settings.get(kSettingsFormatOnSaveKey, settings.get("lspFormatOnSave", false));
-	std::string formatCommand = settings.get(kSettingsFormatCommandKey, "");
+	bool formatOnSave    = settings.get(kSettingsFormatOnSaveKey, false);
+	bool lspFormatOnSave = settings.get("lspFormatOnSave", false);
 
-	if(formatCommand.empty())
+	// Custom formatter on save: explicit formatCommand or auto-detected
+	if(formatOnSave)
 	{
-		NSString* autoCommand = [[FormatterRegistry sharedInstance] formatCommandForPath:doc.path];
-		if(autoCommand)
-			formatCommand = to_s(autoCommand);
-	}
-
-	if(formatOnSave && !formatCommand.empty())
-	{
-		NSString* inputText = [NSString stringWithCxxString:documentView->substr()];
-		std::map<std::string, std::string> variables = [self variables];
-
-		NSString* error = nil;
-		NSString* output = runCustomFormatter(formatCommand, inputText, variables, &error);
-
-		if(output && ![output isEqualToString:inputText])
+		std::string formatCommand = settings.get(kSettingsFormatCommandKey, "");
+		if(formatCommand.empty())
 		{
-			size_t caretOffset = documentView->ranges().last().last.index;
-			size_t newLength = to_s(output).size();
-
-			AUTO_REFRESH;
-			std::multimap<std::pair<size_t, size_t>, std::string> replacements;
-			replacements.emplace(std::make_pair((size_t)0, documentView->size()), to_s(output));
-			documentView->perform_replacements(replacements);
-			documentView->set_ranges(ng::range_t(std::min(caretOffset, newLength)));
-			_lastFormatterError = nil;
+			NSString* autoCommand = [[FormatterRegistry sharedInstance] formatCommandForPath:doc.path];
+			if(autoCommand)
+				formatCommand = to_s(autoCommand);
 		}
-		else if(error)
+
+		if(!formatCommand.empty())
 		{
-			if(![error isEqualToString:_lastFormatterError])
+			NSString* inputText = [NSString stringWithCxxString:documentView->substr()];
+			std::map<std::string, std::string> variables = [self variables];
+
+			NSString* error = nil;
+			NSString* output = runCustomFormatter(formatCommand, inputText, variables, &error);
+
+			if(output && ![output isEqualToString:inputText])
 			{
-				_lastFormatterError = error;
-				[self showToolTip:[NSString stringWithFormat:@"Formatter: %@", error]];
+				size_t caretOffset = documentView->ranges().last().last.index;
+				size_t newLength = to_s(output).size();
+
+				AUTO_REFRESH;
+				std::multimap<std::pair<size_t, size_t>, std::string> replacements;
+				replacements.emplace(std::make_pair((size_t)0, documentView->size()), to_s(output));
+				documentView->perform_replacements(replacements);
+				documentView->set_ranges(ng::range_t(std::min(caretOffset, newLength)));
+				_lastFormatterError = nil;
 			}
-			NSLog(@"[Formatter] Format-on-save failed: %@", error);
+			else if(error)
+			{
+				if(![error isEqualToString:_lastFormatterError])
+				{
+					_lastFormatterError = error;
+					[self showToolTip:[NSString stringWithFormat:@"Formatter: %@", error]];
+				}
+				NSLog(@"[Formatter] Format-on-save failed: %@", error);
+			}
 		}
 	}
-	else if(formatOnSave && [[LSPManager sharedManager] serverSupportsFormattingForDocument:doc])
+
+	// LSP format on save (independent setting)
+	if(lspFormatOnSave && [[LSPManager sharedManager] serverSupportsFormattingForDocument:doc])
 	{
 		[[LSPManager sharedManager] flushPendingChangesForDocument:doc];
 
-		__block BOOL done = NO;
+		auto done = std::make_shared<std::atomic<bool>>(false);
 		__block NSArray<NSDictionary*>* receivedEdits = nil;
 
 		[[LSPManager sharedManager] requestFormattingForDocument:doc
 			tabSize:doc.tabSize insertSpaces:doc.softTabs
 			completion:^(NSArray<NSDictionary*>* edits) {
 				receivedEdits = edits;
-				done = YES;
+				done->store(true, std::memory_order_release);
 			}];
 
-		NSDate* timeout = [NSDate dateWithTimeIntervalSinceNow:0.1];
-		while(!done && [timeout timeIntervalSinceNow] > 0)
+		NSDate* timeout = [NSDate dateWithTimeIntervalSinceNow:0.5];
+		while(!done->load(std::memory_order_acquire) && [timeout timeIntervalSinceNow] > 0)
 			CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.01, true);
 
-		if(!done)
-			NSLog(@"[LSP] Format-on-save skipped: server did not respond within 100ms");
+		if(!done->load(std::memory_order_acquire))
+		{
+			NSLog(@"[LSP] Format-on-save skipped: server did not respond within 500ms");
+			return;
+		}
 
 		if(receivedEdits.count > 0)
 		{
@@ -212,31 +226,60 @@ static NSString* runCustomFormatter (std::string const& command, NSString* input
 			formatCommand = to_s(autoCommand);
 	}
 
-	if(!formatCommand.empty())
+	if(formatCommand.empty())
 	{
-		NSString* inputText = [NSString stringWithCxxString:documentView->substr()];
-		std::map<std::string, std::string> variables = [self variables];
-
-		NSString* error = nil;
-		NSString* output = runCustomFormatter(formatCommand, inputText, variables, &error);
-
-		if(output && ![output isEqualToString:inputText])
-		{
-			size_t caretOffset = documentView->ranges().last().last.index;
-			size_t newLength = to_s(output).size();
-
-			AUTO_REFRESH;
-			std::multimap<std::pair<size_t, size_t>, std::string> replacements;
-			replacements.emplace(std::make_pair((size_t)0, documentView->size()), to_s(output));
-			documentView->perform_replacements(replacements);
-			documentView->set_ranges(ng::range_t(std::min(caretOffset, newLength)));
-		}
-		else if(error)
-		{
-			[self showToolTip:error];
-		}
+#ifndef NDEBUG
+		NSLog(@"[Formatter] No custom formatter found for %s", filePath.c_str());
+#endif
+		NSBeep();
 		return;
 	}
+
+#ifndef NDEBUG
+	NSLog(@"[Formatter] Running: %s", formatCommand.c_str());
+#endif
+
+	NSString* inputText = [NSString stringWithCxxString:documentView->substr()];
+	std::map<std::string, std::string> variables = [self variables];
+
+	NSString* error = nil;
+	NSString* output = runCustomFormatter(formatCommand, inputText, variables, &error);
+
+	if(output && ![output isEqualToString:inputText])
+	{
+#ifndef NDEBUG
+		NSLog(@"[Formatter] Applied changes");
+#endif
+		size_t caretOffset = documentView->ranges().last().last.index;
+		size_t newLength = to_s(output).size();
+
+		AUTO_REFRESH;
+		std::multimap<std::pair<size_t, size_t>, std::string> replacements;
+		replacements.emplace(std::make_pair((size_t)0, documentView->size()), to_s(output));
+		documentView->perform_replacements(replacements);
+		documentView->set_ranges(ng::range_t(std::min(caretOffset, newLength)));
+	}
+	else if(error)
+	{
+		NSLog(@"[Formatter] Error: %@", error);
+		[self showToolTip:error];
+	}
+#ifndef NDEBUG
+	else
+	{
+		NSLog(@"[Formatter] No changes needed");
+	}
+#endif
+}
+
+- (void)lspFormatOnly:(id)sender
+{
+	if(!documentView)
+		return;
+
+	OakDocument* doc = self.document;
+	if(!doc)
+		return;
 
 	LSPManager* lsp = [LSPManager sharedManager];
 
@@ -246,16 +289,15 @@ static NSString* runCustomFormatter (std::string const& command, NSString* input
 	NSUInteger tabSize = doc.tabSize;
 	BOOL insertSpaces = doc.softTabs;
 
-	[lsp flushPendingChangesForDocument:doc];
-
-	__weak OakTextView* weakSelf = self;
-
 	if(hasSelection && [lsp serverSupportsRangeFormattingForDocument:doc])
 	{
+		[lsp flushPendingChangesForDocument:doc];
+
 		ng::range_t sel = capturedRanges.last();
 		text::pos_t startPos = documentView->convert(sel.min().index);
 		text::pos_t endPos   = documentView->convert(sel.max().index);
 
+		__weak OakTextView* weakSelf = self;
 		[lsp requestRangeFormattingForDocument:doc
 			startLine:startPos.line startCharacter:startPos.column
 			endLine:endPos.line endCharacter:endPos.column
@@ -275,6 +317,9 @@ static NSString* runCustomFormatter (std::string const& command, NSString* input
 	}
 	else if([lsp serverSupportsFormattingForDocument:doc])
 	{
+		[lsp flushPendingChangesForDocument:doc];
+
+		__weak OakTextView* weakSelf = self;
 		[lsp requestFormattingForDocument:doc
 			tabSize:tabSize insertSpaces:insertSpaces
 			completion:^(NSArray<NSDictionary*>* edits) {
