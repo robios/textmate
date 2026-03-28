@@ -62,4 +62,7 @@ extern NSString* const LSPShowMessageRequestNotification;
 - (void)sendCustomNotification:(NSString*)method params:(NSDictionary*)params;
 @end
 
+// Shared extension → LSP language ID mapping used by LSPManager and CopilotManager
+NSString* LSPLanguageIdForExtension(NSString* ext);
+
 #endif /* LSP_CLIENT_H_POC */

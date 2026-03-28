@@ -63,50 +63,7 @@ static NSString* languageIdForScope (NSString* fileType)
 	return @"plaintext";
 }
 
-static NSString* languageIdForExtension (NSString* ext)
-{
-	if(!ext.length)
-		return @"plaintext";
-
-	static NSDictionary* map = @{
-		@"php"  : @"php",
-		@"c"    : @"c",
-		@"h"    : @"c",
-		@"cc"   : @"cpp",
-		@"cpp"  : @"cpp",
-		@"cxx"  : @"cpp",
-		@"hpp"  : @"cpp",
-		@"m"    : @"objective-c",
-		@"mm"   : @"objective-cpp",
-		@"js"   : @"javascript",
-		@"jsx"  : @"javascript",
-		@"ts"   : @"typescript",
-		@"tsx"  : @"typescript",
-		@"py"   : @"python",
-		@"go"   : @"go",
-		@"rs"   : @"rust",
-		@"rb"   : @"ruby",
-		@"java" : @"java",
-		@"json" : @"json",
-		@"css"  : @"css",
-		@"html" : @"html",
-		@"htm"  : @"html",
-		@"sh"   : @"shellscript",
-		@"bash" : @"shellscript",
-		@"zsh"  : @"shellscript",
-		@"yaml" : @"yaml",
-		@"yml"  : @"yaml",
-		@"xml"  : @"xml",
-		@"sql"  : @"sql",
-		@"lua"  : @"lua",
-		@"swift": @"swift",
-		@"md"   : @"markdown",
-		@"vue"  : @"vue",
-	};
-
-	NSString* langId = map[ext.lowercaseString];
-	return langId ?: ext.lowercaseString;
-}
+// Uses shared LSPLanguageIdForExtension() from LSPClient.mm
 
 static std::vector<std::string> const& workspaceMarkers ()
 {
@@ -270,7 +227,7 @@ static std::string detectWorkspaceRoot (std::string const& filePath)
 
 	NSString* langId = languageIdForScope(document.fileType);
 	if([langId isEqualToString:@"plaintext"] && document.path)
-		langId = languageIdForExtension(document.path.pathExtension);
+		langId = LSPLanguageIdForExtension(document.path.pathExtension);
 
 	// Don't connect plaintext files — prevents unscoped lspCommand
 	// from launching a server for every file type

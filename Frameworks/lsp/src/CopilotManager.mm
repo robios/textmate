@@ -1,6 +1,7 @@
 #import "CopilotManager.h"
 #import "LSPClient.h"
 #import <settings/settings.h>
+#import <io/environment.h>
 #import <ns/ns.h>
 
 
@@ -8,8 +9,7 @@
 NSNotificationName const CopilotStatusDidChangeNotification = @"CopilotStatusDidChangeNotification";
 NSNotificationName const CopilotLogNotification             = @"CopilotLogNotification";
 
-// copilot-node-server is a Node.js script that speaks JSON-RPC with custom Copilot methods
-// The newer @github/copilot binary is a CLI agent (ACP), NOT an LSP server
+// copilot-language-server speaks LSP JSON-RPC with textDocument/inlineCompletion
 
 @interface CopilotManager () <LSPClientDelegate>
 {
@@ -60,40 +60,47 @@ NSNotificationName const CopilotLogNotification             = @"CopilotLogNotifi
 
 - (NSString*)detectServerPath
 {
-	// Native arm64 binary from @github/copilot-language-server (preferred)
-	static NSString* const nativeSuffix = @"node_modules/@github/copilot-language-server-darwin-arm64/copilot-language-server";
-	NSArray<NSString*>* nativeRoots = @[
+	NSFileManager* fm = NSFileManager.defaultManager;
+
+	// Search PATH from oak::basic_environment() (includes user's shell PATH)
+	auto const& env = oak::basic_environment();
+	auto it = env.find("PATH");
+	NSString* pathStr = it != env.end() ? to_ns(it->second) : @"/usr/bin:/bin:/usr/sbin:/sbin";
+	for(NSString* dir in [pathStr componentsSeparatedByString:@":"])
+	{
+		NSString* candidate = [dir stringByAppendingPathComponent:@"copilot-language-server"];
+		if([fm isExecutableFileAtPath:candidate])
+		{
+			[self log:[NSString stringWithFormat:@"Found via PATH: %@", candidate]];
+			return candidate;
+		}
+	}
+
+	// Fallback: well-known npm global locations (arm64 + x86_64)
+	NSArray<NSString*>* suffixes = @[
+		@"node_modules/@github/copilot-language-server-darwin-arm64/copilot-language-server",
+		@"node_modules/@github/copilot-language-server-darwin-x64/copilot-language-server",
+	];
+	NSArray<NSString*>* npmRoots = @[
 		@"/opt/homebrew/lib/node_modules/@github/copilot-language-server",
 		[NSHomeDirectory() stringByAppendingPathComponent:@".config/yarn/global/node_modules/@github/copilot-language-server"],
 		@"/usr/local/lib/node_modules/@github/copilot-language-server",
 	];
 
-	NSFileManager* fm = NSFileManager.defaultManager;
-	for(NSString* root in nativeRoots)
+	for(NSString* root in npmRoots)
 	{
-		NSString* candidate = [root stringByAppendingPathComponent:nativeSuffix];
-		if([fm isExecutableFileAtPath:candidate])
+		for(NSString* suffix in suffixes)
 		{
-			[self log:[NSString stringWithFormat:@"Native server found at %@", candidate]];
-			return candidate;
+			NSString* candidate = [root stringByAppendingPathComponent:suffix];
+			if([fm isExecutableFileAtPath:candidate])
+			{
+				[self log:[NSString stringWithFormat:@"Found at %@", candidate]];
+				return candidate;
+			}
 		}
 	}
 
-	// Fallback: copilot-node-server (legacy Node.js server)
-	NSArray<NSString*>* legacyCandidates = @[
-		@"/opt/homebrew/bin/copilot-node-server",
-		@"/usr/local/bin/copilot-node-server",
-	];
-	for(NSString* candidate in legacyCandidates)
-	{
-		if([fm isExecutableFileAtPath:candidate])
-		{
-			[self log:[NSString stringWithFormat:@"Legacy server found at %@", candidate]];
-			return candidate;
-		}
-	}
-
-	[self log:@"Copilot language server not found"];
+	[self log:@"copilot-language-server not found — install via: npm install -g @github/copilot-language-server"];
 	return nil;
 }
 
@@ -134,7 +141,7 @@ NSNotificationName const CopilotLogNotification             = @"CopilotLogNotifi
 	NSString* serverPath = [self serverPathForDocument:document];
 	if(!serverPath)
 	{
-		[self log:@"Cannot start Copilot — copilot-node-server not found"];
+		[self log:@"Cannot start Copilot — copilot-language-server not found"];
 		_status = CopilotStatusError;
 		[NSNotificationCenter.defaultCenter postNotificationName:CopilotStatusDidChangeNotification object:self];
 		return;
@@ -286,7 +293,7 @@ NSNotificationName const CopilotLogNotification             = @"CopilotLogNotifi
 
 	[self log:@"Checking Copilot auth status"];
 
-	// copilot-node-server uses direct JSON-RPC methods, not workspace/executeCommand
+	// copilot-language-server uses direct JSON-RPC methods, not workspace/executeCommand
 	[_client sendCustomRequest:@"checkStatus" params:@{} completion:^(id result) {
 		self->_checkingAuth = NO;
 		if(![result isKindOfClass:[NSDictionary class]])
@@ -427,24 +434,7 @@ static NSString* uriForDocument(OakDocument* doc)
 
 static NSString* languageIdForDocument(OakDocument* doc)
 {
-	NSString* ext = doc.path.pathExtension.lowercaseString;
-	static NSDictionary* map;
-	static dispatch_once_t once;
-	dispatch_once(&once, ^{
-		map = @{
-			@"py": @"python", @"js": @"javascript", @"ts": @"typescript",
-			@"jsx": @"javascriptreact", @"tsx": @"typescriptreact",
-			@"rb": @"ruby", @"go": @"go", @"rs": @"rust",
-			@"c": @"c", @"cc": @"cpp", @"cpp": @"cpp", @"h": @"c",
-			@"m": @"objective-c", @"mm": @"objective-cpp",
-			@"swift": @"swift", @"java": @"java", @"php": @"php",
-			@"sh": @"shellscript", @"bash": @"shellscript",
-			@"json": @"json", @"yaml": @"yaml", @"yml": @"yaml",
-			@"xml": @"xml", @"html": @"html", @"css": @"css",
-			@"md": @"markdown", @"sql": @"sql", @"lua": @"lua",
-		};
-	});
-	return map[ext] ?: @"plaintext";
+	return LSPLanguageIdForExtension(doc.path.pathExtension);
 }
 
 // MARK: - Telemetry

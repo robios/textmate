@@ -2255,3 +2255,63 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 }
 
 @end
+
+NSString* LSPLanguageIdForExtension (NSString* ext)
+{
+	if(!ext.length)
+		return @"plaintext";
+
+	static NSDictionary* map = @{
+		@"php"  : @"php",
+		@"c"    : @"c",
+		@"h"    : @"c",
+		@"cc"   : @"cpp",
+		@"cpp"  : @"cpp",
+		@"cxx"  : @"cpp",
+		@"hpp"  : @"cpp",
+		@"m"    : @"objective-c",
+		@"mm"   : @"objective-cpp",
+		@"js"   : @"javascript",
+		@"jsx"  : @"javascriptreact",
+		@"ts"   : @"typescript",
+		@"tsx"  : @"typescriptreact",
+		@"py"   : @"python",
+		@"go"   : @"go",
+		@"rs"   : @"rust",
+		@"rb"   : @"ruby",
+		@"java" : @"java",
+		@"json" : @"json",
+		@"css"  : @"css",
+		@"html" : @"html",
+		@"htm"  : @"html",
+		@"sh"   : @"shellscript",
+		@"bash" : @"shellscript",
+		@"zsh"  : @"shellscript",
+		@"yaml" : @"yaml",
+		@"yml"  : @"yaml",
+		@"xml"  : @"xml",
+		@"sql"  : @"sql",
+		@"lua"  : @"lua",
+		@"swift": @"swift",
+		@"md"   : @"markdown",
+		@"vue"  : @"vue",
+		@"svelte": @"svelte",
+		@"scss" : @"scss",
+		@"less" : @"less",
+		@"r"    : @"r",
+		@"pl"   : @"perl",
+		@"kt"   : @"kotlin",
+		@"dart" : @"dart",
+		@"ex"   : @"elixir",
+		@"exs"  : @"elixir",
+		@"erl"  : @"erlang",
+		@"hs"   : @"haskell",
+		@"toml" : @"toml",
+		@"ini"  : @"ini",
+		@"tf"   : @"terraform",
+		@"dockerfile" : @"dockerfile",
+	};
+
+	NSString* langId = map[ext.lowercaseString];
+	return langId ?: ext.lowercaseString;
+}
