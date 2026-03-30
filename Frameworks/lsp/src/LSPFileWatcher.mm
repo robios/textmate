@@ -4,7 +4,7 @@
 static NSArray<NSString*>* const kDefaultExcludes = @[
 	@".git", @".hg", @".svn",
 	@"node_modules", @"vendor", @".vendor",
-	@"build", @"dist", @".cache",
+	@"build", @"dist", @".cache", @".direnv",
 	@"__pycache__", @".tox", @".venv", @"venv",
 	@".mypy_cache", @".next", @".nuxt",
 	@"target", @"Pods",

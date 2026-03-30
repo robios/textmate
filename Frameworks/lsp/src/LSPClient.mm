@@ -671,12 +671,15 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 
 				if(!handled)
 				{
-					// Fallback: return an array of empty objects matching the items array length
+					// Return initializationOptions as configuration settings
+					// LSP servers like Intelephense request settings via workspace/configuration
+					// and expect the same keys they accept in initializationOptions
+					json initOpts = _initOptionsJSON.length ? json::parse(_initOptionsJSON.UTF8String, nullptr, false) : json::object();
 					json result = json::array();
 					if(msg.contains("params") && msg["params"].contains("items"))
 					{
 						for(size_t i = 0; i < msg["params"]["items"].size(); ++i)
-							result.push_back(json::object());
+							result.push_back(initOpts);
 					}
 					json response = {{"jsonrpc", "2.0"}, {"id", requestId}, {"result", result}};
 					[self sendMessage:response];
@@ -842,7 +845,8 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 
 			NSMutableString* logMsg = [NSMutableString stringWithFormat:@"%@ (id=%d) initialized", method ?: @"initialize", reqId];
 			[self sendNotification:@"initialized" params:json::object()];
-			[self sendNotification:@"workspace/didChangeConfiguration" params:{{"settings", json::object()}}];
+			json settings = _initOptionsJSON.length ? json::parse(_initOptionsJSON.UTF8String, nullptr, false) : json::object();
+			[self sendNotification:@"workspace/didChangeConfiguration" params:{{"settings", settings}}];
 
 			if([_delegate respondsToSelector:@selector(lspClientDidInitialize:)])
 				[_delegate lspClientDidInitialize:self];
