@@ -3719,6 +3719,18 @@ static char const* kOakMenuItemTitle = "OakMenuItemTitle";
 // = Definition Highlight (⌘) =
 // =============================
 
+- (void)viewDidMoveToWindow
+{
+	[NSNotificationCenter.defaultCenter removeObserver:self name:NSWindowDidResignKeyNotification object:nil];
+	if(self.window)
+		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(windowDidResignKey:) name:NSWindowDidResignKeyNotification object:self.window];
+}
+
+- (void)windowDidResignKey:(NSNotification*)aNotification
+{
+	self.showDefinitionCursor = NO;
+}
+
 - (void)updateTrackingAreas
 {
 	[super updateTrackingAreas];
@@ -3740,6 +3752,12 @@ static char const* kOakMenuItemTitle = "OakMenuItemTitle";
 
 	if(_showDefinitionCursor)
 	{
+		if(!([NSEvent modifierFlags] & NSEventModifierFlagCommand))
+		{
+			self.showDefinitionCursor = NO;
+			return;
+		}
+
 		ng::range_t wordRange = ng::extend(*documentView, index, kSelectionExtendToWord).last();
 
 		// Only highlight actual words (non-empty, not whitespace)
