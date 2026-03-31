@@ -2486,6 +2486,7 @@ static NSUInteger DisableSessionSavingCount = 0;
 
 		if([project[@"miniaturized"] boolValue])
 		{
+			[controller.window orderBack:self];
 			[controller.window miniaturize:nil];
 		}
 		else
