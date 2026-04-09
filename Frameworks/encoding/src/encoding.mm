@@ -209,15 +209,22 @@ namespace encoding
 		NSMutableDictionary* charsets = [NSMutableDictionary dictionary];
 		for(auto const& pair : _charsets)
 		{
+			NSString* charsetKey = @(pair.first.c_str());
+			if(!charsetKey)
+				continue;
+
 			NSMutableDictionary* words = [NSMutableDictionary dictionary];
 			for(auto const& word : pair.second.words)
-				words[@(word.first.c_str())] = @(word.second);
+			{
+				if(NSString* key = @(word.first.c_str()))
+					words[key] = @(word.second);
+			}
 
 			NSMutableDictionary* bytes = [NSMutableDictionary dictionary];
 			for(auto const& byte : pair.second.bytes)
 				bytes[@(byte.first)] = @(byte.second);
 
-			charsets[@(pair.first.c_str())] = @{ @"words": words, @"bytes": bytes };
+			charsets[charsetKey] = @{ @"words": words, @"bytes": bytes };
 		}
 
 		NSDictionary* root = @{ @"version": @1, @"charsets": charsets };
