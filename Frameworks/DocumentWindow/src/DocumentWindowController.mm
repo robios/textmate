@@ -2468,6 +2468,7 @@ static NSUInteger DisableSessionSavingCount = 0;
 	++DisableSessionSavingCount;
 
 	NSWindow* keyWindow;
+	NSMutableArray<NSWindow*>* fullScreenWindows = [NSMutableArray array];
 
 	NSDictionary* session = [NSDictionary dictionaryWithContentsOfFile:[self sessionPath]];
 	for(NSDictionary* project in session[@"projects"])
@@ -2489,11 +2490,13 @@ static NSUInteger DisableSessionSavingCount = 0;
 			[controller.window orderBack:self];
 			[controller.window miniaturize:nil];
 		}
+		else if([project[@"fullScreen"] boolValue])
+		{
+			[fullScreenWindows addObject:controller.window];
+		}
 		else
 		{
-			if([project[@"fullScreen"] boolValue])
-				[controller.window toggleFullScreen:self];
-			else if([project[@"zoomed"] boolValue])
+			if([project[@"zoomed"] boolValue])
 				[controller.window zoom:self];
 
 			[controller.window orderFront:self];
@@ -2504,6 +2507,15 @@ static NSUInteger DisableSessionSavingCount = 0;
 	}
 
 	[keyWindow makeKeyWindow];
+
+	// Defer fullscreen transitions until regular windows are fully ordered
+	if(fullScreenWindows.count)
+	{
+		dispatch_async(dispatch_get_main_queue(), ^{
+			for(NSWindow* window in fullScreenWindows)
+				[window toggleFullScreen:self];
+		});
+	}
 
 	--DisableSessionSavingCount;
 	return res;
