@@ -111,6 +111,7 @@ file(GLOB _fw_res
   "${CMAKE_SOURCE_DIR}/Frameworks/FileBrowser/resources/*.png"
   "${CMAKE_SOURCE_DIR}/Frameworks/DocumentWindow/resources/*.png"
   "${CMAKE_SOURCE_DIR}/Frameworks/HTMLOutput/resources/*.html"
+  "${CMAKE_SOURCE_DIR}/Frameworks/HTMLOutput/resources/*.js"
   "${CMAKE_SOURCE_DIR}/Frameworks/scm/resources/*.xslt"
 )
 target_sources(TextMate PRIVATE ${_fw_res})
