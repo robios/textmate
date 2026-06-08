@@ -1068,11 +1068,13 @@ static NSString* const kFoldingsColumnIdentifier  = @"foldings";
 	CopilotManager* copilot = [CopilotManager sharedManager];
 	if(copilot.status == CopilotStatusDisabled)
 	{
+		settings_t::set("copilotEnabled", true);
 		if(self.document)
 			[copilot documentDidOpen:self.document];
 	}
 	else
 	{
+		settings_t::set("copilotEnabled", false);
 		[copilot shutdown];
 	}
 }

@@ -27,7 +27,7 @@
 			[copilot signIn];
 			return;
 		case CopilotStatusDisabled:
-			[OakNotificationManager.shared showWithMessage:@"Copilot: Server not found" type:2];
+			[OakNotificationManager.shared showWithMessage:@"Copilot: Disabled" type:3];
 			return;
 		case CopilotStatusReady:
 			break;

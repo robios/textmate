@@ -30,6 +30,14 @@ NSNotificationName const CopilotLogNotification             = @"CopilotLogNotifi
 @synthesize status   = _status;
 @synthesize username = _username;
 
+static settings_t settingsForCopilotDocument(OakDocument* document)
+{
+	std::string filePath  = document.path ? to_s(document.path) : NULL_STR;
+	std::string fileType  = document.path ? to_s(document.fileType ?: @"") : "";
+	std::string directory = document.path ? to_s(document.directory ?: [document.path stringByDeletingLastPathComponent]) : NULL_STR;
+	return settings_for_path(filePath, fileType, directory);
+}
+
 // MARK: - Singleton
 
 + (instancetype)sharedManager
@@ -106,26 +114,20 @@ NSNotificationName const CopilotLogNotification             = @"CopilotLogNotifi
 
 - (NSString*)serverPathForDocument:(OakDocument*)document
 {
-	if(document.path)
+	settings_t settings = settingsForCopilotDocument(document);
+
+	bool enabled = settings.get("copilotEnabled", false);
+	if(!enabled)
 	{
-		std::string filePath  = to_s(document.path);
-		std::string fileType  = to_s(document.fileType ?: @"");
-		std::string directory = to_s(document.directory ?: [document.path stringByDeletingLastPathComponent]);
-		settings_t settings   = settings_for_path(filePath, fileType, directory);
+		[self log:@"Copilot disabled via copilotEnabled setting"];
+		return nil;
+	}
 
-		std::string customCmd = settings.get("copilotCommand", "");
-		if(!customCmd.empty())
-		{
-			[self log:[NSString stringWithFormat:@"Using copilotCommand from settings: %s", customCmd.c_str()]];
-			return to_ns(customCmd);
-		}
-
-		bool enabled = settings.get("copilotEnabled", true);
-		if(!enabled)
-		{
-			[self log:@"Copilot disabled via copilotEnabled setting"];
-			return nil;
-		}
+	std::string customCmd = settings.get("copilotCommand", "");
+	if(!customCmd.empty())
+	{
+		[self log:[NSString stringWithFormat:@"Using copilotCommand from settings: %s", customCmd.c_str()]];
+		return to_ns(customCmd);
 	}
 
 	return [self detectServerPath];
@@ -138,11 +140,12 @@ NSNotificationName const CopilotLogNotification             = @"CopilotLogNotifi
 	if(_client.running)
 		return;
 
+	BOOL enabled = settingsForCopilotDocument(document).get("copilotEnabled", false);
 	NSString* serverPath = [self serverPathForDocument:document];
 	if(!serverPath)
 	{
-		[self log:@"Cannot start Copilot — copilot-language-server not found"];
-		_status = CopilotStatusError;
+		[self log:@"Cannot start Copilot"];
+		_status = enabled ? CopilotStatusError : CopilotStatusDisabled;
 		[NSNotificationCenter.defaultCenter postNotificationName:CopilotStatusDidChangeNotification object:self];
 		return;
 	}
@@ -483,6 +486,8 @@ static NSString* languageIdForDocument(OakDocument* doc)
 - (void)documentDidOpen:(OakDocument*)document
 {
 	[self ensureClientForDocument:document];
+	if(!_client)
+		return;
 
 	NSString* uri = uriForDocument(document);
 	if(!uri)
@@ -593,6 +598,9 @@ static NSString* languageIdForDocument(OakDocument* doc)
 - (void)documentDidFocus:(OakDocument*)document
 {
 	[self ensureClientForDocument:document];
+	if(!_client)
+		return;
+
 	if(!_client.initialized)
 		return;
 
