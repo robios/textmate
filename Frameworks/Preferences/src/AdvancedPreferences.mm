@@ -173,7 +173,9 @@
 	scrollView.contentInsets = NSEdgeInsetsMake(0, 0, 0, 0);
 
 	content.translatesAutoresizingMaskIntoConstraints = NO;
-	[content.widthAnchor constraintEqualToAnchor:scrollView.contentView.widthAnchor].active = YES;
+	NSLayoutConstraint* widthConstraint = [content.widthAnchor constraintEqualToAnchor:scrollView.contentView.widthAnchor];
+	widthConstraint.priority = NSLayoutPriorityDefaultHigh;
+	widthConstraint.active = YES;
 
 	[scrollView setFrameSize:NSMakeSize(content.fittingSize.width, 400)];
 
