@@ -127,9 +127,15 @@ set_source_files_properties(${_doctype_res} PROPERTIES
 
 # Pre-converted HTML for About window
 file(GLOB _about_html about/*.html)
-target_sources(TextMate PRIVATE ${_about_html})
+file(GLOB _about_css about/css/*)
+file(GLOB _about_js about/js/*)
+target_sources(TextMate PRIVATE ${_about_html} ${_about_css} ${_about_js})
 set_source_files_properties(${_about_html} PROPERTIES
   MACOSX_PACKAGE_LOCATION "Resources/About")
+set_source_files_properties(${_about_css} PROPERTIES
+  MACOSX_PACKAGE_LOCATION "Resources/About/css")
+set_source_files_properties(${_about_js} PROPERTIES
+  MACOSX_PACKAGE_LOCATION "Resources/About/js")
 
 # Embedded CLI tools
 textmate_embed(TextMate mate "MacOS")
