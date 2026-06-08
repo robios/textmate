@@ -1,5 +1,6 @@
 #include "scm.h"
 #include "drivers/api.h"
+#include "gutter_diff.h"
 #include "snapshot.h"
 #include "fs_events.h"
 #include <io/path.h>
@@ -242,6 +243,27 @@ namespace scm
 
 	void shared_info_t::fs_did_change (std::set<std::string> const& changedPaths)
 	{
+		auto const is_repo_meta_change = [](std::string const& path) -> bool {
+			auto const pos = path.find("/.git/");
+			if(pos == std::string::npos)
+				return false;
+
+			std::string const rel = path.substr(pos + 6);
+			return rel == "HEAD"
+			    || rel == "index"
+			    || rel == "packed-refs"
+			    || rel.compare(0, 11, "refs/heads/") == 0;
+		};
+
+		for(auto const& path : changedPaths)
+		{
+			if(is_repo_meta_change(path))
+			{
+				gutter_diff::invalidate_repo(_root_path);
+				break;
+			}
+		}
+
 		schedule_update();
 	}
 

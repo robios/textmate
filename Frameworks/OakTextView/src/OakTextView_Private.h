@@ -366,6 +366,9 @@ private:
 	// =================
 
 	links_ptr _links;
+
+	NSTimer* _scmDiffGutterTimer;
+	uint64_t _scmDiffGutterGeneration;
 }
 
 // Core methods used by categories

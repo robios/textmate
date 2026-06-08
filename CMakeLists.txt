@@ -100,6 +100,7 @@ endif()
 # === Vendor ===
 add_subdirectory(vendor/Onigmo)
 add_subdirectory(vendor/kvdb)
+add_subdirectory(vendor/xdiff)
 
 # === Leaf Frameworks (no internal deps or only text) ===
 add_subdirectory(Frameworks/text)

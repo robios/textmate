@@ -3,7 +3,7 @@ add_library(scm STATIC)
 file(GLOB_RECURSE _src CONFIGURE_DEPENDS src/*.cc)
 target_sources(scm PRIVATE ${_src})
 textmate_framework(scm)
-target_link_libraries(scm PUBLIC text cf io settings regexp
+target_link_libraries(scm PUBLIC text cf io settings regexp xdiff
   "-framework Carbon" "-framework Security")
 
 # Resources
