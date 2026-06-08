@@ -35,7 +35,6 @@ namespace scm
 		{
 			FSEventStreamScheduleWithRunLoop(stream, CFRunLoopGetCurrent(), kCFRunLoopDefaultMode);
 			FSEventStreamStart(stream);
-			FSEventStreamFlushSync(stream);
 		}
 		else
 		{
