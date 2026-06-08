@@ -12,3 +12,5 @@ target_link_options(TextMateQL PRIVATE -bundle)
 target_link_libraries(TextMateQL PRIVATE
   OakFoundation buffer bundles cf file io ns plist scope settings theme OakDebug
   "-framework CoreFoundation" "-framework QuickLook" "-framework AppKit" "-framework OSAKit" "-framework UniformTypeIdentifiers")
+
+textmate_codesign(TextMateQL "${CS_IDENTITY}")

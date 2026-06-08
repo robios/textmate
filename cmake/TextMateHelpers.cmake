@@ -77,6 +77,19 @@ function(textmate_codesign TARGET IDENTITY)
     COMMENT "Codesign: ${TARGET}")
 endfunction()
 
+# Sign a plain executable or dylib (non-bundle) after it is built
+function(textmate_codesign_file TARGET IDENTITY FILE_PATH)
+  set(_flags --force --options runtime)
+  if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    list(APPEND _flags --timestamp)
+  else()
+    list(APPEND _flags --timestamp=none)
+  endif()
+  add_custom_command(TARGET ${TARGET} POST_BUILD
+    COMMAND xcrun codesign --sign "${IDENTITY}" ${_flags} "${FILE_PATH}"
+    COMMENT "Codesign file: ${FILE_PATH}")
+endfunction()
+
 # Embed a target into an app bundle.
 # Usage: textmate_embed(AppTarget DepTarget "Location/In/Bundle" [DIRECTORY])
 # Without DIRECTORY: copies the single executable file.

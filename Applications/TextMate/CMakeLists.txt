@@ -143,7 +143,19 @@ textmate_embed(TextMate Dialog2 "PlugIns" DIRECTORY)
 # Embedded QuickLook plugin
 textmate_embed(TextMate TextMateQL "Library/QuickLook" DIRECTORY)
 
-# Entitlements + code signing
+# Sign embedded binaries (inner-to-outer, before app signature)
+textmate_codesign_file(TextMate "${CS_IDENTITY}"
+  "$<TARGET_BUNDLE_DIR:TextMate>/Contents/MacOS/mate")
+textmate_codesign_file(TextMate "${CS_IDENTITY}"
+  "$<TARGET_BUNDLE_DIR:TextMate>/Contents/MacOS/tm_query")
+textmate_codesign_file(TextMate "${CS_IDENTITY}"
+  "$<TARGET_BUNDLE_DIR:TextMate>/Contents/Resources/PrivilegedTool")
+if(OakSwiftUI_LIB)
+  textmate_codesign_file(TextMate "${CS_IDENTITY}"
+    "$<TARGET_BUNDLE_DIR:TextMate>/Contents/Frameworks/libOakSwiftUI.dylib")
+endif()
+
+# Entitlements + code signing (outer app — must be last)
 configure_file(Entitlements.plist ${CMAKE_CURRENT_BINARY_DIR}/Entitlements.plist)
 textmate_codesign(TextMate "${CS_IDENTITY}"
   ENTITLEMENTS "${CMAKE_CURRENT_BINARY_DIR}/Entitlements.plist")

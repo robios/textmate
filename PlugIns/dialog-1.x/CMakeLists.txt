@@ -18,14 +18,12 @@ set_target_properties(Dialog PROPERTIES
 target_link_options(Dialog PRIVATE -bundle)
 target_link_libraries(Dialog PRIVATE "-framework Cocoa")
 
-# Embed tm_dialog into plugin Resources
+# Embed tm_dialog into plugin Resources and sign inner-to-outer
 add_dependencies(Dialog tm_dialog)
 add_custom_command(TARGET Dialog POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy
     "$<TARGET_FILE:tm_dialog>"
     "$<TARGET_BUNDLE_DIR:Dialog>/Contents/Resources/tm_dialog")
-
-# Ad-hoc codesign the plugin
-add_custom_command(TARGET Dialog POST_BUILD
-  COMMAND xcrun codesign --force --sign - --timestamp=none
-    "$<TARGET_BUNDLE_DIR:Dialog>")
+textmate_codesign_file(Dialog "${CS_IDENTITY}"
+  "$<TARGET_BUNDLE_DIR:Dialog>/Contents/Resources/tm_dialog")
+textmate_codesign(Dialog "${CS_IDENTITY}")

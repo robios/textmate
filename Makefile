@@ -1,4 +1,4 @@
-.PHONY: all debug release clean clean-debug clean-release run swift-build-debug swift-build-release
+.PHONY: all debug release clean clean-debug clean-release run package swift-build-debug swift-build-release
 
 all: debug
 
@@ -20,9 +20,14 @@ debug: swift-build-debug
 	cmake -B build-debug -G Ninja -DCMAKE_BUILD_TYPE=Debug
 	ninja -C build-debug
 
+CS_IDENTITY ?= -
+
 release: swift-build-release
-	cmake -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+	cmake -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DCS_IDENTITY="$(CS_IDENTITY)"
 	ninja -C build-release
+
+package:
+	@bash scripts/package.sh
 
 run: debug
 	open build-debug/Applications/TextMate/TextMate.app
