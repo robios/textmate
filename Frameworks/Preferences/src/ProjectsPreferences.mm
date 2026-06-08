@@ -17,7 +17,7 @@
 @implementation ProjectsPreferences
 - (id)init
 {
-	if(self = [super initWithNibName:nil label:@"Projects" image:[NSImage imageNamed:@"Projects" inSameBundleAsClass:[self class]]])
+	if(self = [super initWithNibName:nil label:@"Projects" image:PreferencesToolbarImage(@"folder", @"Projects", [NSImage imageNamed:@"Projects" inSameBundleAsClass:[self class]])])
 	{
 		[OakStringListTransformer createTransformerWithName:@"OakFileBrowserPlacementSettingsTransformer" andObjectsArray:@[ @"left", @"right" ]];
 		[OakStringListTransformer createTransformerWithName:@"OakHTMLOutputPlacementSettingsTransformer" andObjectsArray:@[ @"bottom", @"right", @"window" ]];

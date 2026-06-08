@@ -7,7 +7,7 @@
 @implementation AdvancedPreferences
 - (id)init
 {
-	if(self = [super initWithNibName:nil label:@"Advanced" image:[NSImage imageWithSystemSymbolName:@"gearshape.2" accessibilityDescription:@"Advanced"]])
+	if(self = [super initWithNibName:nil label:@"Advanced" image:PreferencesToolbarImage(@"gearshape.2", @"Advanced", nil)])
 	{
 		self.defaultsProperties = @{
 			@"disableTypingPairs":                  kUserDefaultsDisableTypingPairsKey,

@@ -17,7 +17,7 @@ static NSString* const kColumnStatus    = @"status";
 @end
 
 @implementation FormattersPreferences
-- (NSImage*)toolbarItemImage { return [NSImage imageWithSystemSymbolName:@"hammer" accessibilityDescription:@"Formatters"]; }
+- (NSImage*)toolbarItemImage { return PreferencesToolbarImage(@"hammer", @"Formatters", nil); }
 
 - (id)init
 {

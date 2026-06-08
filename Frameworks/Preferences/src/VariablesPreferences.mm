@@ -17,7 +17,7 @@ static NSString* const kVariableKeyValue   = @"value";
 @end
 
 @implementation VariablesPreferences
-- (NSImage*)toolbarItemImage { return [NSImage imageNamed:@"Variables" inSameBundleAsClass:[self class]]; }
+- (NSImage*)toolbarItemImage { return PreferencesToolbarImage(@"dollarsign.circle", @"Variables", [NSImage imageNamed:@"Variables" inSameBundleAsClass:[self class]]); }
 
 - (id)init
 {

@@ -142,7 +142,7 @@ static NSUserInterfaceItemIdentifier const kTableColumnIdentifierDescription = @
 @end
 
 @implementation BundlesPreferences
-- (NSImage*)toolbarItemImage { return [NSWorkspace.sharedWorkspace iconForContentType:[UTType typeWithFilenameExtension:@"tmbundle"]]; }
+- (NSImage*)toolbarItemImage { return PreferencesToolbarImage(@"puzzlepiece.extension", @"Bundles", [NSWorkspace.sharedWorkspace iconForContentType:[UTType typeWithFilenameExtension:@"tmbundle"]]); }
 
 - (id)init
 {
