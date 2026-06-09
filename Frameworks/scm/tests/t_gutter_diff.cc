@@ -88,6 +88,17 @@ void test_diff_empty_old_all_added ()
 	OAK_ASSERT_EQ(r[3], change::added);
 }
 
+void test_diff_empty_old_indented_lines_are_consecutive ()
+{
+	auto r = diff_bytes("", "if(true)\n{\n    a();\n    b();\n}\n");
+	OAK_ASSERT_EQ(r.size(), 5);
+	OAK_ASSERT_EQ(r[1], change::added);
+	OAK_ASSERT_EQ(r[2], change::added);
+	OAK_ASSERT_EQ(r[3], change::added);
+	OAK_ASSERT_EQ(r[4], change::added);
+	OAK_ASSERT_EQ(r[5], change::added);
+}
+
 void test_diff_empty_new_all_deleted ()
 {
 	// Every line gone. Mark line 1 as deleted (best we can do with

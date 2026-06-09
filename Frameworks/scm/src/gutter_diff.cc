@@ -92,61 +92,57 @@ namespace scm { namespace gutter_diff {
 		int out_line_cb (void* priv, mmbuffer_t* mb, int nbuf)
 		{
 			walker_t& w = *(walker_t*)priv;
-			for(int i = 0; i < nbuf; ++i)
+			if(nbuf == 0 || mb[0].size == 0)
+				return 0;
+
+			char const c = mb[0].ptr[0];
+
+			// xdiff emits a diff record as prefix + source text chunks in
+			// one callback; only the prefix/header chunk is diff syntax.
+			if(mb[0].size >= 2 && mb[0].ptr[0] == '@' && mb[0].ptr[1] == '@')
 			{
-				if(mb[i].size == 0)
-					continue;
+				flush_unpaired_deletions(w);
+				w.lineno = new_begin_from_hunk_header(mb[0].ptr, (size_t)mb[0].size);
+				w.deleted = 0;
+				w.in_hunk = true;
+				return 0;
+			}
 
-				char const c = mb[i].ptr[0];
+			if(!w.in_hunk)
+				return 0;
 
-				// Hunk header: parse new-side line number, reset
-				// deletion counter, flushing any leftover from the
-				// previous hunk first.
-				if(mb[i].size >= 2 && mb[i].ptr[0] == '@' && mb[i].ptr[1] == '@')
-				{
+			switch(c)
+			{
+				case ' ':
 					flush_unpaired_deletions(w);
-					w.lineno = new_begin_from_hunk_header(mb[i].ptr, (size_t)mb[i].size);
-					w.deleted = 0;
-					w.in_hunk = true;
-					continue;
-				}
+					++w.lineno;
+					break;
 
-				if(!w.in_hunk)
-					continue;
+				case '-':
+					++w.deleted;
+					break;
 
-				switch(c)
-				{
-					case ' ':
-						flush_unpaired_deletions(w);
-						++w.lineno;
-						break;
+				case '+':
+					if(w.deleted > 0)
+					{
+						w.out[w.lineno] = change::modified;
+						--w.deleted;
+					}
+					else
+					{
+						w.out[w.lineno] = change::added;
+					}
+					++w.lineno;
+					break;
 
-					case '-':
-						++w.deleted;
-						break;
+				case '\\':
+					// "\ No newline at end of file" — pre-EOF
+					// normalisation in diff_bytes already removes
+					// the cases where this would change marks.
+					break;
 
-					case '+':
-						if(w.deleted > 0)
-						{
-							w.out[w.lineno] = change::modified;
-							--w.deleted;
-						}
-						else
-						{
-							w.out[w.lineno] = change::added;
-						}
-						++w.lineno;
-						break;
-
-					case '\\':
-						// "\ No newline at end of file" — pre-EOF
-						// normalisation in diff_bytes already removes
-						// the cases where this would change marks.
-						break;
-
-					default:
-						break;
-				}
+				default:
+					break;
 			}
 			return 0;
 		}

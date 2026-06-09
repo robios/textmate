@@ -244,11 +244,17 @@ namespace scm
 	void shared_info_t::fs_did_change (std::set<std::string> const& changedPaths)
 	{
 		auto const is_repo_meta_change = [](std::string const& path) -> bool {
-			auto const pos = path.find("/.git/");
+			auto const pos = path.find("/.git");
 			if(pos == std::string::npos)
 				return false;
 
-			std::string const rel = path.substr(pos + 6);
+			auto const rel_pos = pos + 5;
+			if(path.size() == rel_pos)
+				return true;
+			if(path[rel_pos] != '/')
+				return false;
+
+			std::string const rel = path.substr(rel_pos + 1);
 			return rel == "HEAD"
 			    || rel == "index"
 			    || rel == "packed-refs"
