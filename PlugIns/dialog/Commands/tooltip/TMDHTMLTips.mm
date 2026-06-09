@@ -5,6 +5,7 @@
 //
 
 #import "TMDHTMLTips.h"
+#import <WebKit/WebKit.h>
 
 /*
 "$DIALOG" tooltip --text '‘foobar’'
@@ -13,10 +14,9 @@
 
 NSString* const TMDTooltipPreferencesIdentifier = @"TM Tooltip";
 
-@interface TMDHTMLTip () <WebFrameLoadDelegate>
+@interface TMDHTMLTip () <WKNavigationDelegate>
 {
-	WebView*	webView;
-	WebPreferences* webPreferences;
+	WKWebView* webView;
 
 	NSDate* didOpenAtDate; // ignore mouse moves for the next second
 	NSPoint mousePositionWhenOpened;
@@ -52,23 +52,13 @@ NSString* const TMDTooltipPreferencesIdentifier = @"TM Tooltip";
 		[self setHidesOnDeactivate:YES];
 		[self setIgnoresMouseEvents:YES];
 
-		webPreferences = [[WebPreferences alloc] initWithIdentifier:TMDTooltipPreferencesIdentifier];
-		[webPreferences setJavaScriptEnabled:YES];
-		[webPreferences setPlugInsEnabled:NO];
-		[webPreferences setUsesPageCache:NO];
-		[webPreferences setCacheModel:WebCacheModelDocumentViewer];
-		NSString* fontName = [NSUserDefaults.standardUserDefaults stringForKey:@"fontName"];
-		int fontSize = [NSUserDefaults.standardUserDefaults integerForKey:@"fontSize"] ?: 11;
-		NSFont* font = fontName ? [NSFont fontWithName:fontName size:fontSize] : [NSFont userFixedPitchFontOfSize:fontSize];
-		[webPreferences setStandardFontFamily:[font familyName]];
-		[webPreferences setDefaultFontSize:fontSize];
-		[webPreferences setDefaultFixedFontSize:fontSize];
+		WKWebViewConfiguration* config = [WKWebViewConfiguration new];
+		config.websiteDataStore = WKWebsiteDataStore.nonPersistentDataStore;
 
-		webView = [[WebView alloc] initWithFrame:NSZeroRect];
-		[webView setPreferencesIdentifier:TMDTooltipPreferencesIdentifier];
+		webView = [[WKWebView alloc] initWithFrame:NSZeroRect configuration:config];
 		[webView setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
-		[webView setFrameLoadDelegate:self];
-		[webView setDrawsBackground:NO];
+		[webView setNavigationDelegate:self];
+		[webView setValue:@NO forKey:@"drawsBackground"]; // no public API for a transparent WKWebView
 
 		[self setContentView:webView];
 	}
@@ -80,6 +70,10 @@ NSString* const TMDTooltipPreferencesIdentifier = @"TM Tooltip";
 // ===========
 - (void)setContent:(NSString*)content transparent:(BOOL)transparent
 {
+	NSString* fontName = [NSUserDefaults.standardUserDefaults stringForKey:@"fontName"];
+	int fontSize = [NSUserDefaults.standardUserDefaults integerForKey:@"fontSize"] ?: 11;
+	NSFont* font = fontName ? [NSFont fontWithName:fontName size:fontSize] : [NSFont userFixedPitchFontOfSize:fontSize];
+
 	NSString* fullContent =	@"<html>"
 				@"<head>"
 				@"  <style type='text/css' media='screen'>"
@@ -90,6 +84,8 @@ NSString* const TMDTooltipPreferencesIdentifier = @"TM Tooltip";
 				@"          overflow: hidden;"
 				@"          display: table-cell;"
 				@"          max-width: 800px;"
+				@"          font-family: '%@';"
+				@"          font-size: %dpx;"
 				@"      }"
 				@"      pre { white-space: pre-wrap; }"
 				@"  </style>"
@@ -97,11 +93,11 @@ NSString* const TMDTooltipPreferencesIdentifier = @"TM Tooltip";
 				@"<body>%@</body>"
 				@"</html>";
 
-	fullContent = [NSString stringWithFormat:fullContent, transparent ? @"transparent" : @"#F6EDC3", content];
-	[[webView mainFrame] loadHTMLString:fullContent baseURL:nil];
+	fullContent = [NSString stringWithFormat:fullContent, transparent ? @"transparent" : @"#F6EDC3", [font familyName], fontSize, content];
+	[webView loadHTMLString:fullContent baseURL:nil];
 }
 
-- (void)sizeToContent
+- (void)sizeToContentAndShow
 {
 	// Current tooltip position
 	NSPoint pos = NSMakePoint([self frame].origin.x, [self frame].origin.y + [self frame].size.height);
@@ -120,32 +116,33 @@ NSString* const TMDTooltipPreferencesIdentifier = @"TM Tooltip";
 	// The webview is set to a large initial size and then sized down to fit the content
 	[self setContentSize:NSMakeSize(screenFrame.size.width - screenFrame.size.width / 3.0, screenFrame.size.height)];
 
-	double height = ceil([[[webView windowScriptObject] evaluateWebScript:@"document.body.getBoundingClientRect().bottom;"] doubleValue]);
-	double width  = ceil([[[webView windowScriptObject] evaluateWebScript:@"document.body.getBoundingClientRect().right;"] doubleValue]);
+	[webView evaluateJavaScript:@"[ document.body.getBoundingClientRect().right, document.body.getBoundingClientRect().bottom ]" completionHandler:^(id result, NSError* error){
+		if(![result isKindOfClass:[NSArray class]] || [result count] != 2)
+			return;
 
-	[webView setFrameSize:NSMakeSize(width, height)];
+		double width  = ceil([result[0] doubleValue]);
+		double height = ceil([result[1] doubleValue]);
 
-	NSRect frame      = [self frameRectForContentRect:[webView frame]];
-	frame.size.width  = std::min(NSWidth(frame), NSWidth(screenFrame));
-	frame.size.height = std::min(NSHeight(frame), NSHeight(screenFrame));
-	[self setFrame:frame display:NO];
+		[self->webView setFrameSize:NSMakeSize(width, height)];
 
-	pos.x = std::max(NSMinX(screenFrame), std::min(pos.x, NSMaxX(screenFrame)-NSWidth(frame)));
-	pos.y = std::min(std::max(NSMinY(screenFrame)+NSHeight(frame), pos.y), NSMaxY(screenFrame));
+		NSRect frame      = [self frameRectForContentRect:[self->webView frame]];
+		frame.size.width  = std::min(NSWidth(frame), NSWidth(screenFrame));
+		frame.size.height = std::min(NSHeight(frame), NSHeight(screenFrame));
+		[self setFrame:frame display:NO];
 
-	[self setFrameTopLeftPoint:pos];
+		NSPoint newPos = pos;
+		newPos.x = std::max(NSMinX(screenFrame), std::min(newPos.x, NSMaxX(screenFrame)-NSWidth(frame)));
+		newPos.y = std::min(std::max(NSMinY(screenFrame)+NSHeight(frame), newPos.y), NSMaxY(screenFrame));
+
+		[self setFrameTopLeftPoint:newPos];
+		[self orderFront:self];
+		[self runUntilUserActivity:self];
+	}];
 }
 
-- (void)delayedSizeAndShow:(id)sender
+- (void)webView:(WKWebView*)sender didFinishNavigation:(WKNavigation*)navigation
 {
-	[self sizeToContent];
-	[self orderFront:self];
-	[self runUntilUserActivity:self];
-}
-
-- (void)webView:(WebView*)sender didFinishLoadForFrame:(WebFrame*)frame;
-{
-	[self performSelector:@selector(delayedSizeAndShow:) withObject:self afterDelay:0];
+	[self sizeToContentAndShow];
 }
 
 // ==================
