@@ -63,7 +63,7 @@
 {
 	__weak FileSystemObserver* weakSelf = self;
 	dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-		NSArray<NSURL*>* urls = [NSFileManager.defaultManager contentsOfDirectoryAtURL:url includingPropertiesForKeys:@[ NSURLIsDirectoryKey, NSURLIsPackageKey, NSURLIsSymbolicLinkKey, NSURLIsHiddenKey, NSURLLocalizedNameKey, NSURLEffectiveIconKey ] options:0 error:nil];
+		NSArray<NSURL*>* urls = [NSFileManager.defaultManager contentsOfDirectoryAtURL:url includingPropertiesForKeys:@[ NSURLIsDirectoryKey, NSURLIsPackageKey, NSURLIsSymbolicLinkKey, NSURLIsHiddenKey, NSURLLocalizedNameKey ] options:0 error:nil];
 		dispatch_async(dispatch_get_main_queue(), ^{
 			[weakSelf updateFSEventsURLs:urls scmURLs:nil];
 		});
