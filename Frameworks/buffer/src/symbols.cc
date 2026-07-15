@@ -24,6 +24,10 @@ namespace
 					while(!parse_char(it, last, '\n') && it != last)
 						++it;
 				}
+				else if(parse_char(it, last, ';'))
+				{
+					// stray rule separator, e.g. ‘s/…/…/ ; s/…/…/’
+				}
 				else if(parse_char(it, last, 's') && parse_char(it, last, '/'))
 				{
 					std::string regexp;
@@ -99,35 +103,60 @@ namespace ng
 
 	void symbols_t::did_parse (buffer_t const* buffer, size_t from, size_t to)
 	{
-		_symbols.remove(_symbols.lower_bound(from), _symbols.lower_bound(to));
-
-		std::set<scope::scope_t> all_scopes;
-		foreach(it, buffer->_scopes.lower_bound(from), buffer->_scopes.lower_bound(to))
-			all_scopes.insert(all_scopes.end(), it->second);
-
-		std::map<scope::scope_t, transform_t> transforms;
-		for(auto const& it : all_scopes)
-		{
-			if(plist::is_true(bundles::value_for_setting("showInSymbolList", it)))
+		std::map<scope::scope_t, std::shared_ptr<transform_t>> transforms;
+		auto transform_for = [&transforms](scope::scope_t const& scope) -> transform_t* {
+			auto it = transforms.find(scope);
+			if(it == transforms.end())
 			{
-				plist::any_t const& symbolTransformationValue = bundles::value_for_setting("symbolTransformation", it);
-				std::string const* symbolTransformation = plist::get<std::string>(&symbolTransformationValue);
-				transforms.emplace(it, transform_t(symbolTransformation ? *symbolTransformation : ""));
+				std::shared_ptr<transform_t> transform;
+				if(plist::is_true(bundles::value_for_setting("showInSymbolList", scope)))
+				{
+					plist::any_t const& symbolTransformationValue = bundles::value_for_setting("symbolTransformation", scope);
+					std::string const* symbolTransformation = plist::get<std::string>(&symbolTransformationValue);
+					transform = std::make_shared<transform_t>(symbolTransformation ? *symbolTransformation : "");
+				}
+				it = transforms.emplace(scope, transform).first;
 			}
+			return it->second.get();
+		};
+
+		// A symbol’s scope run can span multiple parse batches, so extend the range
+		// backward and forward through adjacent symbol-marked runs and recompute such
+		// symbols whole, rather than leave a fragment behind at each batch boundary.
+		auto first = buffer->_scopes.lower_bound(from);
+		while(first != buffer->_scopes.begin())
+		{
+			auto it = first;
+			--it;
+			if(!transform_for(it->second))
+				break;
+			first = it;
 		}
+
+		auto last = buffer->_scopes.lower_bound(to);
+		while(last != buffer->_scopes.end() && transform_for(last->second))
+			++last;
+
+		size_t extendedFrom = from;
+		if(first != buffer->_scopes.end())
+			extendedFrom = std::min(extendedFrom, (size_t)first->first);
+		size_t extendedTo = last != buffer->_scopes.end() ? std::max(to, (size_t)last->first) : buffer->size();
+
+		_symbols.remove(_symbols.lower_bound(extendedFrom), _symbols.lower_bound(extendedTo));
 
 		size_t beginOfSymbol = 0;
 		bool inSymbol = false;
 		transform_t* transform = nullptr;
-		foreach(it, buffer->_scopes.lower_bound(from), buffer->_scopes.lower_bound(to))
+		for(auto it = first; it != last; ++it)
 		{
-			std::map<scope::scope_t, transform_t>::iterator transformIt = transforms.find(it->second);
-			if(transformIt != transforms.end())
+			if(transform_t* transformForScope = transform_for(it->second))
 			{
 				if(!inSymbol)
+				{
 					beginOfSymbol = it->first;
-				transform = &transformIt->second;
-				inSymbol  = true;
+					transform = transformForScope;
+					inSymbol  = true;
+				}
 			}
 			else if(inSymbol)
 			{
@@ -137,7 +166,7 @@ namespace ng
 		}
 
 		if(inSymbol)
-			_symbols.set(beginOfSymbol, transform->expand(buffer->substr(beginOfSymbol, to)));
+			_symbols.set(beginOfSymbol, transform->expand(buffer->substr(beginOfSymbol, extendedTo)));
 	}
 
 	std::map<size_t, std::string> symbols_t::symbols (buffer_t const* buffer) const

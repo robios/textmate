@@ -4,6 +4,7 @@
 #import <oak/duration.h>
 
 static bundles::item_ptr TestGrammarItem;
+static bundles::item_ptr SymbolTestGrammarItem;
 
 void setup_fixtures ()
 {
@@ -18,8 +19,36 @@ void setup_fixtures ()
 		"	uuid           = '978BF73C-B36D-490F-AEBF-74EF2C6EA7D1';\n"
 		"}\n";
 
+	static std::string SymbolTestGrammar =
+		"{	fileTypes      = ( sym );\n"
+		"	name           = 'Symbol Test';\n"
+		"	patterns       = (\n"
+		"    { name = 'meta.block.sym'; begin = 'BEGIN'; end = 'END'; },\n"
+		"    { name = 'entity.name.function.sym'; match = 'fn\\w+'; },\n"
+		"  );\n"
+		"	scopeName      = 'test.symbols';\n"
+		"	uuid           = '6FF1F559-08A5-4D3B-82A3-BA2FA0CC2E9E';\n"
+		"}\n";
+
+	static std::string SymbolListBlockSettings =
+		"{	name = 'Symbol List - Block';\n"
+		"	scope = 'meta.block.sym';\n"
+		"	settings = { showInSymbolList = 1; symbolTransformation = 's/BEGIN\\s*//; s/\\s*END// ; s/[.]//g'; };\n"
+		"	uuid = '20F1B100-3E93-4691-8B7A-54050B330A81';\n"
+		"}\n";
+
+	static std::string SymbolListFunctionSettings =
+		"{	name = 'Symbol List - Function';\n"
+		"	scope = 'entity.name.function.sym';\n"
+		"	settings = { showInSymbolList = 1; };\n"
+		"	uuid = 'D9E48E1B-9B22-4701-A198-4EF7A0EAA866';\n"
+		"}\n";
+
 	test::bundle_index_t bundleIndex;
-	TestGrammarItem = bundleIndex.add(bundles::kItemTypeGrammar, TestLanguageGrammar);
+	TestGrammarItem       = bundleIndex.add(bundles::kItemTypeGrammar, TestLanguageGrammar);
+	SymbolTestGrammarItem = bundleIndex.add(bundles::kItemTypeGrammar, SymbolTestGrammar);
+	bundleIndex.add(bundles::kItemTypeSettings, SymbolListBlockSettings);
+	bundleIndex.add(bundles::kItemTypeSettings, SymbolListFunctionSettings);
 	bundleIndex.commit();
 
 	NSApplicationLoad();
@@ -192,6 +221,54 @@ void test_scopes ()
 	OAK_ASSERT_EQ(to_s(buf.scope( 4).right), "test bar");
 	OAK_ASSERT_EQ(to_s(buf.scope( 6).left),  "test bar");
 	// OAK_ASSERT_EQ(to_s(buf.scope( 6).right), "test");
+}
+
+void test_symbols ()
+{
+	ng::buffer_t buf;
+	buf.set_grammar(SymbolTestGrammarItem);
+	buf.insert(0, "fnFoo\nBEGIN x END\nfnBar\n");
+	buf.bump_revision();
+	buf.wait_for_repair();
+
+	std::map<size_t, std::string> const expected = { { 0, "fnFoo" }, { 6, "x" }, { 18, "fnBar" } };
+	OAK_ASSERT(buf.symbols() == expected);
+}
+
+void test_symbols_spanning_parse_batches ()
+{
+	// wait_for_repair() parses line by line, so a symbol whose scope spans
+	// multiple lines is reported across several did_parse() calls and must not
+	// be truncated at (or split by) the batch boundaries. The dot exercises the
+	// third transformation rule, whose ‘ ; ’ separator has surrounding spaces.
+	ng::buffer_t buf;
+	buf.set_grammar(SymbolTestGrammarItem);
+	buf.insert(0, "BEGIN one.\ntwo\nthree END\n");
+	buf.bump_revision();
+	buf.wait_for_repair();
+
+	std::map<size_t, std::string> const expected = { { 0, "one two three" } };
+	OAK_ASSERT(buf.symbols() == expected);
+}
+
+void test_symbols_edit_inside_symbol ()
+{
+	ng::buffer_t buf;
+	buf.set_grammar(SymbolTestGrammarItem);
+	buf.insert(0, "BEGIN one\ntwo\nthree END\nfnBaz\n");
+	buf.bump_revision();
+	buf.wait_for_repair();
+
+	std::map<size_t, std::string> const expected = { { 0, "one two three" }, { 24, "fnBaz" } };
+	OAK_ASSERT(buf.symbols() == expected);
+
+	buf.replace(10, 13, "TWO");
+	buf.bump_revision();
+	buf.wait_for_repair();
+	OAK_ASSERT_EQ(buf.substr(0, buf.size()), "BEGIN one\nTWO\nthree END\nfnBaz\n");
+
+	std::map<size_t, std::string> const expectedAfterEdit = { { 0, "one TWO three" }, { 24, "fnBaz" } };
+	OAK_ASSERT(buf.symbols() == expectedAfterEdit);
 }
 
 void test_sanitize_index ()
