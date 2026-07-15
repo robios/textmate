@@ -101,6 +101,7 @@ endif()
 add_subdirectory(vendor/Onigmo)
 add_subdirectory(vendor/kvdb)
 add_subdirectory(vendor/xdiff)
+add_subdirectory(vendor/cmark-gfm)
 
 # === Leaf Frameworks (no internal deps or only text) ===
 add_subdirectory(Frameworks/text)
