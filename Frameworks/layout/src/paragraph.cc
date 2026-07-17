@@ -378,6 +378,7 @@ namespace ng
 		}
 
 		_dirty = false;
+		_pending_wrap_width = 0; // width() now reflects the actual soft lines
 		return true;
 	}
 
@@ -492,6 +493,7 @@ namespace ng
 	void paragraph_t::set_wrapping (bool softWrap, size_t wrapColumn, ct::metrics_t const& metrics)
 	{
 		_dirty = true;
+		_pending_wrap_width = softWrap ? wrapColumn * metrics.column_width() : 0;
 	}
 
 	void paragraph_t::set_tab_size (ct::metrics_t const& metrics)
@@ -531,6 +533,8 @@ namespace ng
 			x += node.width();
 			res = std::max(x, res);
 		}
+		if(_dirty && _pending_wrap_width > 0) // soft lines not yet re-flowed to the new wrap column, see set_wrapping()
+			res = std::min(res, _pending_wrap_width);
 		return res;
 	}
 

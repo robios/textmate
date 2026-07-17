@@ -111,6 +111,15 @@ namespace ng
 
 		std::vector<node_t> _nodes;
 		bool _dirty = true;
+
+		// Upper bound on our width while a re-wrap is pending (0 = no bound):
+		// set_wrapping() only marks us dirty, the actual re-flow happens lazily
+		// in layout() when we become visible, so until then width() would
+		// report soft lines wrapped at the *previous* wrap column. Off-screen
+		// paragraphs may stay in that state indefinitely, and their stale
+		// widths would keep the layout’s content width — and thereby the
+		// horizontal scroller — at the old, wider wrap width.
+		CGFloat _pending_wrap_width = 0;
 	};
 
 	std::string to_s (paragraph_t const& paragraph);
