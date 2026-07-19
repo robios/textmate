@@ -523,6 +523,15 @@ namespace
 
 	_needsCreateBundlesIndex = YES;
 	[self createBundlesIndex:self];
+
+	if(![[NSFileManager defaultManager] fileExistsAtPath:_remoteIndexPath])
+	{
+		[[NSFileManager defaultManager] createDirectoryAtPath:[_remoteIndexPath stringByDeletingLastPathComponent] withIntermediateDirectories:YES attributes:nil error:nil];
+		[self tryUpdateBundleIndexAndCallback:^(BOOL wasUpdated){
+			if(wasUpdated)
+				os_log(OS_LOG_DEFAULT, "Initial bundle index downloaded");
+		}];
+	}
 }
 
 namespace
