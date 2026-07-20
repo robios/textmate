@@ -6,6 +6,7 @@
 #include <io/path.h>
 #include <text/format.h>
 #include <settings/settings.h>
+#include <atomic>
 
 namespace scm
 {
@@ -41,7 +42,7 @@ namespace scm
 		static void async_update (shared_info_weak_ptr weakThis, CFRunLoopRef currentRunLoop);
 		void fs_did_change (std::set<std::string> const& changedPaths);
 
-		void update (std::map<std::string, std::string> const& variables, std::map<std::string, scm::status::type> const& status, fs::snapshot_t const& fsSnapshot);
+		void update (std::map<std::string, std::string> const& variables, std::map<std::string, scm::status::type> const& status, fs::snapshot_t const& fsSnapshot, bool forced);
 
 		std::string const _root_path;
 		scm::driver_t const* const _driver;
@@ -51,6 +52,12 @@ namespace scm
 		fs::snapshot_t _fs_snapshot;
 
 		dispatch_queue_t _queue;
+		// Set when .git itself changed. The working-tree snapshot alone
+		// cannot see such a change — staging a file or committing an
+		// already-staged one leaves every tracked file byte-identical —
+		// so without this the update would short-circuit and clients
+		// would never hear about it.
+		std::atomic<bool> _force_update { false };
 		bool _pending_update = false;
 		dispatch_time_t _no_check_before = DISPATCH_TIME_NOW;
 		std::shared_ptr<watcher_t> _watcher;
@@ -171,9 +178,13 @@ namespace scm
 		_clients.erase(client);
 	}
 
-	void shared_info_t::update (std::map<std::string, std::string> const& variables, std::map<std::string, scm::status::type> const& status, fs::snapshot_t const& fsSnapshot)
+	void shared_info_t::update (std::map<std::string, std::string> const& variables, std::map<std::string, scm::status::type> const& status, fs::snapshot_t const& fsSnapshot, bool forced)
 	{
-		bool shouldNotify = _variables != variables || _status != status;
+		// A .git change has to reach clients even when it moves nothing
+		// in this map: staging a file leaves its status modified either
+		// way, and committing staged work leaves the whole map alone,
+		// yet both change what a diff against HEAD or the index means.
+		bool shouldNotify = forced || _variables != variables || _status != status;
 
 		_variables   = variables;
 		_status      = status;
@@ -194,14 +205,15 @@ namespace scm
 	{
 		if(shared_info_ptr info = weakThis.lock())
 		{
-			if(!info->_driver->may_touch_filesystem() || info->_fs_snapshot != fs::snapshot_t(info->_root_path))
+			bool const forced = info->_force_update.exchange(false);
+			if(forced || !info->_driver->may_touch_filesystem() || info->_fs_snapshot != fs::snapshot_t(info->_root_path))
 			{
 				auto const status    = info->_driver->status(info->_root_path);
 				auto const variables = info->_driver->variables(info->_root_path);
 				auto const snapshot  = info->_driver->may_touch_filesystem() ? fs::snapshot_t(info->_root_path) : fs::snapshot_t();
 				CFRunLoopPerformBlock(currentRunLoop, kCFRunLoopCommonModes, ^{
 					if(shared_info_ptr info = weakThis.lock())
-						info->update(variables, status, snapshot);
+						info->update(variables, status, snapshot, forced);
 				});
 				CFRunLoopWakeUp(currentRunLoop);
 			}
@@ -266,6 +278,7 @@ namespace scm
 			if(is_repo_meta_change(path))
 			{
 				gutter_diff::invalidate_repo(_root_path);
+				_force_update = true;
 				break;
 			}
 		}
