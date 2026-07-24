@@ -41,6 +41,14 @@ extern NSString* const LSPServerStatusDidChangeNotification;
 - (NSString*)serverNameForDocument:(OakDocument*)document;
 - (void)restartServerForDocument:(OakDocument*)document;
 - (void)reindexWorkspaceForDocument:(OakDocument*)document;
+
+// Effective lspEnabled for the document (.tm_properties layers plus bundle
+// defaults, default true) — what clientForDocument uses to gate connections.
+- (BOOL)lspEnabledForDocument:(OakDocument*)document;
+
+// Stop the client serving this document without restarting it; affected
+// documents reconnect lazily (documentDidOpen: on focus) once permitted again.
+- (void)stopServerForDocument:(OakDocument*)document;
 @end
 
 #endif /* LSP_MANAGER_H_POC */

@@ -88,16 +88,6 @@ static json ToolDescriptors ()
 			}, json::array({ "filePath" })) },
 		},
 		{
-			{ "name", "openDiff" },
-			{ "description", "Open a diff view comparing proposed changes against the current file contents; blocks until the user accepts or rejects" },
-			{ "inputSchema", schema({
-				{ "old_file_path",     { { "type", "string" }, { "description", "Path to the file being modified" } } },
-				{ "new_file_path",     { { "type", "string" }, { "description", "Path of the file after the change" } } },
-				{ "new_file_contents", { { "type", "string" }, { "description", "Proposed contents of the file" } } },
-				{ "tab_name",          { { "type", "string" }, { "description", "Name for the diff tab" } } },
-			}, json::array({ "old_file_path", "new_file_path", "new_file_contents", "tab_name" })) },
-		},
-		{
 			{ "name", "getCurrentSelection" },
 			{ "description", "Get the current text selection in the active editor" },
 			{ "inputSchema", schema(json::object()) },
@@ -139,18 +129,6 @@ static json ToolDescriptors ()
 			}, json::array({ "filePath" })) },
 		},
 		{
-			{ "name", "close_tab" },
-			{ "description", "Close a tab by name" },
-			{ "inputSchema", schema({
-				{ "tab_name", { { "type", "string" }, { "description", "Name of the tab to close" } } },
-			}, json::array({ "tab_name" })) },
-		},
-		{
-			{ "name", "closeAllDiffTabs" },
-			{ "description", "Close all diff tabs in the editor" },
-			{ "inputSchema", schema(json::object()) },
-		},
-		{
 			{ "name", "executeCode" },
 			{ "description", "Execute code in a Jupyter kernel (not supported by TextMate)" },
 			{ "inputSchema", schema({
@@ -166,6 +144,7 @@ static json ToolDescriptors ()
 	AgentBridgeWorkspace* _workspace;
 
 	dispatch_queue_t      _queue;
+	dispatch_group_t      _sendGroup; // tracks in-flight nw_connection_send completions (see drainPendingSendsWithTimeout:)
 	nw_listener_t         _listener;
 
 	// All accessed only on _queue. Handshakes are strictly serialized: at most
@@ -186,6 +165,7 @@ static json ToolDescriptors ()
 		_authToken          = [authToken copy];
 		_workspace          = workspace;
 		_queue              = dispatch_queue_create("com.macromates.TextMate.agent-bridge", DISPATCH_QUEUE_SERIAL);
+		_sendGroup          = dispatch_group_create();
 		_connections        = [NSMutableArray array];
 		_pendingConnections = [NSMutableArray array];
 	}
@@ -304,8 +284,22 @@ static json ToolDescriptors ()
 		if(self->_listener)
 			nw_listener_cancel(self->_listener);
 		self->_listener = nil;
+
+		[self publishConnectionCount];
 	});
 	_running = NO;
+}
+
+- (void)publishConnectionCount // _queue
+{
+	NSUInteger count = _connections.count;
+	dispatch_async(dispatch_get_main_queue(), ^{
+		if(self->_connectedClientCount == count)
+			return;
+		self->_connectedClientCount = count;
+		if(self->_statusDidChangeHandler)
+			self->_statusDidChangeHandler();
+	});
 }
 
 // ==================
@@ -394,6 +388,7 @@ static bool TokenMatches (NSString* candidate, NSString* expected)
 			{
 				[strongSelf->_connections addObject:connection];
 				[strongSelf receiveNextMessageOnConnection:connection];
+				[strongSelf publishConnectionCount];
 			}
 			[strongSelf startNextHandshakeIfIdle];
 		}
@@ -403,6 +398,7 @@ static bool TokenMatches (NSString* candidate, NSString* expected)
 				strongSelf->_handshakingConnection = nil;
 			[strongSelf->_connections removeObject:connection];
 			[strongSelf->_pendingConnections removeObject:connection];
+			[strongSelf publishConnectionCount];
 			[strongSelf startNextHandshakeIfIdle];
 		}
 	});
@@ -472,10 +468,29 @@ static bool TokenMatches (NSString* candidate, NSString* expected)
 	nw_protocol_metadata_t metadata = nw_ws_create_metadata(nw_ws_opcode_text);
 	nw_content_context_t context = nw_content_context_create("send");
 	nw_content_context_set_metadata_for_protocol(context, metadata);
+	dispatch_group_enter(_sendGroup);
+	dispatch_group_t sendGroup = _sendGroup;
 	nw_connection_send(connection, data, context, true, ^(nw_error_t error){
 		if(error)
 			NSLog(@"[AgentBridge] send failed: error %d", nw_error_get_error_code(error));
+		dispatch_group_leave(sendGroup);
 	});
+}
+
+- (void)drainPendingSendsWithTimeout:(NSTimeInterval)timeout // main queue
+{
+	// Called right before the deliberate quit-time -stop: a tool reply
+	// resolved during application termination (saveDocument and openFile
+	// answer from asynchronous completion handlers) is still hopping main →
+	// _queue → nw_connection_send at this point, and cancelling the
+	// connections first would silently drop it — the CLI would then wait out
+	// its own timeout on a call we did answer. The dispatch_sync flushes the
+	// hop (every already-queued sendJSON has called nw_connection_send once
+	// it returns — _queue blocks never sync back onto the main queue, so
+	// this cannot deadlock); the bounded group wait then lets the frames
+	// reach the socket.
+	dispatch_sync(_queue, ^{});
+	dispatch_group_wait(_sendGroup, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(timeout * NSEC_PER_SEC)));
 }
 
 // ====================
@@ -629,7 +644,7 @@ static bool TokenMatches (NSString* candidate, NSString* expected)
 		[weakSelf sendResult:ContentResult(text, isError) forRequestId:requestId toConnection:connection];
 	};
 	void (^replyJSON)(json const&, bool) = ^(json const& payload, bool isError){
-		replyText(payload.dump(), isError);
+		replyText(DumpJSON(payload), isError); // strict dump() throws on buffer excerpts with invalid UTF-8
 	};
 
 	if(name == "getWorkspaceFolders")
@@ -784,20 +799,6 @@ static bool TokenMatches (NSString* candidate, NSString* expected)
 			result.push_back({ { "uri", to_s(uri) }, { "diagnostics", diagnostics } });
 		}
 		replyJSON(result, false);
-	}
-	else if(name == "openDiff")
-	{
-		// WP2 wires this to ProposalSession; advertised in tools/list so the
-		// CLI knows the IDE intends to support it, but not yet callable.
-		[self sendErrorWithCode:-32000 message:"openDiff is not yet available in TextMate" forRequestId:requestId toConnection:connection];
-	}
-	else if(name == "close_tab")
-	{
-		replyText("TAB_CLOSED", false); // no diff tabs exist until WP2, so nothing to close
-	}
-	else if(name == "closeAllDiffTabs")
-	{
-		replyText("CLOSED_0_DIFF_TABS", false); // no diff tabs exist until WP2
 	}
 	else if(name == "executeCode")
 	{

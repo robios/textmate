@@ -59,6 +59,7 @@ static NSButton* OakCreateImageToggleButton (NSImage* image, NSString* accessibi
 @property (nonatomic) NSPopUpButton* symbolPopUp;
 @property (nonatomic) NSPopUpButton* lspPopUp;
 @property (nonatomic) NSView*        lspDivider;
+@property (nonatomic) NSTextField*   agentStatusField;
 @property (nonatomic) NSPopUpButton* copilotPopUp;
 @property (nonatomic) NSButton*      macroRecordingButton;
 @property (nonatomic) NSArray<NSLayoutConstraint*>* lspVisibleConstraints;
@@ -134,6 +135,12 @@ static NSButton* OakCreateImageToggleButton (NSImage* image, NSString* accessibi
 		[[self.copilotPopUp cell] setUsesItemFromMenu:NO];
 		[self updateCopilotDisplayItem:0];
 
+		// Discreet agent note; collapses to zero intrinsic width when empty.
+		self.agentStatusField = OakCreateTextField(@"");
+		self.agentStatusField.accessibilityLabel = @"Agent Status";
+		[self.agentStatusField setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow+3 forOrientation:NSLayoutConstraintOrientationHorizontal];
+		[[self.agentStatusField cell] setLineBreakMode:NSLineBreakByTruncatingTail];
+
 		NSDictionary* views = @{
 			@"topDivider":   topDivider,
 			@"line":         line,
@@ -149,6 +156,7 @@ static NSButton* OakCreateImageToggleButton (NSImage* image, NSString* accessibi
 			@"dividerFive":  dividerFive,
 			@"dividerSix":   dividerSix,
 			@"lsp":          self.lspPopUp,
+			@"agent":        self.agentStatusField,
 			@"copilot":       self.copilotPopUp,
 			@"recording":    self.macroRecordingButton,
 		};
@@ -179,9 +187,10 @@ static NSButton* OakCreateImageToggleButton (NSImage* image, NSString* accessibi
 		// LSP visible: symbol → copilot → dividerSix → lsp → dividerFive
 		self.lspVisibleConstraints = ({
 			NSMutableArray* c = [NSMutableArray new];
-			[c addObjectsFromArray:[NSLayoutConstraint constraintsWithVisualFormat:@"H:[symbol]-4-[copilot]-4-[dividerSix(==1)]-2-[lsp]-5-[dividerFive]" options:0 metrics:nil views:views]];
+			[c addObjectsFromArray:[NSLayoutConstraint constraintsWithVisualFormat:@"H:[symbol]-4-[agent]-4-[copilot]-4-[dividerSix(==1)]-2-[lsp]-5-[dividerFive]" options:0 metrics:nil views:views]];
 			[c addObjectsFromArray:[NSLayoutConstraint constraintsWithVisualFormat:@"V:|-5-[dividerOne(==15,==dividerTwo,==dividerThree,==dividerFour,==dividerFive,==dividerSix)]-5-|" options:0 metrics:nil views:views]];
 			[c addObject:[NSLayoutConstraint constraintWithItem:self.lspPopUp attribute:NSLayoutAttributeBaseline relatedBy:NSLayoutRelationEqual toItem:self.symbolPopUp attribute:NSLayoutAttributeBaseline multiplier:1 constant:0]];
+			[c addObject:[NSLayoutConstraint constraintWithItem:self.agentStatusField attribute:NSLayoutAttributeBaseline relatedBy:NSLayoutRelationEqual toItem:self.symbolPopUp attribute:NSLayoutAttributeBaseline multiplier:1 constant:0]];
 			[c addObject:[NSLayoutConstraint constraintWithItem:dividerSix attribute:NSLayoutAttributeCenterY relatedBy:NSLayoutRelationEqual toItem:dividerOne attribute:NSLayoutAttributeCenterY multiplier:1 constant:0]];
 			[c addObject:[NSLayoutConstraint constraintWithItem:self.copilotPopUp attribute:NSLayoutAttributeCenterY relatedBy:NSLayoutRelationEqual toItem:self.macroRecordingButton attribute:NSLayoutAttributeCenterY multiplier:1 constant:0]];
 			[c copy];
@@ -190,9 +199,10 @@ static NSButton* OakCreateImageToggleButton (NSImage* image, NSString* accessibi
 		// LSP hidden: symbol → copilot → dividerFive directly
 		self.lspHiddenConstraints = ({
 			NSMutableArray* c = [NSMutableArray new];
-			[c addObjectsFromArray:[NSLayoutConstraint constraintsWithVisualFormat:@"H:[symbol]-4-[copilot]-4-[dividerFive]" options:0 metrics:nil views:views]];
+			[c addObjectsFromArray:[NSLayoutConstraint constraintsWithVisualFormat:@"H:[symbol]-4-[agent]-4-[copilot]-4-[dividerFive]" options:0 metrics:nil views:views]];
 			[c addObjectsFromArray:[NSLayoutConstraint constraintsWithVisualFormat:@"V:|-5-[dividerOne(==15,==dividerTwo,==dividerThree,==dividerFour,==dividerFive)]-5-|" options:0 metrics:nil views:views]];
 			[c addObject:[NSLayoutConstraint constraintWithItem:self.copilotPopUp attribute:NSLayoutAttributeCenterY relatedBy:NSLayoutRelationEqual toItem:self.macroRecordingButton attribute:NSLayoutAttributeCenterY multiplier:1 constant:0]];
+			[c addObject:[NSLayoutConstraint constraintWithItem:self.agentStatusField attribute:NSLayoutAttributeBaseline relatedBy:NSLayoutRelationEqual toItem:self.symbolPopUp attribute:NSLayoutAttributeBaseline multiplier:1 constant:0]];
 			[c copy];
 		});
 
@@ -390,9 +400,18 @@ static NSButton* OakCreateImageToggleButton (NSImage* image, NSString* accessibi
 		[self.delegate showLSPStatusMenu:self.lspPopUp];
 }
 
-- (void)setLspStatus:(NSString*)status errors:(NSUInteger)errors warnings:(NSUInteger)warnings info:(NSUInteger)info
+- (void)setAgentStatusText:(NSString*)text
 {
-	BOOL visible = status != nil;
+	_agentStatusText = [text copy];
+	self.agentStatusField.stringValue = text ?: @"";
+	self.agentStatusField.toolTip     = text;
+}
+
+- (void)setLspEnabled:(BOOL)enabled status:(NSString*)status serverName:(NSString*)serverName errors:(NSUInteger)errors warnings:(NSUInteger)warnings info:(NSUInteger)info
+{
+	// While the global lspEnabled master switch is on the indicator is always
+	// visible — a nil status renders the dimmed idle look below.
+	BOOL visible = enabled;
 
 	if(visible != _lspVisible)
 	{
@@ -413,12 +432,29 @@ static NSButton* OakCreateImageToggleButton (NSImage* image, NSString* accessibi
 	}
 
 	if(!visible)
+	{
+		self.lspPopUp.toolTip = nil;
 		return;
+	}
+
+	if(serverName && status)
+			self.lspPopUp.toolTip = [NSString stringWithFormat:@"%@ — %@", serverName, status];
+	else if(serverName)
+			self.lspPopUp.toolTip = [NSString stringWithFormat:@"%@ — idle", serverName];
+	else	self.lspPopUp.toolTip = @"LSP — no server for this file type";
 
 	NSFont* font = OakStatusBarFont();
 	NSMutableAttributedString* attrTitle = [NSMutableAttributedString new];
 
-	if([status isEqualToString:@"starting"])
+	if(status == nil)
+	{
+		// Idle: no server attached to the current document
+		[attrTitle appendAttributedString:[[NSAttributedString alloc] initWithString:@"LSP" attributes:@{
+			NSFontAttributeName: font,
+			NSForegroundColorAttributeName: NSColor.tertiaryLabelColor,
+		}]];
+	}
+	else if([status isEqualToString:@"starting"])
 	{
 		[attrTitle appendAttributedString:[[NSAttributedString alloc] initWithString:@"◉ " attributes:@{
 			NSFontAttributeName: font,

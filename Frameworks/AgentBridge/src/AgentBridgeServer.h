@@ -18,9 +18,19 @@
 
 @property (nonatomic, readonly) NSUInteger port; // 0 until the listener is ready
 @property (nonatomic, readonly, getter = isRunning) BOOL running;
+@property (nonatomic, readonly) NSUInteger connectedClientCount; // authorized clients, updated on the main queue
+
+// Called on the main queue whenever running/port/connectedClientCount change.
+@property (nonatomic, copy) void(^statusDidChangeHandler)(void);
 
 - (void)sendSelectionChanged:(AgentBridgeSelection*)selection;
 - (void)sendAtMentionedWithFilePath:(NSString*)filePath lineStart:(NSInteger)lineStart lineEnd:(NSInteger)lineEnd;
+
+// Orphan every pending review session (main queue). Must be called before a
+// deliberate -stop: the per-connection orphaning normally done by the
+// connection-cancelled handlers only holds a weak server reference, so once
+// the owner releases the stopped server those handlers may never run.
+- (void)orphanAllSessions;
 @end
 
 #endif /* AGENT_BRIDGE_SERVER_H_WN31TQ8C */

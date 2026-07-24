@@ -5,6 +5,7 @@
 #import "VariablesPreferences.h"
 #import "TerminalPreferences.h"
 #import "FormattersPreferences.h"
+#import "AIPreferences.h"
 #import "AdvancedPreferences.h"
 #import "Keys.h"
 #import <OakAppKit/OakTransitionViewController.h>
@@ -102,6 +103,7 @@ static NSString* const kMASPreferencesSelectedViewKey = @"MASPreferences Selecte
 			[[VariablesPreferences alloc] init],
 			[[FormattersPreferences alloc] init],
 			[[TerminalPreferences alloc] init],
+			[[AIPreferences alloc] init],
 			[[AdvancedPreferences alloc] init]
 		];
 
@@ -132,6 +134,12 @@ static NSString* const kMASPreferencesSelectedViewKey = @"MASPreferences Selecte
 - (void)windowDidMove:(NSNotification*)aNotification
 {
    [NSUserDefaults.standardUserDefaults setObject:NSStringFromPoint(NSMakePoint(NSMinX(self.window.frame), NSMaxY(self.window.frame))) forKey:kMASPreferencesFrameTopLeftKey];
+}
+
+- (void)selectPaneWithIdentifier:(NSString*)anIdentifier
+{
+	[self showWindow:nil]; // triggers viewWillAppear, which restores the last selected pane — override afterwards
+	_preferencesViewController.selectedViewIdentifier = anIdentifier;
 }
 
 - (void)selectViewAtRelativeOffset:(NSInteger)offset

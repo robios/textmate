@@ -333,6 +333,8 @@ static std::string detectWorkspaceRoot (std::string const& filePath)
 	[_documentClients removeAllObjects];
 	[_documentVersions removeAllObjects];
 	[_openDocuments removeAllObjects];
+
+	[NSNotificationCenter.defaultCenter postNotificationName:LSPServerStatusDidChangeNotification object:self];
 }
 
 - (void)flushPendingChangesForDocument:(OakDocument*)document
@@ -719,12 +721,12 @@ static std::string detectWorkspaceRoot (std::string const& filePath)
 	return nil;
 }
 
+// The CONFIGURED server for this document (lspCommand from settings or
+// bundle defaults) — independent of whether a client is currently attached
+// or lspEnabled permits one, so the status-bar menu can offer the
+// per-file-type toggle while the server is disabled.
 - (NSString*)serverNameForDocument:(OakDocument*)document
 {
-	LSPClient* client = _documentClients[document.identifier];
-	if(!client)
-		return nil;
-
 	NSString* path = document.path;
 	if(!path)
 		return nil;
@@ -786,6 +788,48 @@ static std::string detectWorkspaceRoot (std::string const& filePath)
 	// Re-open with fresh client immediately
 	for(OakDocument* doc in affectedDocs)
 		[self documentDidOpen:doc];
+
+	[NSNotificationCenter.defaultCenter postNotificationName:LSPServerStatusDidChangeNotification object:self];
+}
+
+- (BOOL)lspEnabledForDocument:(OakDocument*)document
+{
+	if(!document.path)
+		return settings_for_path().get(kSettingsLSPEnabledKey, true);
+
+	std::string filePath  = to_s(document.path);
+	std::string fileType  = to_s(document.fileType);
+	std::string directory = to_s(document.directory ?: [document.path stringByDeletingLastPathComponent]);
+
+	settings_t settings = settings_for_path(filePath, fileType, directory);
+	return lsp::setting_with_bundle_fallback(kSettingsLSPEnabledKey, settings, scope::scope_t(fileType), true);
+}
+
+- (void)stopServerForDocument:(OakDocument*)document
+{
+	LSPClient* client = _documentClients[document.identifier];
+	if(!client)
+		return;
+
+	// Dissociate every document served by this client so a later
+	// documentDidOpen: (lazy attach on focus) can start fresh
+	NSString* rootToRemove = [self rootForClient:client];
+	if(rootToRemove)
+		[_clients removeObjectForKey:rootToRemove];
+
+	for(NSUUID* docId in [_documentClients allKeys])
+	{
+		if(_documentClients[docId] != client)
+			continue;
+
+		[_changeTimers[docId] invalidate];
+		[_changeTimers removeObjectForKey:docId];
+		[_documentClients removeObjectForKey:docId];
+		[_documentVersions removeObjectForKey:docId];
+		[_openDocuments removeObject:docId];
+	}
+
+	[client shutdown];
 
 	[NSNotificationCenter.defaultCenter postNotificationName:LSPServerStatusDidChangeNotification object:self];
 }

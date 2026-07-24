@@ -22,6 +22,7 @@ NSNotificationName const CopilotLogNotification             = @"CopilotLogNotifi
 	CopilotStatus _status;
 	NSString* _username;
 	BOOL _checkingAuth;
+	BOOL _signInInFlight;
 }
 @end
 
@@ -60,6 +61,20 @@ static settings_t settingsForCopilotDocument(OakDocument* document)
 		_changeTimers     = [NSMutableDictionary new];
 		_restartCount     = 0;
 		_status           = CopilotStatusDisabled;
+
+		// One-time migration: the popup suppression flag used to live in
+		// NSUserDefaults (CopilotSuppressAutoPopup); it is now the
+		// copilotGhostTextOnly setting so all Copilot settings share the
+		// .tm_properties machinery. Seed the setting from the legacy key
+		// when the setting has never been written, and consume the key so
+		// a later removal of the setting is not silently re-seeded.
+		NSUserDefaults* defaults = NSUserDefaults.standardUserDefaults;
+		if([defaults objectForKey:@"CopilotSuppressAutoPopup"] != nil)
+		{
+			if(settings_t::raw_get("copilotGhostTextOnly") == NULL_STR)
+				settings_t::set("copilotGhostTextOnly", [defaults boolForKey:@"CopilotSuppressAutoPopup"] ? true : false);
+			[defaults removeObjectForKey:@"CopilotSuppressAutoPopup"];
+		}
 	}
 	return self;
 }
@@ -186,8 +201,9 @@ static settings_t settingsForCopilotDocument(OakDocument* document)
 	[_documentVersions removeAllObjects];
 	[_changeTimers removeAllObjects];
 
-	_status   = CopilotStatusDisabled;
-	_username = nil;
+	_status         = CopilotStatusDisabled;
+	_username       = nil;
+	_signInInFlight = NO; // pending signInInitiate completion dies with the client
 
 	[NSNotificationCenter.defaultCenter postNotificationName:CopilotStatusDidChangeNotification object:self];
 }
@@ -330,9 +346,24 @@ static settings_t settingsForCopilotDocument(OakDocument* document)
 
 - (void)signIn
 {
+	if(!_client.initialized)
+	{
+		[self log:@"Cannot sign in: Copilot server is not running"];
+		return;
+	}
+
+	if(_signInInFlight)
+	{
+		[self log:@"Sign-in flow already in progress — ignoring request"];
+		return;
+	}
+	_signInInFlight = YES;
+
 	[self log:@"Starting Copilot sign-in flow"];
 
 	[_client sendCustomRequest:@"signInInitiate" params:@{} completion:^(id result) {
+		self->_signInInFlight = NO;
+
 		if(![result isKindOfClass:[NSDictionary class]])
 		{
 			[self log:@"signIn returned unexpected result"];
@@ -355,6 +386,69 @@ static settings_t settingsForCopilotDocument(OakDocument* document)
 		else
 			[self log:[NSString stringWithFormat:@"Unexpected signIn response: %@", result]];
 	}];
+}
+
+- (void)signOut
+{
+	if(!_client.initialized)
+	{
+		[self log:@"Cannot sign out: Copilot server is not running"];
+		return;
+	}
+
+	[self log:@"Signing out of Copilot"];
+
+	// copilot-language-server: the ‘signOut’ request opts this editor out of
+	// the shared credential store and responds with { status: "NotSignedIn" }.
+	// The callback also fires with nil for error responses and cancelled
+	// requests, so only flip our state on a confirmed sign-out — otherwise
+	// re-sync with the server’s actual auth state.
+	[_client sendCustomRequest:@"signOut" params:@{} completion:^(id result) {
+		NSString* statusStr = [result isKindOfClass:[NSDictionary class]] ? result[@"status"] : nil;
+		if([statusStr isEqualToString:@"NotSignedIn"])
+		{
+			[self log:@"Signed out"];
+			self->_username = nil;
+			self->_status   = CopilotStatusAuthRequired;
+			[NSNotificationCenter.defaultCenter postNotificationName:CopilotStatusDidChangeNotification object:self];
+		}
+		else
+		{
+			[self log:[NSString stringWithFormat:@"Sign-out failed — status: %@", statusStr ?: @"(no response)"]];
+			[self checkAuthStatus];
+		}
+	}];
+}
+
+- (void)reloadSettings
+{
+	bool enabled = settings_for_path().get("copilotEnabled", false);
+	if(enabled)
+	{
+		if(!_client.running)
+		{
+			_restartCount = 0;
+			[self ensureClientForDocument:nil];
+		}
+	}
+	else
+	{
+		if(_client)
+		{
+			[self shutdown];
+		}
+		else if(_status != CopilotStatusDisabled)
+		{
+			_status   = CopilotStatusDisabled;
+			_username = nil;
+			[NSNotificationCenter.defaultCenter postNotificationName:CopilotStatusDidChangeNotification object:self];
+		}
+	}
+}
+
+- (BOOL)ghostTextOnlyForDocument:(OakDocument*)document
+{
+	return settingsForCopilotDocument(document).get("copilotGhostTextOnly", false);
 }
 
 - (void)showAuthPanelWithCode:(NSString*)code uri:(NSString*)uriString

@@ -27,6 +27,7 @@
 #import <OakAppKit/NSMenuItem Additions.h>
 #import <BundleMenu/BundleMenu.h>
 #import <Preferences/Keys.h>
+#import <Preferences/Preferences.h>
 
 static NSString* const kBookmarksColumnIdentifier = @"bookmarks";
 static NSString* const kFoldingsColumnIdentifier  = @"foldings";
@@ -982,13 +983,20 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 	LSPManager* lsp = [LSPManager sharedManager];
 	OakDocument* doc = self.document;
 
+	// The indicator is visible whenever the global lspEnabled master switch
+	// (AI preference pane) is on, showing the idle look while no server is
+	// attached to the current document.
+	BOOL lspMasterEnabled = settings_for_path().get("lspEnabled", true);
+
 	NSString* status = [lsp serverStatusForDocument:doc];
 	NSDictionary<NSString*, NSNumber*>* counts = [lsp diagnosticCountsForDocument:doc];
 
-	[_statusBar setLspStatus:status
-	                  errors:[counts[@"errors"] unsignedIntegerValue]
-	                warnings:[counts[@"warnings"] unsignedIntegerValue]
-	                    info:[counts[@"info"] unsignedIntegerValue]];
+	[_statusBar setLspEnabled:lspMasterEnabled
+	                   status:status
+	               serverName:[lsp serverNameForDocument:doc]
+	                   errors:[counts[@"errors"] unsignedIntegerValue]
+	                 warnings:[counts[@"warnings"] unsignedIntegerValue]
+	                     info:[counts[@"info"] unsignedIntegerValue]];
 
 	[_statusBar setCopilotStatus:[CopilotManager sharedManager].status];
 }
@@ -1011,6 +1019,14 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 
 - (void)lspServerStatusDidChange:(NSNotification*)notification
 {
+	// The AI pane's master switch asks visible documents to reconnect when it
+	// turns LSP back on (documentDidOpen: is idempotent and re-checks the
+	// effective settings). Deliberately flag-gated: reattaching on EVERY
+	// status notification would turn a crashing server into a restart loop,
+	// since lspClientDidTerminate: also dissociates documents and posts here.
+	if([notification.userInfo[@"reconnectDocuments"] boolValue] && self.document)
+		[LSPManager.sharedManager documentDidOpen:self.document];
+
 	[self updateLSPStatusBar];
 }
 
@@ -1043,114 +1059,88 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 	}
 }
 
+// The Copilot indicator’s quick menu: the global on/off switch, a server
+// restart, and a shortcut to the AI preference pane — sign in/out and the
+// ghost-text flag live on that pane. The status itself stays visible via the
+// indicator tint and tooltip. The checkmark reads the effective global
+// setting fresh each time the menu opens; the same key is written by the AI
+// pane, both through settings_t::set (a project’s .tm_properties can still
+// override it per directory, file type, or scope).
 - (void)showCopilotStatusMenu:(NSPopUpButton*)popUpButton
 {
-	CopilotManager* copilot = [CopilotManager sharedManager];
+	// The popup cell marks its selected item with a checkmark by default,
+	// which would permanently check the first item; the checkmark on the
+	// toggle below must reflect the setting alone.
+	((NSPopUpButtonCell*)popUpButton.cell).altersStateOfSelectedItem = NO;
+
 	NSMenu* menu = popUpButton.menu;
 	[menu removeAllItems];
 
-	// Status header
-	NSString* headerText;
-	switch(copilot.status)
-	{
-		case CopilotStatusReady:
-			headerText = [NSString stringWithFormat:@"Copilot — %@", copilot.username ?: @"ready"];
-			break;
-		case CopilotStatusConnecting:
-			headerText = @"Copilot — connecting…";
-			break;
-		case CopilotStatusAuthRequired:
-			headerText = @"Copilot — sign-in required";
-			break;
-		case CopilotStatusError:
-			headerText = @"Copilot — error";
-			break;
-		default:
-			headerText = @"Copilot — disabled";
-			break;
-	}
-	NSMenuItem* header = [[NSMenuItem alloc] initWithTitle:headerText action:nil keyEquivalent:@""];
-	if(copilot.status == CopilotStatusReady)
-		header.state = NSControlStateValueOn;
-	header.enabled = NO;
-	[menu addItem:header];
+	NSMenuItem* copilotItem = [[NSMenuItem alloc] initWithTitle:@"Copilot" action:@selector(toggleCopilotEnabled:) keyEquivalent:@""];
+	copilotItem.target = self;
+	copilotItem.state = settings_for_path().get("copilotEnabled", false) ? NSControlStateValueOn : NSControlStateValueOff;
+	[menu addItem:copilotItem];
 
 	[menu addItem:[NSMenuItem separatorItem]];
 
-	if(copilot.status == CopilotStatusAuthRequired)
-	{
-		NSMenuItem* signIn = [[NSMenuItem alloc] initWithTitle:@"Sign In" action:@selector(copilotSignIn:) keyEquivalent:@""];
-		signIn.target = self;
-		[menu addItem:signIn];
-	}
-
-	if(copilot.status == CopilotStatusReady || copilot.status == CopilotStatusError)
-	{
-		NSMenuItem* restart = [[NSMenuItem alloc] initWithTitle:@"Restart Server" action:@selector(copilotRestart:) keyEquivalent:@""];
-		restart.target = self;
-		[menu addItem:restart];
-	}
-
-	if(copilot.status == CopilotStatusReady)
-	{
-		[menu addItem:[NSMenuItem separatorItem]];
-
-		BOOL popupSuppressed = [[NSUserDefaults standardUserDefaults] boolForKey:@"CopilotSuppressAutoPopup"];
-		NSMenuItem* suppressItem = [[NSMenuItem alloc] initWithTitle:@"Ghost Text Only (No Popup)"
-		                                                      action:@selector(copilotToggleSuppressPopup:)
-		                                               keyEquivalent:@""];
-		suppressItem.target = self;
-		suppressItem.state = popupSuppressed ? NSControlStateValueOn : NSControlStateValueOff;
-		[menu addItem:suppressItem];
-	}
+	NSMenuItem* restartItem = [[NSMenuItem alloc] initWithTitle:@"Restart Server" action:@selector(copilotRestart:) keyEquivalent:@""];
+	restartItem.target = self;
+	[menu addItem:restartItem];
 
 	[menu addItem:[NSMenuItem separatorItem]];
 
-	NSMenuItem* disable = [[NSMenuItem alloc] initWithTitle:
-		copilot.status == CopilotStatusDisabled ? @"Enable Copilot" : @"Disable Copilot"
-		action:@selector(copilotToggle:) keyEquivalent:@""];
-	disable.target = self;
-	[menu addItem:disable];
-}
-
-- (void)copilotSignIn:(id)sender
-{
-	[[CopilotManager sharedManager] signIn];
+	NSMenuItem* settingsItem = [[NSMenuItem alloc] initWithTitle:@"AI Settings…" action:@selector(showAISettings:) keyEquivalent:@""];
+	settingsItem.target = self;
+	[menu addItem:settingsItem];
 }
 
 - (void)copilotRestart:(id)sender
 {
 	CopilotManager* copilot = [CopilotManager sharedManager];
 	[copilot shutdown];
+	[copilot reloadSettings];
 	if(self.document)
 		[copilot documentDidOpen:self.document];
 }
 
-- (void)copilotToggle:(id)sender
+- (void)toggleCopilotEnabled:(id)sender
 {
+	bool enable = !settings_for_path().get("copilotEnabled", false);
+	settings_t::set("copilotEnabled", enable); // invalidates the settings cache synchronously, so the reads below see the new value
+
 	CopilotManager* copilot = [CopilotManager sharedManager];
-	if(copilot.status == CopilotStatusDisabled)
+	[copilot reloadSettings];
+	if(enable)
 	{
-		settings_t::set("copilotEnabled", true);
 		if(self.document)
 			[copilot documentDidOpen:self.document];
-	}
-	else
-	{
-		settings_t::set("copilotEnabled", false);
-		[copilot shutdown];
+
+		// The client may already be running unauthenticated (e.g. started via
+		// a per-project copilotEnabled override); start the sign-in flow right
+		// away so the toggle is never a dead switch. A freshly started client
+		// reports auth asynchronously and posts its own notification instead.
+		if(copilot.status == CopilotStatusAuthRequired)
+			[copilot signIn];
 	}
 }
 
-- (void)copilotToggleSuppressPopup:(id)sender
+- (void)showAISettings:(id)sender
 {
-	NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
-	BOOL current = [defaults boolForKey:@"CopilotSuppressAutoPopup"];
-	[defaults setBool:!current forKey:@"CopilotSuppressAutoPopup"];
+	[Preferences.sharedInstance selectPaneWithIdentifier:@"AI"];
 }
 
+// The LSP indicator’s menu: a per-file-type on/off switch (written as a
+// scope-selector section in the global settings file, e.g.
+// “[ source.go ] lspEnabled = false”), then the server actions. The global
+// master switch lives on the AI preference pane; a project’s .tm_properties
+// still outranks both (established settings precedence). The toggle state is
+// read fresh each time the menu opens.
 - (void)showLSPStatusMenu:(NSPopUpButton*)popUpButton
 {
+	// Keep the popup cell from force-checking its selected (first) item — the
+	// checkmark must reflect the setting alone.
+	((NSPopUpButtonCell*)popUpButton.cell).altersStateOfSelectedItem = NO;
+
 	LSPManager* lsp = [LSPManager sharedManager];
 	OakDocument* doc = self.document;
 	NSMenu* menu = popUpButton.menu;
@@ -1159,15 +1149,27 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 	NSString* serverName = [lsp serverNameForDocument:doc];
 	NSString* status = [lsp serverStatusForDocument:doc];
 
-	NSString* headerText;
-	if(serverName && status)
-		headerText = [NSString stringWithFormat:@"%@ — %@", serverName, status];
-	else
-		headerText = @"No LSP Server";
+	if(serverName)
+	{
+		// No status suffix in the steady state — only abnormal/transient
+		// states; the full status stays in the indicator tooltip.
+		NSString* title = [NSString stringWithFormat:@"LSP — %@", serverName];
+		if([status isEqualToString:@"starting"])
+			title = [title stringByAppendingString:@" (starting…)"];
+		else if([status isEqualToString:@"indexing"])
+			title = [title stringByAppendingString:@" (indexing…)"];
 
-	NSMenuItem* header = [[NSMenuItem alloc] initWithTitle:headerText action:nil keyEquivalent:@""];
-	header.enabled = NO;
-	[menu addItem:header];
+		NSMenuItem* toggleItem = [[NSMenuItem alloc] initWithTitle:title action:@selector(toggleLSPEnabledForFileType:) keyEquivalent:@""];
+		toggleItem.target = self;
+		toggleItem.state = [lsp lspEnabledForDocument:doc] ? NSControlStateValueOn : NSControlStateValueOff;
+		[menu addItem:toggleItem];
+	}
+	else
+	{
+		NSMenuItem* header = [[NSMenuItem alloc] initWithTitle:@"LSP — No Server for This File Type" action:nil keyEquivalent:@""];
+		header.enabled = NO;
+		[menu addItem:header];
+	}
 
 	if(status)
 	{
@@ -1198,6 +1200,32 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 		prev.target = self;
 		[menu addItem:prev];
 	}
+}
+
+- (void)toggleLSPEnabledForFileType:(id)sender
+{
+	OakDocument* document = self.document;
+	if(!document.fileType)
+		return;
+
+	bool enable = ![LSPManager.sharedManager lspEnabledForDocument:document];
+
+	// Write the override as a scope-selector section in the global settings
+	// file (“[ source.go ] lspEnabled = false”) via settings_t::set’s exact
+	// section parameter — the same mechanism the file-type association uses
+	// for its glob sections. Re-enabling removes the override (NULL_STR
+	// deletes the assignment) so the value falls back to the global master
+	// switch instead of pinning a scoped “true” that would outrank it.
+	if(enable)
+			settings_t::set("lspEnabled", std::string(NULL_STR), NULL_STR, to_s(document.fileType));
+	else	settings_t::set("lspEnabled", std::string("false"), NULL_STR, to_s(document.fileType));
+
+	// set() invalidates the settings cache synchronously, so the manager
+	// reads the new value here
+	if(enable)
+			[LSPManager.sharedManager documentDidOpen:document];   // other documents of this type reattach lazily on focus
+	else	[LSPManager.sharedManager stopServerForDocument:document];
+	[self updateLSPStatusBar];
 }
 
 - (void)lspRestartServer:(id)sender

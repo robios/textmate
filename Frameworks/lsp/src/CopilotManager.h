@@ -39,7 +39,15 @@ typedef NS_ENUM(NSInteger, CopilotStatus) {
 - (void)sendDidShowCompletion:(NSDictionary*)item;
 
 - (void)signIn;
+- (void)signOut;
 - (void)shutdown;
+
+// Start or stop the client to match the current copilotEnabled setting.
+- (void)reloadSettings;
+
+// Effective value of the copilotGhostTextOnly setting for a document
+// (never show the completion popup, only inline ghost text).
+- (BOOL)ghostTextOnlyForDocument:(OakDocument*)document;
 @end
 
 #endif /* COPILOT_MANAGER_H_89F2A3C1 */

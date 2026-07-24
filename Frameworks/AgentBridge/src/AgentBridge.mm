@@ -6,6 +6,9 @@
 #import <ns/ns.h>
 #import <Cocoa/Cocoa.h>
 
+NSString* const kUserDefaultsAgentBridgeEnabledKey             = @"agentBridgeEnabled";
+NSNotificationName const AgentBridgeStatusDidChangeNotification = @"AgentBridgeStatusDidChangeNotification";
+
 @interface AgentBridge ()
 {
 	AgentBridgeWorkspace* _workspace;
@@ -77,6 +80,18 @@ static BOOL ParseLineArgument (NSString* value, NSInteger* line)
 	});
 }
 
++ (BOOL)isRunning
+{
+	AgentBridgeServer* server = SharedAgentBridge ? SharedAgentBridge->_server : nil;
+	return server.isRunning;
+}
+
++ (NSUInteger)connectedClientCount
+{
+	AgentBridgeServer* server = SharedAgentBridge ? SharedAgentBridge->_server : nil;
+	return server.connectedClientCount;
+}
+
 + (NSUInteger)serverPort
 {
 	AgentBridgeServer* server = SharedAgentBridge ? SharedAgentBridge->_server : nil;
@@ -140,14 +155,15 @@ static BOOL ParseLineArgument (NSString* value, NSInteger* line)
 {
 	if(self = [super init])
 	{
+		[NSUserDefaults.standardUserDefaults registerDefaults:@{
+			kUserDefaultsAgentBridgeEnabledKey: @YES,
+		}];
+
 		UpdateCLISymlink();
 
 		[AgentBridgeLockFile removeStaleLockFilesInDirectory:[AgentBridgeLockFile defaultLockDirectory]];
 
-		NSString* authToken = [AgentBridgeLockFile generateAuthToken];
-
 		_workspace = [[AgentBridgeWorkspace alloc] init];
-		_server    = [[AgentBridgeServer alloc] initWithAuthToken:authToken workspace:_workspace];
 
 		__weak AgentBridge* weakSelf = self;
 		_workspace.selectionDidChangeHandler = ^(AgentBridgeSelection* selection){
@@ -158,24 +174,79 @@ static BOOL ParseLineArgument (NSString* value, NSInteger* line)
 			[weakSelf updateLockFile];
 		};
 
-		[_server startWithReadyHandler:^(NSUInteger port){
-			AgentBridge* strongSelf = weakSelf;
-			if(!strongSelf)
-				return;
-
-			if(port == 0)
-			{
-				NSLog(@"[AgentBridge] WebSocket server failed to start; Claude Code IDE integration is unavailable");
-				return;
-			}
-
-			strongSelf->_lockFile = [[AgentBridgeLockFile alloc] initWithPort:port authToken:authToken directory:[AgentBridgeLockFile defaultLockDirectory]];
-			[strongSelf updateLockFile];
-		}];
+		if([NSUserDefaults.standardUserDefaults boolForKey:kUserDefaultsAgentBridgeEnabledKey])
+			[self startServer];
 
 		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(applicationWillTerminate:) name:NSApplicationWillTerminateNotification object:nil];
+		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(userDefaultsDidChange:) name:NSUserDefaultsDidChangeNotification object:nil];
 	}
 	return self;
+}
+
+- (void)startServer // main queue
+{
+	if(_server)
+		return;
+
+	NSString* authToken = [AgentBridgeLockFile generateAuthToken];
+	AgentBridgeServer* server = [[AgentBridgeServer alloc] initWithAuthToken:authToken workspace:_workspace];
+	_server = server;
+
+	__weak AgentBridge* weakSelf = self;
+	server.statusDidChangeHandler = ^{
+		[weakSelf postStatusNotification];
+	};
+
+	[server startWithReadyHandler:^(NSUInteger port){
+		AgentBridge* strongSelf = weakSelf;
+		if(!strongSelf || strongSelf->_server != server) // stopped (or replaced) before the listener came up
+			return;
+
+		if(port == 0)
+		{
+			NSLog(@"[AgentBridge] WebSocket server failed to start; Claude Code IDE integration is unavailable");
+			[strongSelf postStatusNotification];
+			return;
+		}
+
+		strongSelf->_lockFile = [[AgentBridgeLockFile alloc] initWithPort:port authToken:authToken directory:[AgentBridgeLockFile defaultLockDirectory]];
+		[strongSelf updateLockFile];
+		[strongSelf postStatusNotification];
+	}];
+}
+
+- (void)stopServer // main queue
+{
+	if(!_server)
+		return;
+
+	[_lockFile remove];
+	_lockFile = nil;
+
+	// Deterministically resolve pending review sessions: the cancelled
+	// connections’ own orphaning may never run once we drop the server.
+	[_server orphanAllSessions];
+
+	[_server stop];
+	_server = nil;
+
+	[self postStatusNotification];
+}
+
+- (void)userDefaultsDidChange:(NSNotification*)aNotification
+{
+	dispatch_async(dispatch_get_main_queue(), ^{
+		BOOL enabled = [NSUserDefaults.standardUserDefaults boolForKey:kUserDefaultsAgentBridgeEnabledKey];
+		if(enabled && !self->_server)
+			[self startServer];
+		else if(!enabled && self->_server)
+			[self stopServer];
+	});
+}
+
+- (void)postStatusNotification
+{
+	[NSNotificationCenter.defaultCenter postNotificationName:AgentBridgeStatusDidChangeNotification object:nil];
 }
 
 - (void)updateLockFile
@@ -186,6 +257,7 @@ static BOOL ParseLineArgument (NSString* value, NSInteger* line)
 - (void)applicationWillTerminate:(NSNotification*)aNotification
 {
 	[_lockFile remove];
+	[_server drainPendingSendsWithTimeout:1.0]; // a quit-time tool reply must reach the socket before the connections are cancelled
 	[_server stop];
 }
 @end

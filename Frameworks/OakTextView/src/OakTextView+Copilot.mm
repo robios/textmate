@@ -283,7 +283,7 @@
 		if(!items || items.count == 0)
 			return;
 
-		BOOL suppressPopup = [[NSUserDefaults standardUserDefaults] boolForKey:@"CopilotSuppressAutoPopup"];
+		BOOL suppressPopup = [copilot ghostTextOnlyForDocument:doc];
 		if(items.count == 1 || suppressPopup)
 			[strongSelf showGhostText:items[0]];
 		else

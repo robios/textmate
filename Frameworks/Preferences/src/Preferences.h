@@ -7,4 +7,5 @@ NSImage* PreferencesToolbarImage (NSString* symbolName, NSString* description, N
 
 @interface Preferences : NSWindowController
 @property (class, readonly) Preferences* sharedInstance;
+- (void)selectPaneWithIdentifier:(NSString*)anIdentifier; // pane identifiers equal their labels, e.g. @"AI"
 @end

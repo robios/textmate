@@ -137,18 +137,36 @@ namespace
 		return res;
 	}
 
+	static std::mutex& sections_cache_mutex ()
+	{
+		static std::mutex res;
+		return res;
+	}
+
+	struct sections_cache_t
+	{
+		track_paths_t tracked_paths;
+		std::map<std::string, std::vector<section_t>> cache;
+	};
+
+	static sections_cache_t& sections_cache ()
+	{
+		static sections_cache_t res;
+		return res;
+	}
+
+	// Callers must hold sections_cache_mutex() (collect() does).
 	static std::vector<section_t> const& sections (std::string const& path)
 	{
-		static track_paths_t tracked_paths;
-		static std::map<std::string, std::vector<section_t> > cache;
+		auto& state = sections_cache();
 
 		if(path == NULL_STR)
 		{
-			if(cache.size() > 64)
+			if(state.cache.size() > 64)
 			{
-				for(auto const& pair : cache)
-					tracked_paths.remove(pair.first);
-				cache.clear();
+				for(auto const& pair : state.cache)
+					state.tracked_paths.remove(pair.first);
+				state.cache.clear();
 			}
 
 			static std::vector<section_t> dummy;
@@ -156,10 +174,25 @@ namespace
 		}
 		else
 		{
-			if(tracked_paths.is_changed(path))
-				cache[path] = parse_sections(path);
-			return cache[path];
+			if(state.tracked_paths.is_changed(path))
+				state.cache[path] = parse_sections(path);
+			return state.cache[path];
 		}
+	}
+
+	// Drop the cached parse (and its stale file watch) for path. The vnode
+	// dispatch source invalidates the cache asynchronously on the main queue,
+	// so a writer that just rewrote the file calls this to make the new
+	// content visible to readers in the same runloop turn. The pending vnode
+	// event later finding the entry gone — or a fresh watch already re-added
+	// by a subsequent read — is harmless: at worst the file is parsed once
+	// more.
+	static void invalidate_cached_sections (std::string const& path)
+	{
+		std::lock_guard<std::mutex> lock(sections_cache_mutex());
+		auto& state = sections_cache();
+		state.cache.erase(path);
+		state.tracked_paths.remove(path);
 	}
 
 	static size_t const kGlob          = 1 << 0;
@@ -190,8 +223,7 @@ namespace
 
 	static void collect (std::string const& directory, std::string const& path, scope::scope_t const& scope, std::function<void(section_t::assignment_t const& assignment, section_t const& section)> filter)
 	{
-		static std::mutex mutex;
-		std::lock_guard<std::mutex> lock(mutex);
+		std::lock_guard<std::mutex> lock(sections_cache_mutex());
 		sections(NULL_STR); // clear cache if too big
 
 		auto const globalSections  = sections(global_settings_path());
@@ -455,5 +487,10 @@ void settings_t::set (std::string const& key, std::string const& value, std::str
 				fprintf(fp, "%-16s = %s\n", assignment.name.c_str(), quote_string(assignment.value).c_str());
 		}
 		fclose(fp);
+
+		// Make the write immediately visible to settings_for_path — the
+		// vnode-based invalidation only lands on a later main-queue turn,
+		// which would leave same-turn readers acting on the previous value.
+		invalidate_cached_sections(global_settings_path());
 	}
 }

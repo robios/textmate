@@ -8,7 +8,10 @@
 
 @interface OTVStatusBar : NSVisualEffectView
 - (void)showBundlesMenu:(id)sender;
-- (void)setLspStatus:(NSString*)status errors:(NSUInteger)errors warnings:(NSUInteger)warnings info:(NSUInteger)info;
+// enabled controls the indicator's visibility (the global lspEnabled master
+// switch); status nil while enabled renders the dimmed idle look. serverName
+// only feeds the tooltip — the full status lives there.
+- (void)setLspEnabled:(BOOL)enabled status:(NSString*)status serverName:(NSString*)serverName errors:(NSUInteger)errors warnings:(NSUInteger)warnings info:(NSUInteger)info;
 - (void)flashLspError;
 - (void)setCopilotStatus:(NSInteger)status;
 @property (nonatomic) NSString* selectionString;

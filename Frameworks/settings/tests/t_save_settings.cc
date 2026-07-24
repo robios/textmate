@@ -76,4 +76,28 @@ void test_save_settings ()
 	OAK_ASSERT_EQ(settings_for_path(                                ).get("testKey_5", "unset"),   "set");
 	OAK_ASSERT_EQ(settings_for_path("/tmp/dummy.md"                 ).get("testKey_5", "unset"),   "set");
 	OAK_ASSERT_EQ(settings_for_path("/tmp/dummy.txt"                ).get("testKey_5", "unset"), "other");
+
+	// ============================
+	// = Read-after-write is live =
+	// ============================
+
+	// set() must invalidate the parsed-sections cache synchronously — the
+	// vnode-based invalidation runs on the main queue, which used to leave
+	// readers in the turn that wrote the value acting on the previous one.
+	// Park the main queue for the write→read window so the vnode event
+	// cannot slip in and mask a missing synchronous invalidation (the reads
+	// above populated the cache).
+	dispatch_semaphore_t mainParked  = dispatch_semaphore_create(0);
+	dispatch_semaphore_t testDone    = dispatch_semaphore_create(0);
+	dispatch_async(dispatch_get_main_queue(), ^{
+		dispatch_semaphore_signal(mainParked);
+		dispatch_semaphore_wait(testDone, DISPATCH_TIME_FOREVER);
+	});
+	dispatch_semaphore_wait(mainParked, DISPATCH_TIME_FOREVER);
+
+	settings_t::set("testKey_1", "changed");
+	std::string const liveValue = settings_for_path().get("testKey_1", "unset");
+
+	dispatch_semaphore_signal(testDone);
+	OAK_ASSERT_EQ(liveValue, "changed");
 }
