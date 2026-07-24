@@ -59,6 +59,14 @@ namespace scm { namespace git_query {
 		return rev_parse(repo_root, "HEAD");
 	}
 
+	std::string effective_base (std::string const& repo_root, std::string const& spec)
+	{
+		std::string const resolved = rev_parse(repo_root, spec);
+		if(resolved == NULL_STR || resolved == head_commit(repo_root))
+			return NULL_STR;
+		return resolved;
+	}
+
 	bool is_ancestor (std::string const& repo_root, std::string const& ancestor, std::string const& descendant)
 	{
 		// io::exec reports a non-zero exit as NULL_STR, which is exactly
@@ -115,6 +123,49 @@ namespace scm { namespace git_query {
 				res.push_back({ out.substr(pos, tab - pos), out.substr(tab + 1, eol - tab - 1) });
 
 			pos = eol + 1;
+		}
+		return res;
+	}
+
+	scm::status_map_t changed_paths_since (std::string const& repo_root, std::string const& base)
+	{
+		// NUL-separated <status>\0<path>\0 records: `-z` so a non-ASCII or
+		// otherwise unusual path is never octal-quoted, and rename detection
+		// off so every record carries a single path. The diff is base vs the
+		// working tree, so staged and unstaged changes both count; untracked
+		// files never appear (they are base-independent, listed elsewhere).
+		scm::status_map_t res;
+		std::string const out = run_git(repo_root, { "diff", "--name-status", "--no-renames", "-z", base });
+		if(out == NULL_STR)
+			return res;
+
+		size_t pos = 0;
+		while(pos < out.size())
+		{
+			size_t const statusEnd = out.find('\0', pos);
+			if(statusEnd == std::string::npos)
+				break;
+			std::string const status = out.substr(pos, statusEnd - pos);
+
+			size_t const pathStart = statusEnd + 1;
+			size_t pathEnd = out.find('\0', pathStart);
+			if(pathEnd == std::string::npos)
+				pathEnd = out.size();
+			std::string const rel = out.substr(pathStart, pathEnd - pathStart);
+			pos = pathEnd + 1;
+
+			if(status.empty() || rel.empty())
+				continue;
+
+			scm::status::type type;
+			switch(status[0])
+			{
+				case 'A': case 'C': type = scm::status::added;      break;
+				case 'D':           type = scm::status::deleted;    break;
+				case 'U':           type = scm::status::conflicted; break;
+				default:            type = scm::status::modified;   break; // M, T, and any residual R
+			}
+			res.emplace(path::join(repo_root, rel), type);
 		}
 		return res;
 	}

@@ -3,9 +3,15 @@
 @class FileBrowserViewController;
 @class FileItem;
 
-@protocol FileBrowserDelegate
+@protocol FileBrowserDelegate <NSObject>
 - (void)fileBrowser:(FileBrowserViewController*)fileBrowser openURLs:(NSArray*)someURLs;
 - (void)fileBrowser:(FileBrowserViewController*)fileBrowser closeURL:(NSURL*)anURL;
+@optional
+// The window's review base for the SCM status listing (Phase E), or nil
+// when it is HEAD. When non-nil: { "spec": <git revspec or sha>, and for a
+// pinned commit "pinnedRepositoryRoot": <the repo it was chosen in> }. The
+// file browser applies it only to the repository it is showing.
+- (NSDictionary*)reviewBaseForFileBrowser:(FileBrowserViewController*)fileBrowser;
 @end
 
 @interface FileBrowserViewController : NSViewController
@@ -45,6 +51,10 @@
 - (void)goToFavorites:(id)sender;
 - (void)goToSCMDataSource:(id)sender;
 - (void)orderFrontGoToFolder:(id)sender;
+
+// Called by the host when the window review base changes, so an open SCM
+// status view can re-list against the new base.
+- (void)reviewBaseDidChange;
 
 // ======================================================
 // = Private (FileBrowserViewController DiskOperations) =

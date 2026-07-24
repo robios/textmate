@@ -695,6 +695,23 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 	[diffPaneView takeSnapshot:snapshot];
 }
 
+- (NSString*)resolvedReviewBaseRef
+{
+	// From the snapshot, not the model, so it names the base the diff was
+	// actually taken against; nil outside a repository, where there is no
+	// base to name.
+	//
+	// Guarded by the snapshot's document identity: switching tabs or Save-As
+	// leaves the previous document's snapshot in place until the async
+	// recompute lands, and its sha would belong to another repository — so a
+	// command reading TM_REVIEW_BASE in that window could be handed a ref
+	// `git diff` cannot resolve. Withhold it until the snapshot catches up.
+	BufferDiffSnapshot* snapshot = lastDiffSnapshot;
+	if(snapshot.repoRoot.length && snapshot.documentPath && [snapshot.documentPath isEqualToString:self.document.path])
+		return snapshot.baseRef;
+	return nil;
+}
+
 - (void)repoHeadMovedFrom:(NSString*)oldHead to:(NSString*)newHead change:(scm::git_query::head_change)change
 {
 	if(change == scm::git_query::head_change::committed)

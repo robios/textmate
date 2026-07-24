@@ -497,3 +497,93 @@ void test_fs_event_path_prefixes_the_mount_point ()
 	std::string const missing = path::join(p, "no/such/place");
 	OAK_ASSERT_EQ(scm::fs_event_path(missing), missing);
 }
+
+// The base-relative file browser listing (Phase E) is `git diff
+// --name-status <base>`: every tracked path that differs from the base,
+// keyed by absolute path, with untracked files deliberately absent.
+void test_git_query_changed_paths_since ()
+{
+	static std::string const git = scm::find_executable("git", "TM_GIT");
+	if(git == NULL_STR)
+		return;
+
+	test::jail_t jail;
+	bootstrap_two_commit_repo(jail, git); // file.txt: "one\ntwo"@first → "one\nTWO"@HEAD, worktree == HEAD
+
+	std::string const root = jail.path();
+	auto const commits = recent_commits(root, 20);
+	OAK_ASSERT_EQ(commits.size(), 2);
+
+	// Worktree matches HEAD, so nothing differs from HEAD.
+	OAK_ASSERT(changed_paths_since(root, "HEAD").empty());
+
+	// Against the first commit the one tracked file reads as modified,
+	// keyed by absolute path; the pinned sha resolves to the same thing.
+	auto const vsFirst = changed_paths_since(root, "HEAD~1");
+	OAK_ASSERT_EQ(vsFirst.size(), 1);
+	auto const it = vsFirst.find(path::join(root, "file.txt"));
+	OAK_ASSERT(it != vsFirst.end());
+	OAK_ASSERT(it->second == scm::status::modified);
+	OAK_ASSERT_EQ(changed_paths_since(root, commits[1].sha).size(), 1);
+
+	// An untracked new file does NOT appear — it belongs to the untracked
+	// listing, not this one.
+	run_sh(text::format("{ cd '%1$s' && printf 'new\\n' > added.txt; } >/dev/null 2>&1", root.c_str()));
+	OAK_ASSERT_EQ(changed_paths_since(root, "HEAD~1").size(), 1);
+
+	// Staging it turns it into an addition, present against both bases.
+	run_sh(text::format("{ cd '%1$s' && '%2$s' add added.txt; } >/dev/null 2>&1", root.c_str(), git.c_str()));
+	auto const staged = changed_paths_since(root, "HEAD~1");
+	OAK_ASSERT_EQ(staged.size(), 2);
+	OAK_ASSERT(staged.at(path::join(root, "added.txt")) == scm::status::added);
+	OAK_ASSERT(staged.at(path::join(root, "file.txt"))  == scm::status::modified);
+	auto const vsHead = changed_paths_since(root, "HEAD");
+	OAK_ASSERT_EQ(vsHead.size(), 1);
+	OAK_ASSERT(vsHead.at(path::join(root, "added.txt")) == scm::status::added);
+
+	// Deleting a tracked file on disk reads as a deletion.
+	run_sh(text::format("{ cd '%1$s' && rm file.txt; } >/dev/null 2>&1", root.c_str()));
+	OAK_ASSERT(changed_paths_since(root, "HEAD").at(path::join(root, "file.txt")) == scm::status::deleted);
+
+	// A spec naming nothing (past the root commit) yields an empty map —
+	// the caller's cue that the base has fallen back to HEAD.
+	OAK_ASSERT(changed_paths_since(root, "HEAD~5").empty());
+}
+
+// effective_base is what lets the file browser's base-relative listing
+// follow HEAD and degrade gracefully: the sha a spec compares against now,
+// or NULL_STR when it resolves to nothing or just to HEAD.
+void test_git_query_effective_base ()
+{
+	static std::string const git = scm::find_executable("git", "TM_GIT");
+	if(git == NULL_STR)
+		return;
+
+	test::jail_t jail;
+	bootstrap_two_commit_repo(jail, git);
+	std::string const root = jail.path();
+	auto const commits = recent_commits(root, 20);
+	OAK_ASSERT_EQ(commits.size(), 2);
+
+	// A relative spec resolves to its commit, which is not HEAD.
+	OAK_ASSERT_EQ(effective_base(root, "HEAD~1"), commits[1].sha);
+	// A pinned older commit, likewise.
+	OAK_ASSERT_EQ(effective_base(root, commits[1].sha), commits[1].sha);
+	// Naming HEAD — by spec or by its own sha — is not a base to compare
+	// against: fall back to the working-tree listing.
+	OAK_ASSERT_EQ(effective_base(root, "HEAD"), NULL_STR);
+	OAK_ASSERT_EQ(effective_base(root, commits[0].sha), NULL_STR);
+
+	// A repository too shallow for the spec resolves to nothing — the case
+	// that once left the browser hiding uncommitted work behind an empty,
+	// mislabeled section.
+	test::jail_t shallow;
+	run_sh(text::format(
+		"{ cd '%1$s' && '%2$s' init -b master "
+		"&& '%2$s' config user.email 'test@example.com' && '%2$s' config user.name 'Test Test' "
+		"&& '%2$s' config commit.gpgsign false "
+		"&& printf 'one\\n' > file.txt && '%2$s' add file.txt && '%2$s' commit -m only "
+		"; } >/dev/null 2>&1",
+		shallow.path().c_str(), git.c_str()));
+	OAK_ASSERT_EQ(effective_base(shallow.path(), "HEAD~1"), NULL_STR);
+}

@@ -137,6 +137,7 @@ static void show_command_error (std::string const& message, oak::uuid_t const& u
 
 - (void)fileBrowser:(FileBrowserViewController*)fileBrowser openURLs:(NSArray*)someURLs;
 - (void)fileBrowser:(FileBrowserViewController*)fileBrowser closeURL:(NSURL*)anURL;
+- (void)reviewBaseDidChangeNotification:(NSNotification*)notification;
 
 - (void)takeNewTabIndexFrom:(id)sender;   // used by newDocumentInTab:
 - (void)takeTabsToTearOffFrom:(id)sender; // used by moveDocumentToNewWindow:
@@ -240,6 +241,7 @@ static NSArray* const kObservedKeyPaths = @[ @"arrayController.arrangedObjects.p
 		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(applicationDidBecomeActiveNotification:) name:NSApplicationDidBecomeActiveNotification object:NSApp];
 		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(applicationDidResignActiveNotification:) name:NSApplicationDidResignActiveNotification object:NSApp];
 		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(fileBrowserWillDelete:) name:FileBrowserWillDeleteNotification object:nil];
+		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(reviewBaseDidChangeNotification:) name:OakReviewBaseDidChangeNotification object:self.reviewBase];
 
 		[self userDefaultsDidChange:nil];
 	}
@@ -1930,6 +1932,28 @@ static NSArray* const kObservedKeyPaths = @[ @"arrayController.arrangedObjects.p
 	[self closeTabsAtIndexes:indexSet askToSaveChanges:YES createDocumentIfEmpty:YES activate:NO];
 }
 
+- (NSDictionary*)reviewBaseForFileBrowser:(FileBrowserViewController*)fileBrowser
+{
+	// Hand the file browser the base as a choice, not a resolved sha: a
+	// relative spec (HEAD~1) it resolves against whatever repository it is
+	// showing — following HEAD there just as the diff pane does — while a
+	// pinned commit carries the repository it was chosen in, since its sha
+	// means nothing elsewhere. HEAD needs no listing change at all.
+	OakReviewBase* base = self.reviewBase;
+	switch(base.kind)
+	{
+		case OakReviewBaseKindRelative: return base.spec ? @{ @"spec": base.spec } : nil;
+		case OakReviewBaseKindCommit:   return base.spec && base.repoRoot ? @{ @"spec": base.spec, @"pinnedRepositoryRoot": base.repoRoot } : nil;
+		case OakReviewBaseKindHead:     break;
+	}
+	return nil;
+}
+
+- (void)reviewBaseDidChangeNotification:(NSNotification*)notification
+{
+	[self.fileBrowser reviewBaseDidChange];
+}
+
 - (void)setFileBrowserVisible:(BOOL)makeVisibleFlag
 {
 	if(_fileBrowserVisible != makeVisibleFlag)
@@ -1945,6 +1969,14 @@ static NSArray* const kObservedKeyPaths = @[ @"arrayController.arrangedObjects.p
 				if(NSString* path = self.projectPath ?: self.defaultProjectPath)
 					[self.fileBrowser goToURL:[NSURL fileURLWithPath:path]];
 			}
+
+			// The browser is created the first time it is shown, so a base
+			// chosen before that never reached it — the change notification was
+			// messaging nil. Hand it the window's current base now, or a
+			// restored SCM view would list against HEAD while the pane, gutter
+			// and status bar showed the older base. A no-op when the base is
+			// HEAD, since every entry then rebuilds to the URL it already has.
+			[self.fileBrowser reviewBaseDidChange];
 
 			[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(fileBrowserDidDuplicate:) name:FileBrowserDidDuplicateNotification object:nil];
 		}
@@ -3227,6 +3259,13 @@ static NSUInteger DisableSessionSavingCount = 0;
 		res["TM_PROJECT_DIRECTORY"] = [projectDir fileSystemRepresentation];
 		res["TM_PROJECT_UUID"]      = to_s(self.identifier);
 	}
+
+	// The window's review base, resolved for the current document, so a
+	// command can `git diff "$TM_REVIEW_BASE"` against the same base the
+	// diff pane, gutter and minimap compare to. "HEAD" by default; absent
+	// outside a git repository.
+	if(NSString* reviewBase = self.documentView.resolvedReviewBaseRef)
+		res["TM_REVIEW_BASE"] = to_s(reviewBase);
 
 	return res;
 }

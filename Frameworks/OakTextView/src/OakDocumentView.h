@@ -14,6 +14,14 @@
 // than this view's; a view that is never given one keeps a private base
 // of its own, which behaves the same for a lone editor.
 @property (nonatomic) OakReviewBase* reviewBase;
+
+// The review base as it took effect for the current document — "HEAD" or
+// a resolved commit sha — or nil outside a git repository. Read from the
+// last snapshot, so it names what the diff was actually taken against
+// (a pinned sha in the wrong repo, or a relative spec past the root, both
+// come back as "HEAD"). This is what the window exports as TM_REVIEW_BASE.
+- (NSString*)resolvedReviewBaseRef;
+
 - (IBAction)toggleLineNumbers:(id)sender;
 - (IBAction)toggleMinimap:(id)sender;
 - (IBAction)toggleDiffPane:(id)sender;

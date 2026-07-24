@@ -127,6 +127,56 @@ static NSMutableIndexSet* MutableLongestCommonSubsequence (NSArray* lhs, NSArray
 @property (nonatomic) FileBrowserView* fileBrowserView;
 @end
 
+// A review base is runtime state (Phase E), deliberately not persisted —
+// `OakReviewBase` resets to HEAD on relaunch. But an scm:// status URL the
+// browser was showing carries the base as a `reviewBaseSpec` query item and
+// IS persisted in the history, so a restored session would list against a
+// base the window no longer holds. Drop that item from a restored URL, so
+// the SCM view comes back listing against HEAD, matching the diff pane.
+static NSURL* SCMURLWithoutReviewBaseSpec (NSURL* url)
+{
+	if(![url.scheme isEqualToString:@"scm"] || !url.query)
+		return url;
+
+	NSURLComponents* components = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
+	NSMutableArray<NSURLQueryItem*>* kept = [NSMutableArray array];
+	for(NSURLQueryItem* item in components.queryItems)
+	{
+		if(![item.name isEqualToString:@"reviewBaseSpec"])
+			[kept addObject:item];
+	}
+
+	if(kept.count == components.queryItems.count)
+		return url; // no base rode on it
+
+	components.queryItems = kept.count ? kept : nil;
+	return components.URL ?: url;
+}
+
+// Applied as the restored history is assembled, before it is assigned:
+// setting `historyIndex` loads the current entry, so stripping afterwards
+// would start loading a base-bearing tree only to tear it down and rebuild
+// it — observers registered and git possibly launched for nothing.
+static NSMutableArray<NSDictionary*>* HistoryWithoutReviewBaseSpec (NSArray<NSDictionary*>* history)
+{
+	NSMutableArray<NSDictionary*>* res = [NSMutableArray array];
+	for(NSDictionary* record in history)
+	{
+		NSURL* stripped = SCMURLWithoutReviewBaseSpec(record[@"url"]);
+		if([stripped isEqual:record[@"url"]])
+		{
+			[res addObject:record];
+		}
+		else
+		{
+			NSMutableDictionary* updated = [record mutableCopy];
+			updated[@"url"] = stripped;
+			[res addObject:updated];
+		}
+	}
+	return res;
+}
+
 @implementation FileBrowserViewController
 + (NSSet*)keyPathsForValuesAffectingCanGoBack    { return [NSSet setWithObjects:@"historyIndex", nil]; }
 + (NSSet*)keyPathsForValuesAffectingCanGoForward { return [NSSet setWithObjects:@"historyIndex", nil]; }
@@ -320,7 +370,7 @@ static NSMutableIndexSet* MutableLongestCommonSubsequence (NSArray* lhs, NSArray
 		SCMRepository* repository = [SCMManager.sharedInstance repositoryAtURL:url];
 		if(repository && repository.enabled)
 		{
-			[self goToURL:[NSURL URLWithString:[NSString stringWithFormat:@"scm://localhost%@/", [url.path stringByAddingPercentEncodingWithAllowedCharacters:NSCharacterSet.URLPathAllowedCharacterSet]]]];
+			[self goToURL:[self scmStatusURLForFolderPath:url.path]];
 		}
 		else
 		{
@@ -352,6 +402,67 @@ static NSMutableIndexSet* MutableLongestCommonSubsequence (NSArray* lhs, NSArray
 	{
 		NSBeep();
 	}
+}
+
+- (NSURL*)scmStatusURLForFolderPath:(NSString*)folderPath
+{
+	NSString* encodedPath = [folderPath stringByAddingPercentEncodingWithAllowedCharacters:NSCharacterSet.URLPathAllowedCharacterSet];
+	NSURL* bareURL = [NSURL URLWithString:[NSString stringWithFormat:@"scm://localhost%@/", encodedPath]];
+
+	// The window review base (Phase E) rides on the scm:// URL as the
+	// *requested* spec. Whether that spec resolves — and whether it still
+	// names something other than HEAD after the next commit — is decided
+	// freshly by the section, which re-lists on every SCM update; baking the
+	// decision in here (by resolving the spec now) would freeze it, so a base
+	// that later became resolvable, or stopped being, after a HEAD move would
+	// no longer be reflected. So only the static "a pinned commit belongs to
+	// another repository" check happens here; resolution lives in the section.
+	if(![self.delegate respondsToSelector:@selector(reviewBaseForFileBrowser:)])
+		return bareURL;
+
+	NSDictionary* base = [self.delegate reviewBaseForFileBrowser:self];
+	NSString* spec     = base[@"spec"];
+	if(!spec.length)
+		return bareURL;
+
+	if(NSString* pinnedRoot = base[@"pinnedRepositoryRoot"])
+	{
+		SCMRepository* repository = [SCMManager.sharedInstance repositoryAtURL:[NSURL fileURLWithPath:folderPath isDirectory:YES]];
+		if(![repository.URL.path isEqualToString:pinnedRoot])
+			return bareURL;
+	}
+
+	return [NSURL URLWithString:[NSString stringWithFormat:@"scm://localhost%@/?reviewBaseSpec=%@", encodedPath, [spec stringByAddingPercentEncodingWithAllowedCharacters:NSCharacterSet.URLQueryAllowedCharacterSet]]];
+}
+
+- (void)reviewBaseDidChange
+{
+	// A base change is not the user moving somewhere, so it must not push a
+	// history entry — otherwise Back/Forward would revive the base that was
+	// showing before. Instead rewrite every SCM entry in the history to the
+	// current base (keeping its scroll offset), and re-point the current view
+	// at its rewritten URL in place. Folder entries are left untouched.
+	BOOL currentChanged = NO;
+	for(NSUInteger i = 0; i < _history.count; ++i)
+	{
+		NSDictionary* record = _history[i];
+		NSURL* url = record[@"url"];
+		if(![url.scheme isEqualToString:@"scm"])
+			continue;
+
+		NSURL* rebuilt = [self scmStatusURLForFolderPath:url.path];
+		if([rebuilt isEqual:url])
+			continue;
+
+		NSMutableDictionary* updated = [record mutableCopy];
+		updated[@"url"] = rebuilt;
+		_history[i] = updated;
+		if(i == _historyIndex)
+			currentChanged = YES;
+	}
+
+	if(currentChanged)
+		self.URL = _history[_historyIndex][@"url"];
 }
 
 - (void)goToParentFolder:(id)sender
@@ -1126,7 +1237,7 @@ static NSMutableIndexSet* MutableLongestCommonSubsequence (NSArray* lhs, NSArray
 	NSArray* newHistory = [state decodeObjectForKey:@"history"];
 	if(newHistory.count)
 	{
-		self.history      = [newHistory mutableCopy];
+		self.history      = HistoryWithoutReviewBaseSpec(newHistory);
 		self.historyIndex = std::clamp<NSInteger>([state decodeIntegerForKey:@"historyIndex"], 0, newHistory.count);
 
 		NSArray<NSURL*>* expandedURLs = [state decodeObjectForKey:@"expandedURLs"];
@@ -1207,7 +1318,7 @@ static NSMutableIndexSet* MutableLongestCommonSubsequence (NSArray* lhs, NSArray
 			if(NSString* urlString = entry[@"url"])
 			{
 				[newHistory addObject:@{
-					@"url": [NSURL URLWithString:urlString],
+					@"url": SCMURLWithoutReviewBaseSpec([NSURL URLWithString:urlString]),
 				}];
 			}
 		}
@@ -1842,6 +1953,13 @@ static NSMutableIndexSet* MutableLongestCommonSubsequence (NSArray* lhs, NSArray
 
 		item.children = [children copy];
 		[self rearrangeChildrenInParent:item];
+
+		// An scm:// section's own name can change with its contents: the
+		// base-relative "Changes since …" section retitles as the effective
+		// base resolves or falls back. rearrangeChildrenInParent reloads only
+		// the rows beneath it, so re-read the section's own row here.
+		if(item != self.fileItem && [item.URL.scheme isEqualToString:@"scm"])
+			[self.outlineView reloadItem:item reloadChildren:NO];
 
 		for(FileItem* child in item.arrangedChildren)
 		{

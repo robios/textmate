@@ -24,6 +24,7 @@ static size_t const kBufferDiffMaxBytes = 2 * 1024 * 1024;
 @property (nonatomic, readwrite) BOOL hasStagedChanges;
 @property (nonatomic, readwrite, getter = isDocumentEdited) BOOL documentEdited;
 @property (nonatomic, readwrite) NSString* repoRoot;
+@property (nonatomic, readwrite) NSString* documentPath;
 @property (nonatomic, readwrite) NSString* baseRef;
 @property (nonatomic, readwrite, getter = isBaseHead) BOOL baseHead;
 @property (nonatomic, readwrite) OakReviewBaseKind baseKind;
@@ -281,10 +282,11 @@ static size_t const kBufferDiffMaxBytes = 2 * 1024 * 1024;
 	{
 		[self clearMarksFromDocument:doc];
 		BufferDiffSnapshot* snapshot = [BufferDiffSnapshot new];
-		snapshot.generation = generation;
-		snapshot.repoState  = BufferDiffRepoStateNoRepository;
-		snapshot.baseRef    = @"HEAD";
-		snapshot.baseHead   = YES;
+		snapshot.generation   = generation;
+		snapshot.repoState    = BufferDiffRepoStateNoRepository;
+		snapshot.documentPath = path;
+		snapshot.baseRef      = @"HEAD";
+		snapshot.baseHead     = YES;
 		if(_snapshotHandler)
 			_snapshotHandler(snapshot);
 		return;
@@ -320,6 +322,7 @@ static size_t const kBufferDiffMaxBytes = 2 * 1024 * 1024;
 		BufferDiffSnapshot* snapshot = [BufferDiffSnapshot new];
 		snapshot.generation     = generation;
 		snapshot.documentEdited = documentEdited;
+		snapshot.documentPath   = path;
 
 		scm::gutter_diff::result_t marks;
 		bool marksValid = false;

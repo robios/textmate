@@ -23,6 +23,7 @@ typedef NS_ENUM(NSInteger, BufferDiffRepoState) {
 @property (nonatomic, readonly) BOOL hasStagedChanges;
 @property (nonatomic, readonly, getter = isDocumentEdited) BOOL documentEdited; // buffer ≠ disk at compute time
 @property (nonatomic, readonly) NSString* repoRoot;                 // nil unless Ready/TooLarge
+@property (nonatomic, readonly) NSString* documentPath;            // the document this was computed for; nil for an unsaved buffer
 @property (nonatomic, readonly) NSString* baseRef;                  // "HEAD" or a commit sha — always resolved, never a spec
 @property (nonatomic, readonly, getter = isBaseHead) BOOL baseHead;
 
