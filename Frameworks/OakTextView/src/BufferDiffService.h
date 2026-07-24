@@ -1,4 +1,5 @@
 #import <Cocoa/Cocoa.h>
+#import "OakReviewBase.h"
 #import <scm/gutter_diff.h>
 #import <scm/git_query.h>
 
@@ -22,8 +23,16 @@ typedef NS_ENUM(NSInteger, BufferDiffRepoState) {
 @property (nonatomic, readonly) BOOL hasStagedChanges;
 @property (nonatomic, readonly, getter = isDocumentEdited) BOOL documentEdited; // buffer ≠ disk at compute time
 @property (nonatomic, readonly) NSString* repoRoot;                 // nil unless Ready/TooLarge
-@property (nonatomic, readonly) NSString* baseRef;                  // "HEAD" or a commit sha
+@property (nonatomic, readonly) NSString* baseRef;                  // "HEAD" or a commit sha — always resolved, never a spec
 @property (nonatomic, readonly, getter = isBaseHead) BOOL baseHead;
+
+// The base as it took effect here, which is not always the base that was
+// asked for: a pinned sha carried into another repository, or a relative
+// spec reaching back past the first commit, both come back as Head. Every
+// surface reads these rather than the model, so none of them can claim a
+// base the diff was not actually taken against.
+@property (nonatomic, readonly) OakReviewBaseKind baseKind;
+@property (nonatomic, readonly) NSString* baseSpec;                 // the revspec behind a relative base
 @property (nonatomic, readonly) NSString* headCommit;               // nil before the first commit
 @property (nonatomic, readonly) NSString* previousHeadCommit;       // last observed pre-move HEAD, nil until HEAD moves
 - (std::string const&)bufferText;                                   // LF-normalized buffer the hunks index into
@@ -36,22 +45,27 @@ typedef NS_ENUM(NSInteger, BufferDiffRepoState) {
 // Recomputes buffer-vs-base hunks on a trailing debounce after buffer
 // edits, and immediately on save / scm events; maintains the
 // diff.added/modified/deleted document marks (gutter column, minimap)
-// against HEAD regardless of the review base — except on an untracked
-// file, which publishes hunks but no marks at all, since every one of
-// its lines is trivially added. Git subprocess state — staged check,
-// HEAD commit, recent commits — is cached and refreshed only on scm
-// events, document switches and saves, never on the buffer debounce
-// (buffer edits cannot change the index).
+// from those same hunks, so every surface answers to the review base —
+// except on an untracked file, which publishes hunks but no marks at
+// all, since every one of its lines is trivially added. Git subprocess
+// state — staged check, HEAD commit, recent commits — is cached and
+// refreshed only on scm events, document switches and saves, never on
+// the buffer debounce (buffer edits cannot change the index).
 @interface BufferDiffService : NSObject
 @property (nonatomic) OakDocument* document;
 
-// Review base ref; nil means HEAD. Setting it triggers a recompute.
-// `repoRoot` is the repository the ref belongs to: a sha means nothing
-// in another repository, so once the document moves outside it the base
-// falls back to HEAD rather than resolving to nothing and reporting the
-// whole file as untracked. nil root = applies anywhere.
-- (void)setBaseRef:(NSString*)aRef forRepoRoot:(NSString*)aRepoRoot;
-@property (nonatomic, readonly) NSString* baseRef;
+// The window's review base, as the reader chose it. Setting it triggers
+// a recompute.
+//
+// A relative spec is resolved here, on the same cadence as the other git
+// queries — never on the buffer debounce — and only the sha it resolves
+// to travels onward. Keying the blob cache by a spec whose meaning moves
+// would serve the previous commit's blob after the next commit.
+//
+// `repoRoot` binds a pinned sha to the repository it was chosen in,
+// since it means nothing outside it; the other kinds resolve wherever
+// the document happens to be, and pass nil.
+- (void)setBaseKind:(OakReviewBaseKind)aKind spec:(NSString*)aSpec repoRoot:(NSString*)aRepoRoot;
 
 // Called on the main queue with each fresh snapshot (stale results are
 // dropped, never delivered out of order).

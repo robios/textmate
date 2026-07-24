@@ -33,7 +33,7 @@ static NSDictionary* default_settings ()
 		kUserDefaultsRMateServerPortKey:         @"52698",
 		kUserDefaultsLicenseOwnerKey:            NSFullUserName(),
 		kUserDefaultsLineNumbersKey:             @YES,
-		kUserDefaultsDiffMarksVisibilityKey:     kDiffMarksVisibilityAlways,
+		kUserDefaultsDiffMarksVisibilityKey:     kDiffMarksVisibilityWithPane,
 		kUserDefaultsFontSmoothingKey:            @(3),
 		kUserDefaultsLineNumberScaleFactorKey:    @(0.8),
 		kUserDefaultsTabItemMinWidthKey:          @(120),
@@ -134,6 +134,10 @@ NSString* const kUserDefaultsDiffMarksVisibilityKey = @"diffMarksVisibility";
 NSString* const kDiffMarksVisibilityAlways   = @"always";
 NSString* const kDiffMarksVisibilityWithPane = @"withDiffPane";
 NSString* const kDiffMarksVisibilityNever    = @"never";
+
+char const* const kSettingsReviewBaseCommitLimitKey = "reviewBaseCommitLimit";
+int32_t const kReviewBaseCommitLimitDefault = 20;
+int32_t const kReviewBaseCommitLimitMax     = 1000;
 
 // ==============
 // = Formatters =

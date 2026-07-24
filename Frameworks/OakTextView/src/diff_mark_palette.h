@@ -3,7 +3,7 @@
 
 #include <CoreGraphics/CoreGraphics.h>
 
-// The colours every buffer-vs-HEAD line indicator draws with — the
+// The colours every buffer-vs-review-base line indicator draws with — the
 // gutter's change bars and the minimap's strips — kept in one place so
 // the same change reads as the same colour wherever it is shown.
 //

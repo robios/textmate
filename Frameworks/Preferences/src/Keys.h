@@ -78,13 +78,24 @@ extern NSString* const kUserDefaultsLineNumberFontNameKey;
 // = Review =
 // ==========
 
-// How the gutter shows buffer-vs-HEAD change bars. One of the three
-// values below; anything else (or nothing) reads as “always”.
+// How loudly the gutter shows buffer-vs-review-base changes. One of the
+// three values below; anything else (or nothing) reads as the default,
+// “with pane”.
 extern NSString* const kUserDefaultsDiffMarksVisibilityKey;
 
-extern NSString* const kDiffMarksVisibilityAlways;
-extern NSString* const kDiffMarksVisibilityWithPane; // only while the diff pane is open
-extern NSString* const kDiffMarksVisibilityNever;
+extern NSString* const kDiffMarksVisibilityAlways;  // colour bars at all times
+extern NSString* const kDiffMarksVisibilityWithPane; // bars with the pane open, the gutter's own icons otherwise
+extern NSString* const kDiffMarksVisibilityNever;   // no in-gutter indication at all
+
+// How many commits the review-base selector offers. A setting rather
+// than a preference: how far back a reader wants to review is a
+// property of the repository they are in, so `.tm_properties` can carry
+// a different depth per project, with the preferences pane writing the
+// global default. Shared here because both the pane and the service
+// clamp it, and a clamp that disagreed would be a silent bug.
+extern char const* const kSettingsReviewBaseCommitLimitKey;
+extern int32_t const kReviewBaseCommitLimitDefault;
+extern int32_t const kReviewBaseCommitLimitMax;
 
 // ==============
 // = Formatters =

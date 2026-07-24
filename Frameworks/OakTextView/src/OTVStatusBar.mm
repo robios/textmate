@@ -60,6 +60,12 @@ static NSButton* OakCreateImageToggleButton (NSImage* image, NSString* accessibi
 @property (nonatomic) NSPopUpButton* lspPopUp;
 @property (nonatomic) NSView*        lspDivider;
 @property (nonatomic) NSTextField*   agentStatusField;
+@property (nonatomic) NSPopUpButton* reviewBasePopUp;
+@property (nonatomic) NSView*        reviewBaseDividerLeft;
+@property (nonatomic) NSView*        reviewBaseDividerRight;
+@property (nonatomic) NSArray<NSLayoutConstraint*>* reviewBaseVisibleConstraints;
+@property (nonatomic) NSArray<NSLayoutConstraint*>* reviewBaseHiddenConstraints;
+@property (nonatomic) BOOL reviewBaseVisible;
 @property (nonatomic) NSPopUpButton* copilotPopUp;
 @property (nonatomic) NSButton*      macroRecordingButton;
 @property (nonatomic) NSArray<NSLayoutConstraint*>* lspVisibleConstraints;
@@ -128,8 +134,18 @@ static NSButton* OakCreateImageToggleButton (NSImage* image, NSString* accessibi
 		NSView* dividerFour  = OakCreateNSBoxSeparator();
 		NSView* dividerFive  = OakCreateNSBoxSeparator();
 		NSView* dividerSix   = OakCreateNSBoxSeparator();
+		NSView* dividerSeven = OakCreateNSBoxSeparator();
+		NSView* dividerEight = OakCreateNSBoxSeparator();
 		self.lspDivider = dividerSix;
 		self.lspDivider.hidden = YES;
+
+		// The review base is bracketed like the bar's other sections. The
+		// pair travels with it: a base that collapses away would otherwise
+		// leave two rules leaning against each other.
+		self.reviewBaseDividerLeft  = dividerSeven;
+		self.reviewBaseDividerRight = dividerEight;
+		self.reviewBaseDividerLeft.hidden  = YES;
+		self.reviewBaseDividerRight.hidden = YES;
 
 		self.copilotPopUp = OakCreateStatusBarPopUpButton(nil, @"Copilot Status");
 		[[self.copilotPopUp cell] setUsesItemFromMenu:NO];
@@ -140,6 +156,14 @@ static NSButton* OakCreateImageToggleButton (NSImage* image, NSString* accessibi
 		self.agentStatusField.accessibilityLabel = @"Agent Status";
 		[self.agentStatusField setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow+3 forOrientation:NSLayoutConstraintOrientationHorizontal];
 		[[self.agentStatusField cell] setLineBreakMode:NSLineBreakByTruncatingTail];
+
+		// Review base. A pop-up rather than a label: the bar is the one
+		// surface always on screen, so it is where the base is both named and
+		// changed. Its title is drawn by us (colour carries whether the base
+		// is HEAD), so the menu never supplies it.
+		self.reviewBasePopUp = OakCreateStatusBarPopUpButton(nil, @"Review Base");
+		[[self.reviewBasePopUp cell] setUsesItemFromMenu:NO];
+		[self.reviewBasePopUp setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow+2 forOrientation:NSLayoutConstraintOrientationHorizontal];
 
 		NSDictionary* views = @{
 			@"topDivider":   topDivider,
@@ -157,6 +181,9 @@ static NSButton* OakCreateImageToggleButton (NSImage* image, NSString* accessibi
 			@"dividerSix":   dividerSix,
 			@"lsp":          self.lspPopUp,
 			@"agent":        self.agentStatusField,
+			@"reviewBase":   self.reviewBasePopUp,
+			@"dividerSeven": dividerSeven,
+			@"dividerEight": dividerEight,
 			@"copilot":       self.copilotPopUp,
 			@"recording":    self.macroRecordingButton,
 		};
@@ -184,10 +211,27 @@ static NSButton* OakCreateImageToggleButton (NSImage* image, NSString* accessibi
 		// Center non-text control (without dividerSix — added dynamically)
 		[self addConstraints:[NSLayoutConstraint constraintsWithVisualFormat:@"H:[selection]-(>=1)-[dividerOne]-(>=1)-[dividerTwo]-(>=1)-[dividerThree]-(>=1)-[items]-(>=1)-[dividerFour]-(>=1)-[dividerFive]-(>=1)-[recording]" options:NSLayoutFormatAlignAllCenterY metrics:nil views:views]];
 
-		// LSP visible: symbol → copilot → dividerSix → lsp → dividerFive
+		// Review base visible: symbol → | → base → | → agent. It spans its
+		// own stretch of the chain rather than joining the LSP sets, so the
+		// two collapse independently instead of needing a set per combination.
+		self.reviewBaseVisibleConstraints = ({
+			NSMutableArray* c = [NSMutableArray new];
+			[c addObjectsFromArray:[NSLayoutConstraint constraintsWithVisualFormat:@"H:[symbol]-4-[dividerSeven(==1)]-2-[reviewBase]-4-[dividerEight(==1)]-2-[agent]" options:0 metrics:nil views:views]];
+			[c addObjectsFromArray:[NSLayoutConstraint constraintsWithVisualFormat:@"V:|-5-[dividerSeven(==15,==dividerEight)]-5-|" options:0 metrics:nil views:views]];
+			// The vertical format positions only the first rule and gives the
+			// second its height, so the second still needs placing.
+			[c addObject:[NSLayoutConstraint constraintWithItem:dividerEight attribute:NSLayoutAttributeCenterY relatedBy:NSLayoutRelationEqual toItem:dividerSeven attribute:NSLayoutAttributeCenterY multiplier:1 constant:0]];
+			[c addObject:[NSLayoutConstraint constraintWithItem:self.reviewBasePopUp attribute:NSLayoutAttributeBaseline relatedBy:NSLayoutRelationEqual toItem:self.symbolPopUp attribute:NSLayoutAttributeBaseline multiplier:1 constant:0]];
+			[c copy];
+		});
+
+		// Review base hidden (no repository to have a base in): symbol → agent
+		self.reviewBaseHiddenConstraints = [NSLayoutConstraint constraintsWithVisualFormat:@"H:[symbol]-4-[agent]" options:0 metrics:nil views:views];
+
+		// LSP visible: agent → copilot → dividerSix → lsp → dividerFive
 		self.lspVisibleConstraints = ({
 			NSMutableArray* c = [NSMutableArray new];
-			[c addObjectsFromArray:[NSLayoutConstraint constraintsWithVisualFormat:@"H:[symbol]-4-[agent]-4-[copilot]-4-[dividerSix(==1)]-2-[lsp]-5-[dividerFive]" options:0 metrics:nil views:views]];
+			[c addObjectsFromArray:[NSLayoutConstraint constraintsWithVisualFormat:@"H:[agent]-4-[copilot]-4-[dividerSix(==1)]-2-[lsp]-5-[dividerFive]" options:0 metrics:nil views:views]];
 			[c addObjectsFromArray:[NSLayoutConstraint constraintsWithVisualFormat:@"V:|-5-[dividerOne(==15,==dividerTwo,==dividerThree,==dividerFour,==dividerFive,==dividerSix)]-5-|" options:0 metrics:nil views:views]];
 			[c addObject:[NSLayoutConstraint constraintWithItem:self.lspPopUp attribute:NSLayoutAttributeBaseline relatedBy:NSLayoutRelationEqual toItem:self.symbolPopUp attribute:NSLayoutAttributeBaseline multiplier:1 constant:0]];
 			[c addObject:[NSLayoutConstraint constraintWithItem:self.agentStatusField attribute:NSLayoutAttributeBaseline relatedBy:NSLayoutRelationEqual toItem:self.symbolPopUp attribute:NSLayoutAttributeBaseline multiplier:1 constant:0]];
@@ -196,10 +240,10 @@ static NSButton* OakCreateImageToggleButton (NSImage* image, NSString* accessibi
 			[c copy];
 		});
 
-		// LSP hidden: symbol → copilot → dividerFive directly
+		// LSP hidden: agent → copilot → dividerFive directly
 		self.lspHiddenConstraints = ({
 			NSMutableArray* c = [NSMutableArray new];
-			[c addObjectsFromArray:[NSLayoutConstraint constraintsWithVisualFormat:@"H:[symbol]-4-[agent]-4-[copilot]-4-[dividerFive]" options:0 metrics:nil views:views]];
+			[c addObjectsFromArray:[NSLayoutConstraint constraintsWithVisualFormat:@"H:[agent]-4-[copilot]-4-[dividerFive]" options:0 metrics:nil views:views]];
 			[c addObjectsFromArray:[NSLayoutConstraint constraintsWithVisualFormat:@"V:|-5-[dividerOne(==15,==dividerTwo,==dividerThree,==dividerFour,==dividerFive)]-5-|" options:0 metrics:nil views:views]];
 			[c addObject:[NSLayoutConstraint constraintWithItem:self.copilotPopUp attribute:NSLayoutAttributeCenterY relatedBy:NSLayoutRelationEqual toItem:self.macroRecordingButton attribute:NSLayoutAttributeCenterY multiplier:1 constant:0]];
 			[c addObject:[NSLayoutConstraint constraintWithItem:self.agentStatusField attribute:NSLayoutAttributeBaseline relatedBy:NSLayoutRelationEqual toItem:self.symbolPopUp attribute:NSLayoutAttributeBaseline multiplier:1 constant:0]];
@@ -211,12 +255,14 @@ static NSButton* OakCreateImageToggleButton (NSImage* image, NSString* accessibi
 
 		// Start hidden
 		[self addConstraints:self.lspHiddenConstraints];
+		[self addConstraints:self.reviewBaseHiddenConstraints];
 
 		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(grammarPopUpButtonWillPopUp:) name:NSPopUpButtonWillPopUpNotification object:self.grammarPopUp];
 		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(bundleItemsPopUpButtonWillPopUp:) name:NSPopUpButtonWillPopUpNotification object:self.bundleItemsPopUp];
 		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(symbolPopUpButtonWillPopUp:) name:NSPopUpButtonWillPopUpNotification object:self.symbolPopUp];
 		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(lspPopUpButtonWillPopUp:) name:NSPopUpButtonWillPopUpNotification object:self.lspPopUp];
 		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(copilotPopUpButtonWillPopUp:) name:NSPopUpButtonWillPopUpNotification object:self.copilotPopUp];
+		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(reviewBasePopUpButtonWillPopUp:) name:NSPopUpButtonWillPopUpNotification object:self.reviewBasePopUp];
 	}
 	return self;
 }
@@ -405,6 +451,56 @@ static NSButton* OakCreateImageToggleButton (NSImage* image, NSString* accessibi
 	_agentStatusText = [text copy];
 	self.agentStatusField.stringValue = text ?: @"";
 	self.agentStatusField.toolTip     = text;
+}
+
+- (void)setReviewBaseName:(NSString*)aName isHead:(BOOL)isHead
+{
+	BOOL const haveBase = aName.length != 0;
+	if(haveBase != _reviewBaseVisible)
+	{
+		_reviewBaseVisible = haveBase;
+		self.reviewBasePopUp.hidden        = !haveBase;
+		self.reviewBaseDividerLeft.hidden  = !haveBase;
+		self.reviewBaseDividerRight.hidden = !haveBase;
+
+		if(haveBase)
+		{
+			[self removeConstraints:self.reviewBaseHiddenConstraints];
+			[self addConstraints:self.reviewBaseVisibleConstraints];
+		}
+		else
+		{
+			[self removeConstraints:self.reviewBaseVisibleConstraints];
+			[self addConstraints:self.reviewBaseHiddenConstraints];
+		}
+	}
+
+	if(!haveBase)
+	{
+		[[self.reviewBasePopUp cell] setMenuItem:nil];
+		self.reviewBasePopUp.toolTip = nil;
+		return;
+	}
+
+	// Colour is emphasis, not the message: the text already says HEAD or
+	// names the commit, so the distinction survives for a reader who does
+	// not see the difference.
+	NSMenuItem* displayItem = [[NSMenuItem alloc] initWithTitle:@"" action:NULL keyEquivalent:@""];
+	displayItem.attributedTitle = [[NSAttributedString alloc] initWithString:[NSString stringWithFormat:@"Base: %@", aName] attributes:@{
+		NSFontAttributeName:            OakStatusBarFont(),
+		NSForegroundColorAttributeName: isHead ? NSColor.secondaryLabelColor : NSColor.systemOrangeColor,
+	}];
+	[[self.reviewBasePopUp cell] setMenuItem:displayItem];
+
+	self.reviewBasePopUp.toolTip = isHead
+		? @"Review base: HEAD — the diff pane, the gutter and the minimap show uncommitted changes. Click to review against an earlier commit."
+		: [NSString stringWithFormat:@"Review base: %@ — the diff pane, the gutter and the minimap compare against this commit, not HEAD. Click to go back to HEAD.", aName];
+}
+
+- (void)reviewBasePopUpButtonWillPopUp:(NSNotification*)aNotification
+{
+	if([self.delegate respondsToSelector:@selector(showReviewBaseMenu:)])
+		[self.delegate showReviewBaseMenu:self.reviewBasePopUp];
 }
 
 - (void)setLspEnabled:(BOOL)enabled status:(NSString*)status serverName:(NSString*)serverName errors:(NSUInteger)errors warnings:(NSUInteger)warnings info:(NSUInteger)info

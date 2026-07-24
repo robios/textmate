@@ -16,6 +16,7 @@
 #import <OakFoundation/NSString Additions.h>
 #import <Preferences/Keys.h>
 #import <OakTextView/OakDocumentView.h>
+#import <OakTextView/OakReviewBase.h>
 #import <OakTextView/MarkdownPreviewView.h>
 #import <FileBrowser/FileBrowserViewController.h>
 #import <Terminal/TerminalPaneController.h>
@@ -98,6 +99,10 @@ static void show_command_error (std::string const& message, oak::uuid_t const& u
 @property (nonatomic) OakDocumentView*            documentView;
 @property (nonatomic) OakTextView*                textView;
 @property (nonatomic) FileBrowserViewController*  fileBrowser;
+
+// The commit this window reviews against — one per window rather than
+// per view, so every git-aware surface in it answers the same question.
+@property (nonatomic) OakReviewBase*              reviewBase;
 
 @property (nonatomic) BOOL                        disableFileBrowserWindowResize;
 @property (nonatomic) BOOL                        autoRevealFile;
@@ -196,7 +201,10 @@ static NSArray* const kObservedKeyPaths = @[ @"arrayController.arrangedObjects.p
 		self.tabBarView.dataSource = self;
 		self.tabBarView.delegate   = self;
 
+		self.reviewBase = [OakReviewBase new];
+
 		self.documentView = [[OakDocumentView alloc] init];
+		self.documentView.reviewBase = self.reviewBase;
 		self.textView = self.documentView.textView;
 		self.textView.delegate = self;
 

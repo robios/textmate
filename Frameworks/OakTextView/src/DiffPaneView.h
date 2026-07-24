@@ -57,7 +57,6 @@
 // Owner hooks.
 @property (nonatomic, copy) void (^closeHandler)(void);
 @property (nonatomic, copy) void (^moveCaretHandler)(NSUInteger line);  // 1-indexed buffer line
-@property (nonatomic, copy) void (^selectBaseRefHandler)(NSString* ref); // base selector choice; nil → HEAD
 
 // One-line banner strip under the header (HEAD-moved notices). An
 // actionTitle of nil shows a passive, dismiss-only note.

@@ -504,7 +504,6 @@ struct diff_row_t
 	NSButton*      _previousHunkButton;
 	NSButton*      _nextHunkButton;
 	NSButton*      _revertAllButton;
-	NSPopUpButton* _basePopUp;
 
 	NSScrollView*     _listScrollView;
 	DiffPaneListView* _listView;
@@ -664,26 +663,17 @@ struct diff_row_t
 	NSRect const nextRect = place(_nextHunkButton, headerRect, x, NSMakeSize(16, 16));
 	x = NSMaxX(nextRect) + sectionGap;
 
-	NSSize baseSize = alignmentSize(_basePopUp);
-	baseSize.width = std::min<CGFloat>(baseSize.width, 180);
-	NSRect const baseRect = place(_basePopUp, headerRect, NSMaxX(headerRect) - edgeMargin - baseSize.width, baseSize);
-
-	CGFloat titleRight = NSMinX(baseRect) - sectionGap;
+	CGFloat titleRight = NSMaxX(headerRect) - edgeMargin;
 	if(!_revertAllButton.hidden)
 	{
 		NSSize const revertSize = alignmentSize(_revertAllButton);
-		NSRect const revertRect = place(_revertAllButton, headerRect, NSMinX(baseRect) - sectionGap - revertSize.width, revertSize);
+		NSRect const revertRect = place(_revertAllButton, headerRect, titleRight - revertSize.width, revertSize);
 		titleRight = NSMinX(revertRect) - sectionGap;
 	}
 
-	// Title fills the gap between the hunk buttons and the base selector,
-	// baseline-aligned with the pop-up's label (frames are in non-flipped
-	// superview coordinates, so the baseline sits offset below NSMaxY).
+	// Title fills what is left between the hunk buttons and the right edge.
 	[_headerField sizeToFit];
-	CGFloat const controlBaseline = NSMaxY([_basePopUp alignmentRectForFrame:_basePopUp.frame]) - _basePopUp.firstBaselineOffsetFromTop;
-	CGFloat const fieldHeight     = NSHeight(_headerField.frame);
-	CGFloat const fieldY          = controlBaseline + _headerField.firstBaselineOffsetFromTop - fieldHeight;
-	_headerField.frame = NSMakeRect(x, fieldY, std::max<CGFloat>(0, titleRight - x), fieldHeight);
+	place(_headerField, headerRect, x, NSMakeSize(std::max<CGFloat>(0, titleRight - x), NSHeight(_headerField.frame)));
 
 	if(_bannerVisible && _bannerField)
 	{
@@ -738,7 +728,6 @@ struct diff_row_t
 		[_previousHunkButton removeFromSuperview];
 		[_nextHunkButton removeFromSuperview];
 		[_revertAllButton removeFromSuperview];
-		[_basePopUp removeFromSuperview];
 		[self removeBannerViews];
 
 		[_hunkViews removeAllObjects];
@@ -750,7 +739,6 @@ struct diff_row_t
 		_previousHunkButton = nil;
 		_nextHunkButton     = nil;
 		_revertAllButton    = nil;
-		_basePopUp          = nil;
 		_cards.clear();
 		_activeHunkIndex = diff_pane::npos;
 	}
@@ -781,11 +769,6 @@ struct diff_row_t
 	_revertAllButton.focusRingType = NSFocusRingTypeNone;
 	_revertAllButton.toolTip       = @"Put every hunk in this file back, as one undoable edit";
 
-	_basePopUp = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
-	_basePopUp.controlSize = NSControlSizeSmall;
-	_basePopUp.font        = [NSFont systemFontOfSize:[NSFont systemFontSizeForControlSize:NSControlSizeSmall]];
-	_basePopUp.bezelStyle  = NSBezelStyleRounded;
-	_basePopUp.toolTip     = @"Commit the pane compares the buffer against";
 
 	_headerField = [[NSTextField alloc] initWithFrame:NSZeroRect];
 	_headerField.bordered        = NO;
@@ -822,10 +805,8 @@ struct diff_row_t
 	[self addSubview:_previousHunkButton];
 	[self addSubview:_nextHunkButton];
 	[self addSubview:_revertAllButton];
-	[self addSubview:_basePopUp];
 
 	[self applyThemeColors];
-	[self rebuildBaseMenu];
 	[self updateHeader];
 	self.needsLayout = YES;
 }
@@ -863,7 +844,6 @@ struct diff_row_t
 	if(!_active)
 		return;
 
-	[self rebuildBaseMenu];
 	[self renderNow];
 }
 
@@ -1074,75 +1054,6 @@ struct diff_row_t
 	// is already comfortably visible.
 	if(NSMinY(hunkFrame) < NSMinY(visible) || NSMaxY(hunkFrame) > NSMaxY(visible))
 		[_listView scrollPoint:NSMakePoint(NSMinX(visible), std::max<CGFloat>(0, NSMinY(hunkFrame) - kHunkHeaderHeight))];
-}
-
-// =================
-// = Base selector =
-// =================
-
-- (void)rebuildBaseMenu
-{
-	if(!_basePopUp)
-		return;
-
-	NSMenu* menu = [NSMenu new];
-
-	NSMenuItem* headItem = [menu addItemWithTitle:@"HEAD" action:@selector(didSelectBaseRef:) keyEquivalent:@""];
-	headItem.target = self;
-
-	NSString* selectedRef = _snapshot && ![_snapshot isBaseHead] ? [_snapshot baseRef] : nil;
-
-	if(NSString* previous = _snapshot.previousHeadCommit)
-	{
-		NSMenuItem* item = [menu addItemWithTitle:[NSString stringWithFormat:@"Previous HEAD (%@)", ShortSHA(previous)] action:@selector(didSelectBaseRef:) keyEquivalent:@""];
-		item.target = self;
-		item.representedObject = previous;
-	}
-
-	auto const& commits = _snapshot ? [_snapshot recentCommits] : std::vector<scm::git_query::commit_t>();
-	if(!commits.empty())
-		[menu addItem:[NSMenuItem separatorItem]];
-	for(auto const& commit : commits)
-	{
-		NSString* subject = to_ns(commit.subject);
-		if(subject.length > 40)
-			subject = [[subject substringToIndex:40] stringByAppendingString:@"…"];
-		NSMenuItem* item = [menu addItemWithTitle:[NSString stringWithFormat:@"%@ %@", ShortSHA(to_ns(commit.sha)), subject] action:@selector(didSelectBaseRef:) keyEquivalent:@""];
-		item.target = self;
-		item.representedObject = to_ns(commit.sha);
-	}
-
-	// An older base that is neither Previous HEAD nor among the recent
-	// commits still needs a menu entry to display as the selection.
-	NSMenuItem* selectedItem = headItem;
-	if(selectedRef)
-	{
-		for(NSMenuItem* item in menu.itemArray)
-		{
-			if([item.representedObject isEqualToString:selectedRef])
-			{
-				selectedItem = item;
-				break;
-			}
-		}
-		if(selectedItem == headItem)
-		{
-			NSMenuItem* item = [menu addItemWithTitle:ShortSHA(selectedRef) action:@selector(didSelectBaseRef:) keyEquivalent:@""];
-			item.target = self;
-			item.representedObject = selectedRef;
-			selectedItem = item;
-		}
-	}
-
-	_basePopUp.menu = menu;
-	[_basePopUp selectItem:selectedItem];
-	self.needsLayout = YES;
-}
-
-- (void)didSelectBaseRef:(NSMenuItem*)sender
-{
-	if(self.selectBaseRefHandler)
-		self.selectBaseRefHandler(sender.representedObject); // nil for HEAD
 }
 
 // ==========
@@ -1904,7 +1815,6 @@ struct diff_row_t
 	NSColor* backgroundRGB = [background colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
 	BOOL const isDarkTheme = backgroundRGB && (0.2126*backgroundRGB.redComponent + 0.7152*backgroundRGB.greenComponent + 0.0722*backgroundRGB.blueComponent) < 0.5;
 	NSAppearance* appearance = [NSAppearance appearanceNamed:isDarkTheme ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
-	_basePopUp.appearance          = appearance;
 	_bannerActionButton.appearance = appearance;
 
 	self.needsDisplay = YES; // the header strip background is drawn from these colors

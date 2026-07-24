@@ -2,6 +2,8 @@
 #import <document/OakDocument.h>
 #import <scm/scm.h>
 #import <io/path.h>
+#import <settings/settings.h>
+#import <Preferences/Keys.h>
 #import <text/types.h>
 #import <ns/ns.h>
 #import <atomic>
@@ -24,6 +26,8 @@ static size_t const kBufferDiffMaxBytes = 2 * 1024 * 1024;
 @property (nonatomic, readwrite) NSString* repoRoot;
 @property (nonatomic, readwrite) NSString* baseRef;
 @property (nonatomic, readwrite, getter = isBaseHead) BOOL baseHead;
+@property (nonatomic, readwrite) OakReviewBaseKind baseKind;
+@property (nonatomic, readwrite) NSString* baseSpec;
 @property (nonatomic, readwrite) NSString* headCommit;
 @property (nonatomic, readwrite) NSString* previousHeadCommit;
 @end
@@ -41,8 +45,9 @@ static size_t const kBufferDiffMaxBytes = 2 * 1024 * 1024;
 @end
 
 @interface BufferDiffService ()
-@property (nonatomic, readwrite) NSString* baseRef;
-@property (nonatomic) NSString* baseRefRepoRoot; // the repository baseRef was picked in
+@property (nonatomic) OakReviewBaseKind baseKind;
+@property (nonatomic) NSString* baseSpec;
+@property (nonatomic) NSString* baseRepoRoot; // set only for a pinned commit
 @end
 
 @implementation BufferDiffService
@@ -65,6 +70,14 @@ static size_t const kBufferDiffMaxBytes = 2 * 1024 * 1024;
 	std::string _cachedHead;          // NULL_STR before first refresh / unborn HEAD
 	std::string _previousHead;        // pre-move HEAD once a move was seen
 	std::vector<scm::git_query::commit_t> _cachedRecentCommits;
+	size_t      _cachedCommitLimit;   // what _cachedRecentCommits was asked for
+
+	// What a relative spec last resolved to, and what it was resolved
+	// from. A NULL_STR sha means the spec names nothing here — a
+	// repository with fewer commits than it reaches back over.
+	std::string _cachedRelativeRoot;
+	std::string _cachedRelativeSpec;
+	std::string _cachedRelativeSha;
 
 	// Raised on the main thread, consumed on the compute queue — and only
 	// by a block that outlives the generation check, so a request cannot
@@ -79,6 +92,7 @@ static size_t const kBufferDiffMaxBytes = 2 * 1024 * 1024;
 		_queue = dispatch_queue_create("com.macromates.buffer-diff", DISPATCH_QUEUE_SERIAL);
 		_cachedHead = NULL_STR;
 		_previousHead = NULL_STR;
+		_cachedRelativeSha = NULL_STR;
 	}
 	return self;
 }
@@ -168,13 +182,21 @@ static size_t const kBufferDiffMaxBytes = 2 * 1024 * 1024;
 	}
 }
 
-- (void)setBaseRef:(NSString*)aRef forRepoRoot:(NSString*)aRepoRoot
+- (void)setBaseKind:(OakReviewBaseKind)aKind spec:(NSString*)aSpec repoRoot:(NSString*)aRepoRoot
 {
-	NSString* newRef = aRef.length ? aRef : nil;
-	if((_baseRef == newRef || [_baseRef isEqualToString:newRef]) && (_baseRefRepoRoot == aRepoRoot || [_baseRefRepoRoot isEqualToString:aRepoRoot]))
+	NSString* newSpec = aSpec.length ? aSpec : nil;
+	if(_baseKind == aKind && (_baseSpec == newSpec || [_baseSpec isEqualToString:newSpec]) && (_baseRepoRoot == aRepoRoot || [_baseRepoRoot isEqualToString:aRepoRoot]))
 		return;
-	_baseRef         = [newRef copy];
-	_baseRefRepoRoot = [aRepoRoot copy];
+	_baseKind     = aKind;
+	_baseSpec     = [newSpec copy];
+	_baseRepoRoot = [aRepoRoot copy];
+
+	// A relative spec has to be resolved against the repository before the
+	// diff can run, and the resolution lives with the other cached git
+	// state, which only a state refresh recomputes.
+	if(aKind == OakReviewBaseKindRelative)
+		_repoStateRefreshNeeded = true;
+
 	[self updateNow];
 }
 
@@ -246,9 +268,16 @@ static size_t const kBufferDiffMaxBytes = 2 * 1024 * 1024;
 	// on every keystroke's recompute.
 	auto const bufferTextPtr = std::make_shared<std::string>(to_s(doc.content ?: @""));
 	std::string const pathStr  = to_s(path);
-	std::string const wantRef  = _baseRef.length ? to_s(_baseRef) : "HEAD";
-	std::string const wantRoot = _baseRefRepoRoot.length ? to_s(_baseRefRepoRoot) : NULL_STR;
+	OakReviewBaseKind const wantKind = _baseKind;
+	std::string const wantSpec = _baseSpec.length ? to_s(_baseSpec) : NULL_STR;
+	std::string const wantRoot = _baseRepoRoot.length ? to_s(_baseRepoRoot) : NULL_STR;
 	BOOL const documentEdited = doc.isDocumentEdited;
+
+	// Read here rather than on the compute queue: settings lookups walk
+	// the .tm_properties chain, and everything else the block needs is
+	// likewise sampled on the main thread.
+	settings_t const settings = settings_for_path(to_s(doc.virtualPath ?: path), to_s(doc.fileType), to_s(doc.directory ?: [path stringByDeletingLastPathComponent]));
+	size_t const commitLimit = std::clamp<int32_t>(settings.get(kSettingsReviewBaseCommitLimitKey, kReviewBaseCommitLimitDefault), 0, kReviewBaseCommitLimitMax);
 
 	__weak BufferDiffService* weakSelf = self;
 	dispatch_async(_queue, ^{
@@ -268,12 +297,50 @@ static size_t const kBufferDiffMaxBytes = 2 * 1024 * 1024;
 		std::string const root = scm::root_for_path(pathStr);
 		std::string const rel  = root != NULL_STR ? path::relative_to(pathStr, root) : NULL_STR;
 
-		// A commit sha only means something inside the repository it was
-		// picked from; carried into another one it resolves to nothing and
-		// would report every line of the file as added.
-		std::string const refStr = (wantRoot == NULL_STR || wantRoot == root) ? wantRef : "HEAD";
+		// The base as an actual commit. Everything downstream — the blob
+		// cache, the hunks, the revert labels — sees only what comes out
+		// of here, so a spec whose meaning moves cannot leak into a cache
+		// key or onto a button.
+		//
+		// Both non-HEAD kinds can fail to name a commit here, and both
+		// fall back to HEAD rather than to nothing: a pinned sha carried
+		// into another repository would resolve to nothing and report the
+		// whole file as added, and a relative spec reaches back past the
+		// first commit in a young repository.
+		std::string refStr = "HEAD";
+		OakReviewBaseKind kindInEffect = OakReviewBaseKindHead;
+		if(root == NULL_STR || wantSpec == NULL_STR)
+		{
+			// No repository to resolve in, or nothing to resolve.
+		}
+		else if(wantKind == OakReviewBaseKindRelative)
+		{
+			// Resolved on the git-state cadence, never on the buffer
+			// debounce: a keystroke cannot move HEAD, and this is a
+			// subprocess.
+			if(refreshRepoState || root != serviceForState->_cachedRelativeRoot || wantSpec != serviceForState->_cachedRelativeSpec)
+			{
+				serviceForState->_cachedRelativeSha  = scm::git_query::rev_parse(root, wantSpec);
+				serviceForState->_cachedRelativeSpec = wantSpec;
+				serviceForState->_cachedRelativeRoot = root;
+			}
+
+			if(serviceForState->_cachedRelativeSha != NULL_STR)
+			{
+				refStr       = serviceForState->_cachedRelativeSha;
+				kindInEffect = OakReviewBaseKindRelative;
+			}
+		}
+		else if(wantKind == OakReviewBaseKindCommit && wantRoot == root)
+		{
+			refStr       = wantSpec;
+			kindInEffect = OakReviewBaseKindCommit;
+		}
+
 		snapshot.baseRef  = to_ns(refStr);
-		snapshot.baseHead = refStr == "HEAD";
+		snapshot.baseKind = kindInEffect;
+		snapshot.baseSpec = kindInEffect == OakReviewBaseKindRelative ? to_ns(wantSpec) : nil;
+		snapshot.baseHead = refStr == "HEAD"; // refined below, once the resolved HEAD is known
 
 		if(root == NULL_STR || rel == NULL_STR || rel.empty())
 		{
@@ -285,7 +352,7 @@ static size_t const kBufferDiffMaxBytes = 2 * 1024 * 1024;
 			// Cached git-subprocess state, refreshed only on scm events,
 			// saves and document/repo switches — never on the buffer
 			// debounce (buffer edits cannot change index or HEAD).
-			if(refreshRepoState || root != serviceForState->_cachedStateRoot || rel != serviceForState->_cachedStateRel)
+			if(refreshRepoState || root != serviceForState->_cachedStateRoot || rel != serviceForState->_cachedStateRel || commitLimit != serviceForState->_cachedCommitLimit)
 			{
 				std::string const head = scm::git_query::head_commit(root);
 
@@ -310,9 +377,10 @@ static size_t const kBufferDiffMaxBytes = 2 * 1024 * 1024;
 
 				serviceForState->_cachedHead          = head;
 				serviceForState->_cachedStaged        = scm::git_query::has_staged_changes(root, rel);
-				serviceForState->_cachedRecentCommits = scm::git_query::recent_commits(root, 20);
+				serviceForState->_cachedRecentCommits = commitLimit ? scm::git_query::recent_commits(root, commitLimit) : std::vector<scm::git_query::commit_t>();
 				serviceForState->_cachedStateRoot     = root;
 				serviceForState->_cachedStateRel      = rel;
+				serviceForState->_cachedCommitLimit   = commitLimit;
 			}
 
 			snapshot.repoRoot         = to_ns(root);
@@ -320,6 +388,26 @@ static size_t const kBufferDiffMaxBytes = 2 * 1024 * 1024;
 			snapshot.headCommit       = serviceForState->_cachedHead != NULL_STR ? to_ns(serviceForState->_cachedHead) : nil;
 			snapshot.previousHeadCommit = serviceForState->_previousHead != NULL_STR ? to_ns(serviceForState->_previousHead) : nil;
 			[snapshot setRecentCommits:serviceForState->_cachedRecentCommits];
+
+			// Choosing the commit HEAD already points at IS choosing HEAD.
+			// The selector offers commits by sha, so comparing the ref as
+			// a string calls that an older base: an unmodified file then
+			// reads "Buffer matches <sha>" instead of "No uncommitted
+			// changes", and the revert controls dress themselves as a
+			// restore-to-past-version. Both shas are full ones — `git
+			// rev-parse HEAD` and `git log --pretty=%H` — so they compare
+			// directly.
+			bool const baseIsHead = refStr == "HEAD" || (serviceForState->_cachedHead != NULL_STR && refStr == serviceForState->_cachedHead);
+			snapshot.baseHead = baseIsHead;
+			if(baseIsHead)
+			{
+				// Same reasoning one step further: a base that lands on HEAD
+				// IS HEAD, so it must not go on describing itself as a pinned
+				// commit either — the status bar would name a sha and mark
+				// itself as an older base while showing the current one.
+				snapshot.baseKind = OakReviewBaseKindHead;
+				snapshot.baseSpec = nil;
+			}
 
 			if(bufferTextPtr->size() > kBufferDiffMaxBytes)
 			{
@@ -345,22 +433,14 @@ static size_t const kBufferDiffMaxBytes = 2 * 1024 * 1024;
 				// file browser and the pane's empty state already carry.
 				// Suppressing it at the one place marks are published
 				// covers every consumer at once.
+				//
+				// Otherwise the marks ARE the hunks the pane is showing.
+				// Gutter, minimap and pane all answer to the review base, so
+				// a change means the same thing wherever the reader looks,
+				// and one xdiff pass serves all three.
 				if(!tracked)
-				{
-					marks.clear();
-				}
-				else if(refStr == "HEAD")
-				{
-					// Gutter/minimap marks always compare against HEAD; the
-					// review base only drives the pane. One xdiff pass when
-					// they coincide.
-					marks = scm::gutter_diff::marks_for_hunks(hunks);
-				}
-				else
-				{
-					std::string const headText = scm::gutter_diff::blob_for_ref(root, "HEAD", rel);
-					marks = scm::gutter_diff::marks_for_hunks(scm::gutter_diff::hunks(headText, *bufferTextPtr));
-				}
+						marks.clear();
+				else	marks = scm::gutter_diff::marks_for_hunks(hunks);
 				marksValid = true;
 
 				[snapshot setBaseText:std::move(baseText)];

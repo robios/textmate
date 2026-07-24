@@ -3,6 +3,7 @@
 #import <OakAppKit/OakPasteboard.h>
 #import <OakAppKit/OakUIConstructionFunctions.h>
 #import <MenuBuilder/MenuBuilder.h>
+#import <settings/settings.h>
 
 @implementation AdvancedPreferences
 - (id)init
@@ -32,6 +33,48 @@
 		};
 	}
 	return self;
+}
+
+// The change-mark setting is a three-case string, so it is bridged to an
+// index the pop-up can bind to rather than stored as a tag.
+- (NSInteger)diffMarksVisibilityIndex
+{
+	NSString* const mode = [NSUserDefaults.standardUserDefaults stringForKey:kUserDefaultsDiffMarksVisibilityKey];
+	if([mode isEqualToString:kDiffMarksVisibilityAlways])
+		return 0;
+	if([mode isEqualToString:kDiffMarksVisibilityNever])
+		return 2;
+	return 1; // anything unrecognised reads as the default
+}
+
+- (void)setDiffMarksVisibilityIndex:(NSInteger)anIndex
+{
+	NSString* mode = kDiffMarksVisibilityWithPane;
+	if(anIndex == 0)
+		mode = kDiffMarksVisibilityAlways;
+	else if(anIndex == 2)
+		mode = kDiffMarksVisibilityNever;
+	[NSUserDefaults.standardUserDefaults setObject:mode forKey:kUserDefaultsDiffMarksVisibilityKey];
+}
+
+// Unlike everything else on this pane this one lives in the settings
+// system, not user defaults, so a project can override it in
+// .tm_properties; the field here writes the global value.
+- (NSString*)reviewBaseCommitLimit
+{
+	return [NSString stringWithFormat:@"%d", settings_for_path().get(kSettingsReviewBaseCommitLimitKey, kReviewBaseCommitLimitDefault)];
+}
+
+- (void)setReviewBaseCommitLimit:(NSString*)value
+{
+	// An empty field means "use the default" — which is what the
+	// placeholder already shows — not zero. Zero is a real choice (the
+	// commit list disappears) the reader makes by typing it, and clearing
+	// the field should not silently land on it while the placeholder
+	// promises 20.
+	NSString* const trimmed = [value stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+	int32_t const limit = trimmed.length ? std::clamp<int>(trimmed.intValue, 0, kReviewBaseCommitLimitMax) : kReviewBaseCommitLimitDefault;
+	settings_t::set(kSettingsReviewBaseCommitLimitKey, limit);
 }
 
 - (NSString*)grammarsToNeverSuggest
@@ -81,6 +124,16 @@
 	NSButton* disableBundleSuggestionsCheckBox         = OakCreateCheckBox(@"Disable bundle suggestions");
 	NSTextField* grammarsToNeverSuggestField           = [NSTextField textFieldWithString:@""];
 
+	NSPopUpButton* diffMarksPopUp                      = OakCreatePopUpButton();
+	NSTextField* reviewBaseCommitLimitField            = [NSTextField textFieldWithString:@""];
+
+	MBMenu const diffMarksItems = {
+		{ @"Always" },
+		{ @"Only while the diff pane is open (default)" },
+		{ @"Never" },
+	};
+	MBCreateMenu(diffMarksItems, diffMarksPopUp.menu);
+
 	MBMenu const fontSmoothingItems = {
 		{ @"Disabled",                                      .tag = 0 },
 		{ @"Enabled",                                       .tag = 1 },
@@ -89,7 +142,7 @@
 	};
 	MBCreateMenu(fontSmoothingItems, fontSmoothingPopUp.menu);
 
-	for(NSTextField* field in @[ lineNumberFontField, lineNumberScaleField, tabMinWidthField, tabMaxWidthField, clipboardKeepAtLeastField, clipboardKeepAtMostField, clipboardDaysToKeepField, grammarsToNeverSuggestField ])
+	for(NSTextField* field in @[ lineNumberFontField, lineNumberScaleField, tabMinWidthField, tabMaxWidthField, clipboardKeepAtLeastField, clipboardKeepAtMostField, clipboardDaysToKeepField, grammarsToNeverSuggestField, reviewBaseCommitLimitField ])
 		[field.widthAnchor constraintEqualToConstant:360].active = YES;
 
 	NSFont* hintFont = [NSFont systemFontOfSize:[NSFont systemFontSizeForControlSize:NSControlSizeSmall]];
@@ -165,9 +218,17 @@
 		@[ NSGridCell.emptyContentView,      makeHint(@"Stops suggesting bundle installation for unrecognized file types") ], // 42
 		@[ OakCreateLabel(@"Never suggest for:"), grammarsToNeverSuggestField ],                                           // 43
 		@[ NSGridCell.emptyContentView,      makeHint(@"Comma-separated list of grammar UUIDs to exclude from suggestions") ], // 44
+
+		@[ ], // 45 — separator
+
+		// Diff — rows 46-49
+		@[ OakCreateLabel(@"Change marks:"), diffMarksPopUp ],                                                            // 46
+		@[ NSGridCell.emptyContentView,      makeHint(@"Color bars while the diff pane is open, otherwise the gutter's own icons; untracked files show none") ], // 47
+		@[ OakCreateLabel(@"Base commits:"), reviewBaseCommitLimitField ],                                                // 48
+		@[ NSGridCell.emptyContentView,      makeHint(@"How many recent commits the review-base menu lists (default 20; 0 lists none). Projects can override reviewBaseCommitLimit in .tm_properties") ], // 49
 	]];
 
-	NSView* content = OakSetupGridViewWithSeparators(gridView, { 12, 21, 30, 35, 40 });
+	NSView* content = OakSetupGridViewWithSeparators(gridView, { 12, 21, 30, 35, 40, 45 });
 
 	NSScrollView* scrollView = [[NSScrollView alloc] init];
 	scrollView.documentView = content;
@@ -216,5 +277,9 @@
 	// Bundles bindings
 	[disableBundleSuggestionsCheckBox bind:NSValueBinding toObject:self withKeyPath:@"disableBundleSuggestions"    options:nil];
 	[grammarsToNeverSuggestField      bind:NSValueBinding toObject:self withKeyPath:@"grammarsToNeverSuggest"     options:@{ NSNullPlaceholderBindingOption: @"Comma-separated grammar UUIDs" }];
+
+	// Diff bindings
+	[diffMarksPopUp             bind:NSSelectedIndexBinding toObject:self withKeyPath:@"diffMarksVisibilityIndex" options:nil];
+	[reviewBaseCommitLimitField bind:NSValueBinding         toObject:self withKeyPath:@"reviewBaseCommitLimit"    options:@{ NSNullPlaceholderBindingOption: @"20" }];
 }
 @end

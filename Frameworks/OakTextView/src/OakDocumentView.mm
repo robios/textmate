@@ -5,6 +5,8 @@
 #import "MarkdownPreviewView.h"
 #import "DiffPaneView.h"
 #import "BufferDiffService.h"
+#import "diff_pane_model.h"
+#import "OakReviewBase.h"
 #import "diff_mark_palette.h"
 #import "OakSwiftUI-Swift.h"
 #import <lsp/LSPClient.h>
@@ -67,14 +69,6 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 	return [NSColor colorWithSRGBRed:tint(srgb.redComponent) green:tint(srgb.greenComponent) blue:tint(srgb.blueComponent) alpha:srgb.alphaComponent];
 }
 
-// The diff marks the buffer-diff service maintains. Drawn as a dedicated
-// column, so they must not ALSO come out of the bookmark column's generic
-// “mark type name is an image name” path.
-static BOOL IsDiffMarkType (NSString* type)
-{
-	return [type hasPrefix:@"diff."];
-}
-
 @interface OakDocumentView () <NSAccessibilityGroup, GutterViewDelegate, GutterViewColumnDataSource, GutterViewColumnDelegate, OTVStatusBarDelegate>
 {
 	NSScrollView* gutterScrollView;
@@ -94,9 +88,8 @@ static BOOL IsDiffMarkType (NSString* type)
 	BOOL showDiffPane;
 
 	BufferDiffService* diffService;
-	NSString* lastDiffRepoRoot; // repo root of the most recent snapshot
-	NSString* reviewBaseRef;     // window-level review base; nil = HEAD, reset on branch switch, not persisted
-	NSString* reviewBaseRepoRoot; // the repository it was picked in — a sha means nothing outside it
+	BufferDiffSnapshot* lastDiffSnapshot; // what the base selector and the status bar describe
+	NSString* lastDiffRepoRoot;           // repo root of the most recent snapshot
 
 	NSMutableArray* topAuxiliaryViews;
 	NSMutableArray* bottomAuxiliaryViews;
@@ -112,6 +105,7 @@ static BOOL IsDiffMarkType (NSString* type)
 	NSColor* diffAddedColor;
 	NSColor* diffModifiedColor;
 	NSColor* diffDeletedColor;
+	BOOL diffMarksShowIcons; // the bars are off, so the classic gutter icons stand in
 }
 @property (nonatomic, readonly) OTVStatusBar* statusBar;
 @property (nonatomic) SymbolChooser* symbolChooser;
@@ -183,8 +177,8 @@ static BOOL IsDiffMarkType (NSString* type)
 		diffService.snapshotHandler = ^(BufferDiffSnapshot* snapshot){
 			[weakSelfForDiff takeDiffSnapshot:snapshot];
 		};
-		diffService.headMovedHandler = ^(NSString* oldHead, NSString* newHead, BOOL isDescendant){
-			[weakSelfForDiff repoHeadMovedFrom:oldHead to:newHead isDescendant:isDescendant];
+		diffService.headMovedHandler = ^(NSString* oldHead, NSString* newHead, scm::git_query::head_change change){
+			[weakSelfForDiff repoHeadMovedFrom:oldHead to:newHead change:change];
 		};
 
 		_statusBar = [[OTVStatusBar alloc] initWithFrame:NSZeroRect];
@@ -584,24 +578,49 @@ static BOOL IsDiffMarkType (NSString* type)
 	[self updateDiffMarksColumnVisibility]; // the “only while the pane is open” setting
 }
 
-// The gutter's change bars follow a three-way preference; the minimap and
-// the pane are unaffected, since this is about how loud the indication in
-// the buffer itself should be.
+// The gutter's change indication follows a three-way preference; the
+// minimap and the pane are unaffected, since this is about how loud the
+// indication in the buffer itself should be.
+//
+// The two presentations are never shown together, because they say the
+// same thing. Full-height colour bars in their own column are the
+// reviewing register, and the gutter falls back to the marks it has
+// always carried otherwise: the same `diff.* Template.pdf` icons in the
+// bookmark column, tinted like every other gutter icon. With the pane
+// closed and the setting left alone, the gutter therefore looks exactly
+// as it did before any of this existed.
 - (void)updateDiffMarksColumnVisibility
 {
 	NSString* const mode = [NSUserDefaults.standardUserDefaults stringForKey:kUserDefaultsDiffMarksVisibilityKey];
+	BOOL const never  = [mode isEqualToString:kDiffMarksVisibilityNever];
+	BOOL const always = [mode isEqualToString:kDiffMarksVisibilityAlways];
 
-	BOOL visible = YES;
-	if([mode isEqualToString:kDiffMarksVisibilityNever])
-		visible = NO;
-	else if([mode isEqualToString:kDiffMarksVisibilityWithPane])
-		visible = showDiffPane;
+	BOOL const showBars   = !never && (always || showDiffPane);
+	BOOL const showIcons  = !never && !showBars;
 
-	if([gutterView visibilityForColumnWithIdentifier:kDiffMarksColumnIdentifier] == visible)
+	BOOL const columnChanged = [gutterView visibilityForColumnWithIdentifier:kDiffMarksColumnIdentifier] != showBars;
+	if(columnChanged)
+		[gutterView setVisibility:showBars forColumnWithIdentifier:kDiffMarksColumnIdentifier];
+
+	if(!columnChanged && diffMarksShowIcons == showIcons)
 		return;
 
-	[gutterView setVisibility:visible forColumnWithIdentifier:kDiffMarksColumnIdentifier];
+	diffMarksShowIcons = showIcons;
 	[gutterView setNeedsDisplay:YES]; // -setVisibility: resizes but does not redraw
+}
+
+// Whether a mark type should come out of the bookmark column's generic
+// “mark type name doubles as an image name” path. The change marks have
+// a second presentation of their own, so they pass only while the bars
+// are not showing — otherwise the same change is indicated twice.
+// `diff.deleted` never passes: there is no icon for it (the bundle this
+// replaced never drew one either), and letting it through would let a
+// nil image shadow the real icon on a line that is also modified.
+- (BOOL)shouldDrawMarkTypeAsGutterImage:(NSString*)type
+{
+	if(![type hasPrefix:@"diff."])
+		return YES;
+	return diffMarksShowIcons && ![type isEqualToString:@"diff.deleted"];
 }
 
 - (void)userDefaultsDidChange:(NSNotification*)aNotification
@@ -609,63 +628,221 @@ static BOOL IsDiffMarkType (NSString* type)
 	[self updateDiffMarksColumnVisibility];
 }
 
+@synthesize reviewBase = _reviewBase; // both accessors are written below
+
+// The window hands its base down; a view nobody gave one to keeps its
+// own, so a standalone editor behaves exactly as a hosted one does.
+- (OakReviewBase*)reviewBase
+{
+	if(!_reviewBase)
+		self.reviewBase = [OakReviewBase new];
+	return _reviewBase;
+}
+
+- (void)setReviewBase:(OakReviewBase*)aReviewBase
+{
+	if(_reviewBase == aReviewBase)
+		return;
+
+	if(_reviewBase)
+		[NSNotificationCenter.defaultCenter removeObserver:self name:OakReviewBaseDidChangeNotification object:_reviewBase];
+	_reviewBase = aReviewBase;
+	if(_reviewBase)
+		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(reviewBaseDidChange:) name:OakReviewBaseDidChangeNotification object:_reviewBase];
+
+	[self pushReviewBaseToDiffService];
+}
+
+// The base drives one thing here — what the service diffs against. Pane,
+// gutter, minimap and status bar all read the snapshot that comes back,
+// so none of them needs its own hook.
+- (void)reviewBaseDidChange:(NSNotification*)aNotification
+{
+	[self pushReviewBaseToDiffService];
+}
+
+- (void)pushReviewBaseToDiffService
+{
+	[diffService setBaseKind:_reviewBase.kind spec:_reviewBase.spec repoRoot:_reviewBase.repoRoot];
+}
+
 - (void)takeDiffSnapshot:(BufferDiffSnapshot*)snapshot
 {
+	lastDiffSnapshot = snapshot;
 	if(snapshot.repoRoot.length)
 		lastDiffRepoRoot = snapshot.repoRoot;
 
-	// Drop the review base once the window is actually looking at a
+	// Drop a PINNED base once the window is actually looking at a
 	// different repository — the service has already fallen back to HEAD
-	// for it, and leaving the old ref behind would revive it the moment a
+	// for it, and leaving the old sha behind would revive it the moment a
 	// tab from the original repository came back, with the selector still
-	// showing HEAD.
+	// showing HEAD. HEAD and a relative spec resolve in whatever
+	// repository the document is in, so they travel with the window.
 	//
 	// Keyed on the repository, not on the fallback having happened:
 	// closing a tab or glancing at an untitled scratch buffer also
 	// delivers a HEAD snapshot, and those must not throw away a base the
 	// user picked for a repository they are still in.
-	if(reviewBaseRef && snapshot.repoRoot.length && ![snapshot.repoRoot isEqualToString:reviewBaseRepoRoot])
-	{
-		reviewBaseRef      = nil;
-		reviewBaseRepoRoot = nil;
-		[diffService setBaseRef:nil forRepoRoot:nil];
-	}
+	OakReviewBase* base = self.reviewBase;
+	if(base.kind == OakReviewBaseKindCommit && snapshot.repoRoot.length && ![snapshot.repoRoot isEqualToString:base.repoRoot])
+		[base resetToHead];
+
+	// Named from the snapshot rather than from the model, so the bar
+	// says what the diff was actually taken against — and only inside a
+	// repository, where there is a base to name at all.
+	[self.statusBar setReviewBaseName:(snapshot.repoRoot.length ? [OakReviewBase displayNameForKind:snapshot.baseKind spec:snapshot.baseSpec resolvedRef:snapshot.baseRef] : nil) isHead:snapshot.isBaseHead];
 
 	[diffPaneView takeSnapshot:snapshot];
 }
 
-- (void)repoHeadMovedFrom:(NSString*)oldHead to:(NSString*)newHead isDescendant:(BOOL)isDescendant
+- (void)repoHeadMovedFrom:(NSString*)oldHead to:(NSString*)newHead change:(scm::git_query::head_change)change
 {
-	if(isDescendant)
+	if(change == scm::git_query::head_change::committed)
 	{
 		// A commit landed on top of the old HEAD (the agent or the user
 		// committed): offer to review what just landed. Never changes the
 		// review base on its own.
+		//
+		// A relative base needs no offer: it has already followed the
+		// move, and after a single commit the new HEAD~1 IS the old HEAD
+		// the banner would be offering.
+		if(self.reviewBase.kind == OakReviewBaseKindRelative)
+			return;
+
 		if(diffPaneView && showDiffPane)
 		{
 			__weak OakDocumentView* weakSelf = self;
-			NSString* message = [NSString stringWithFormat:@"HEAD moved — review %@…%@", [oldHead substringToIndex:MIN((NSUInteger)10, oldHead.length)], [newHead substringToIndex:MIN((NSUInteger)10, newHead.length)]];
+			NSString* message = [NSString stringWithFormat:@"HEAD moved — review %@…%@", [OakReviewBase shortNameForRef:oldHead], [OakReviewBase shortNameForRef:newHead]];
 			[diffPaneView showBannerWithMessage:message actionTitle:@"Review" handler:^{
-				[weakSelf takeReviewBaseFrom:oldHead];
+				[weakSelf takeReviewBaseOfKind:OakReviewBaseKindCommit spec:oldHead];
 			}];
 		}
+		return;
 	}
-	else
+
+	// A switch to another branch, or a rewrite of this one (amend, reset,
+	// rebase). Whether this unseats the review base is the pure rule in
+	// diff_pane; the short of it is that a switch resets every kind, while
+	// a rewrite spares a relative base — following rewrites is what
+	// "relative" means, so an amend-per-turn agent keeps its HEAD~1 view.
+	diff_pane::review_base_kind baseKind = diff_pane::review_base_kind::head;
+	switch(self.reviewBase.kind)
 	{
-		// Branch switch, reset or rebase: cross-branch diffs are noise —
-		// reset the review base to HEAD and at most note it passively.
-		BOOL const hadOlderBase = reviewBaseRef != nil;
-		[self takeReviewBaseFrom:nil];
-		if(diffPaneView && showDiffPane && hadOlderBase)
-			[diffPaneView showBannerWithMessage:@"HEAD changed branches — review base reset to HEAD" actionTitle:nil handler:nil];
+		case OakReviewBaseKindHead:     baseKind = diff_pane::review_base_kind::head;     break;
+		case OakReviewBaseKindCommit:   baseKind = diff_pane::review_base_kind::commit;   break;
+		case OakReviewBaseKindRelative: baseKind = diff_pane::review_base_kind::relative; break;
+	}
+
+	if(!diff_pane::head_move_resets_base(baseKind, change))
+		return; // a relative base following a rewrite: silent, the status bar re-renders with the fresh resolution
+
+	BOOL const hadOlderBase = self.reviewBase.kind != OakReviewBaseKindHead;
+	[self.reviewBase resetToHead];
+	if(diffPaneView && showDiffPane && hadOlderBase)
+	{
+		NSString* message = change == scm::git_query::head_change::switched
+			? @"HEAD changed branches — review base reset to HEAD"
+			: @"HEAD was rewritten — review base reset to HEAD";
+		[diffPaneView showBannerWithMessage:message actionTitle:nil handler:nil];
 	}
 }
 
-- (void)takeReviewBaseFrom:(NSString*)ref
+// The review base selector. It lives in the status bar because that is
+// the one surface always on screen: a base other than HEAD changes what
+// the gutter and the minimap mean, so the way back has to be reachable
+// without opening anything.
+//
+// Built on demand from the last snapshot — which is also what decides
+// the checked item, so a base that resolved to nothing (a spec reaching
+// past the first commit, a sha from another repository) shows as the
+// HEAD it fell back to rather than as a choice that did not take.
+- (void)showReviewBaseMenu:(NSPopUpButton*)popUpButton
 {
-	reviewBaseRef     = [ref copy];
-	reviewBaseRepoRoot = ref ? [lastDiffRepoRoot copy] : nil;
-	[diffService setBaseRef:reviewBaseRef forRepoRoot:reviewBaseRepoRoot];
+	NSMenu* menu = [NSMenu new];
+
+	// Each item carries the KIND it selects in its tag and the spec in its
+	// represented object: "HEAD~1" and a sha are both strings, but only
+	// one of them means a different commit tomorrow.
+	NSMenuItem* headItem = [menu addItemWithTitle:@"HEAD" action:@selector(takeReviewBaseFromMenuItem:) keyEquivalent:@""];
+	headItem.target = self;
+	headItem.tag    = OakReviewBaseKindHead;
+
+	// The standing "latest commit plus uncommitted edits" view: it
+	// re-resolves as HEAD moves, so an agent that commits every turn
+	// leaves it showing that turn's work with nobody touching the menu.
+	NSMenuItem* relativeItem = [menu addItemWithTitle:@"HEAD~1 (follows HEAD)" action:@selector(takeReviewBaseFromMenuItem:) keyEquivalent:@""];
+	relativeItem.target = self;
+	relativeItem.tag    = OakReviewBaseKindRelative;
+	relativeItem.representedObject = @"HEAD~1";
+
+	if(NSString* previous = lastDiffSnapshot.previousHeadCommit)
+	{
+		NSMenuItem* item = [menu addItemWithTitle:[NSString stringWithFormat:@"Previous HEAD (%@)", [OakReviewBase shortNameForRef:previous]] action:@selector(takeReviewBaseFromMenuItem:) keyEquivalent:@""];
+		item.target = self;
+		item.tag    = OakReviewBaseKindCommit;
+		item.representedObject = previous;
+	}
+
+	auto const& commits = lastDiffSnapshot ? [lastDiffSnapshot recentCommits] : std::vector<scm::git_query::commit_t>();
+	if(!commits.empty())
+		[menu addItem:[NSMenuItem separatorItem]];
+	for(auto const& commit : commits)
+	{
+		NSString* subject = to_ns(commit.subject);
+		if(subject.length > 40)
+			subject = [[subject substringToIndex:40] stringByAppendingString:@"…"];
+		NSMenuItem* item = [menu addItemWithTitle:[NSString stringWithFormat:@"%@ %@", [OakReviewBase shortNameForRef:to_ns(commit.sha)], subject] action:@selector(takeReviewBaseFromMenuItem:) keyEquivalent:@""];
+		item.target = self;
+		item.tag    = OakReviewBaseKindCommit;
+		item.representedObject = to_ns(commit.sha);
+	}
+
+	NSMenuItem* selectedItem = headItem;
+	if(lastDiffSnapshot.baseKind == OakReviewBaseKindRelative)
+	{
+		selectedItem = relativeItem;
+	}
+	else if(NSString* selectedRef = lastDiffSnapshot && ![lastDiffSnapshot isBaseHead] ? [lastDiffSnapshot baseRef] : nil)
+	{
+		for(NSMenuItem* item in menu.itemArray)
+		{
+			if([item.representedObject isEqualToString:selectedRef])
+			{
+				selectedItem = item;
+				break;
+			}
+		}
+
+		// A base that is neither Previous HEAD nor among the listed commits
+		// still needs an entry to show as the selection — reachable when the
+		// commit list is shorter than the history the base came from.
+		if(selectedItem == headItem)
+		{
+			NSMenuItem* item = [menu addItemWithTitle:[OakReviewBase shortNameForRef:selectedRef] action:@selector(takeReviewBaseFromMenuItem:) keyEquivalent:@""];
+			item.target = self;
+			item.tag    = OakReviewBaseKindCommit;
+			item.representedObject = selectedRef;
+			selectedItem = item;
+		}
+	}
+
+	popUpButton.menu = menu;
+	[popUpButton selectItem:selectedItem];
+}
+
+- (void)takeReviewBaseFromMenuItem:(NSMenuItem*)sender
+{
+	[self takeReviewBaseOfKind:(OakReviewBaseKind)sender.tag spec:sender.representedObject]; // spec is nil for HEAD
+}
+
+- (void)takeReviewBaseOfKind:(OakReviewBaseKind)aKind spec:(NSString*)aSpec
+{
+	switch(aKind)
+	{
+		case OakReviewBaseKindCommit:   [self.reviewBase setCommit:aSpec inRepoRoot:lastDiffRepoRoot]; break;
+		case OakReviewBaseKindRelative: [self.reviewBase setRelativeSpec:aSpec];                       break;
+		case OakReviewBaseKindHead:     [self.reviewBase resetToHead];                                 break;
+	}
 }
 
 - (IBAction)selectNextDiffHunk:(id)sender     { [diffPaneView selectNextHunk]; }
@@ -689,9 +866,6 @@ static BOOL IsDiffMarkType (NSString* type)
 		};
 		diffPaneView.moveCaretHandler = ^(NSUInteger line){
 			[weakSelf moveCaretToLine:line];
-		};
-		diffPaneView.selectBaseRefHandler = ^(NSString* ref){
-			[weakSelf takeReviewBaseFrom:ref];
 		};
 
 		// Scroller-less scroll view wrapper, mirroring the gutter and minimap:
@@ -1121,10 +1295,12 @@ static BOOL IsDiffMarkType (NSString* type)
 	return floor((self.lineHeight-1) / 2) * 2 + 1;
 }
 
-// The buffer-vs-HEAD change bars. Drawn rather than imaged: the bar spans
-// the row edge to edge and carries its own color, neither of which the
-// image path (centered on the cap height, tinted with the gutter's icon
-// color) can express.
+// The buffer-vs-review-base change bars. Drawn rather than imaged: the
+// bar spans the row edge to edge and carries its own color, neither of
+// which the image path (centered on the cap height, tinted with the
+// gutter's icon color) can express. This column is hidden whenever the
+// bars are off, so there is nothing here for the quieter presentation to
+// do — that one is the bookmark column's icons.
 //
 // A deletion has no line of its own — the mark sits on the line PRECEDING
 // the deletion site — so it draws as a tick on that line's lower boundary
@@ -1203,7 +1379,7 @@ static BOOL IsDiffMarkType (NSString* type)
 				gutterImageName.emplace(0, type);
 			else if([type isEqualToString:OakDocumentBookmarkIdentifier])
 				gutterImageName.emplace(1, rowState != GutterViewRowStateRegular ? @"Bookmark Hover Remove Template" : @"Bookmark Template");
-			else if(rowState == GutterViewRowStateRegular && !IsDiffMarkType(type))
+			else if(rowState == GutterViewRowStateRegular && [self shouldDrawMarkTypeAsGutterImage:type])
 				gutterImageName.emplace(2, type); // a mark type doubling as an image name
 		}];
 

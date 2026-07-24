@@ -44,10 +44,19 @@ namespace scm { namespace git_query {
 		}
 	}
 
+	std::string rev_parse (std::string const& repo_root, std::string const& revspec)
+	{
+		// `^{commit}` so a spec naming a tag or a tree cannot come back as
+		// something blob_for_ref would then fail to read. A spec that
+		// reaches past the root commit exits non-zero, which io::exec
+		// reports as NULL_STR — the caller's cue to fall back to HEAD.
+		std::string out = run_git(repo_root, { "rev-parse", "--verify", "--quiet", revspec + "^{commit}" });
+		return out == NULL_STR ? NULL_STR : chomp(out);
+	}
+
 	std::string head_commit (std::string const& repo_root)
 	{
-		std::string out = run_git(repo_root, { "rev-parse", "--verify", "HEAD" });
-		return out == NULL_STR ? NULL_STR : chomp(out);
+		return rev_parse(repo_root, "HEAD");
 	}
 
 	bool is_ancestor (std::string const& repo_root, std::string const& ancestor, std::string const& descendant)

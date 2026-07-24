@@ -10,6 +10,13 @@
 // are not cached here — the caller decides the refresh cadence.
 namespace scm { namespace git_query {
 
+	// Full sha a revspec names, or NULL_STR when it names nothing — which
+	// includes a spec reaching back past the first commit (`HEAD~1` in a
+	// repo with one commit). Callers with a relative spec resolve it here
+	// and pass the sha on, so nothing downstream is keyed by a ref whose
+	// meaning moves.
+	std::string rev_parse (std::string const& repo_root, std::string const& revspec);
+
 	// Full sha of HEAD, or NULL_STR outside a repo / before the first commit.
 	std::string head_commit (std::string const& repo_root);
 

@@ -55,6 +55,64 @@ void test_git_query_head_and_log ()
 	OAK_ASSERT(!is_ancestor(jail.path(), commits[0].sha, commits[1].sha));
 }
 
+void test_git_query_rev_parse ()
+{
+	static std::string const git = scm::find_executable("git", "TM_GIT");
+	if(git == NULL_STR)
+		return;
+
+	test::jail_t jail;
+	bootstrap_two_commit_repo(jail, git);
+
+	auto const commits = recent_commits(jail.path(), 20);
+	OAK_ASSERT_EQ(commits.size(), 2);
+
+	OAK_ASSERT_EQ(rev_parse(jail.path(), "HEAD"), commits[0].sha);
+	OAK_ASSERT_EQ(rev_parse(jail.path(), "HEAD~1"), commits[1].sha);
+	OAK_ASSERT_EQ(rev_parse(jail.path(), commits[1].sha), commits[1].sha);
+
+	// Reaching back past the root commit resolves to nothing, which is
+	// what sends a relative base back to HEAD.
+	OAK_ASSERT_EQ(rev_parse(jail.path(), "HEAD~2"), NULL_STR);
+	OAK_ASSERT_EQ(rev_parse(jail.path(), "no-such-ref"), NULL_STR);
+}
+
+// HEAD~1 means the FIRST PARENT, which is not the same as the second
+// entry of `git log`: the default log order mixes both sides of a merge
+// by date, so a merge commit at HEAD can easily list the merged branch's
+// tip second. Resolving the spec through git is what keeps them apart.
+void test_git_query_rev_parse_follows_first_parent ()
+{
+	static std::string const git = scm::find_executable("git", "TM_GIT");
+	if(git == NULL_STR)
+		return;
+
+	test::jail_t jail;
+	run_sh(text::format(
+		"{ cd '%1$s' "
+		"&& '%2$s' init -b master "
+		"&& '%2$s' config user.email 'test@example.com' "
+		"&& '%2$s' config user.name 'Test Test' "
+		"&& '%2$s' config commit.gpgsign false "
+		"&& printf 'base\\n' > file.txt "
+		"&& '%2$s' add file.txt && '%2$s' commit -m base "
+		"&& '%2$s' checkout -b side "
+		"&& printf 'side\\n' > side.txt "
+		"&& '%2$s' add side.txt && '%2$s' commit -m side "
+		"&& '%2$s' checkout master "
+		"&& printf 'main\\n' > main.txt "
+		"&& '%2$s' add main.txt && '%2$s' commit -m mainline "
+		"&& '%2$s' merge --no-ff -m merge side "
+		"; } >/dev/null 2>&1",
+		jail.path().c_str(), git.c_str()));
+
+	std::string const first_parent = rev_parse(jail.path(), "HEAD~1");
+	std::string const second_parent = rev_parse(jail.path(), "HEAD^2");
+	OAK_ASSERT_EQ(first_parent.size(), 40);
+	OAK_ASSERT_EQ(rev_parse(jail.path(), "HEAD^1"), first_parent);
+	OAK_ASSERT(first_parent != second_parent);
+}
+
 void test_git_query_staged_changes ()
 {
 	static std::string const git = scm::find_executable("git", "TM_GIT");
