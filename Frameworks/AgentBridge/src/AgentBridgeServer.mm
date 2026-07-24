@@ -42,6 +42,24 @@ static std::string FileURIForPath (NSString* path)
 	return to_s([NSURL fileURLWithPath:path isDirectory:NO].absoluteString);
 }
 
+// selection_changed payload per claudecode.nvim’s selection.lua: text (empty
+// when nothing is selected), filePath/fileUrl, and an LSP-style start/end
+// range with isEmpty — the same shape whether broadcast on selection changes
+// or sent once to seed a newly connected client.
+static json SelectionChangedParams (AgentBridgeSelection* selection)
+{
+	return {
+		{ "text", to_s(selection.text ?: @"") },
+		{ "filePath", selection.filePath ? json(to_s(selection.filePath)) : json(nullptr) },
+		{ "fileUrl",  selection.filePath ? json(FileURIForPath(selection.filePath)) : json(nullptr) },
+		{ "selection", {
+			{ "start", { { "line", selection.startLine }, { "character", selection.startCharacter } } },
+			{ "end",   { { "line", selection.endLine   }, { "character", selection.endCharacter   } } },
+			{ "isEmpty", selection.isEmpty ? true : false },
+		} },
+	};
+}
+
 static json ContentResult (std::string const& text, bool isError)
 {
 	json res = { { "content", json::array({ { { "type", "text" }, { "text", text } } }) } };
@@ -501,6 +519,15 @@ static bool TokenMatches (NSString* candidate, NSString* expected)
 	});
 }
 
+- (void)sendNotification:(std::string const&)method params:(json const&)params toConnection:(nw_connection_t)connection
+{
+	json message = { { "jsonrpc", "2.0" }, { "method", method }, { "params", params } };
+	dispatch_async(_queue, ^{
+		if([self->_connections containsObject:connection]) // may have dropped between main queue and _queue
+			[self sendJSON:message toConnection:connection];
+	});
+}
+
 // ================
 // = MCP dispatch =
 // ================
@@ -548,7 +575,17 @@ static bool TokenMatches (NSString* candidate, NSString* expected)
 	}
 	else if(method.compare(0, 14, "notifications/") == 0)
 	{
-		// notifications/initialized, notifications/cancelled, … — nothing to do
+		// notifications/cancelled, … — nothing to do
+		if(method == "notifications/initialized")
+		{
+			// Seed the freshly connected client’s editor context: the CLI only
+			// learns the active file from selection_changed pushes, so a client
+			// that connects after the last caret movement would otherwise start
+			// blind (and “edit this file” targets the wrong document). An empty
+			// selection at the caret is the normal no-selection payload.
+			if(AgentBridgeSelection* selection = [_workspace currentSelection])
+				[self sendNotification:"selection_changed" params:SelectionChangedParams(selection) toConnection:connection];
+		}
 	}
 	else if(method == "ping")
 	{
@@ -778,17 +815,7 @@ static bool TokenMatches (NSString* candidate, NSString* expected)
 
 - (void)sendSelectionChanged:(AgentBridgeSelection*)selection
 {
-	json params = {
-		{ "text", to_s(selection.text ?: @"") },
-		{ "filePath", selection.filePath ? json(to_s(selection.filePath)) : json(nullptr) },
-		{ "fileUrl",  selection.filePath ? json(FileURIForPath(selection.filePath)) : json(nullptr) },
-		{ "selection", {
-			{ "start", { { "line", selection.startLine }, { "character", selection.startCharacter } } },
-			{ "end",   { { "line", selection.endLine   }, { "character", selection.endCharacter   } } },
-			{ "isEmpty", selection.isEmpty ? true : false },
-		} },
-	};
-	[self broadcastNotification:"selection_changed" params:params];
+	[self broadcastNotification:"selection_changed" params:SelectionChangedParams(selection)];
 }
 
 - (void)sendAtMentionedWithFilePath:(NSString*)filePath lineStart:(NSInteger)lineStart lineEnd:(NSInteger)lineEnd

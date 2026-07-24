@@ -287,7 +287,14 @@ static void* kAgentBridgeSelectionObserverContext = &kAgentBridgeSelectionObserv
 	[self unbindSelectionObservation];
 	if(textView)
 	{
+		// Observe the document too: a tab switch swaps the text view’s document
+		// but setSelectionString: early-returns when the new document’s caret
+		// spells the same selection string (e.g. both files at 1:1), so the
+		// selectionString observation alone misses tab switches — and the CLI
+		// would keep targeting the previous file. This is the counterpart of
+		// claudecode.nvim sending selection_changed on BufEnter.
 		[textView addObserver:self forKeyPath:@"selectionString" options:0 context:kAgentBridgeSelectionObserverContext];
+		[textView addObserver:self forKeyPath:@"document" options:0 context:kAgentBridgeSelectionObserverContext];
 		_observedTextView = textView;
 		_observedWindow   = window;
 		[self noteSelectionMayHaveChanged];
@@ -297,6 +304,7 @@ static void* kAgentBridgeSelectionObserverContext = &kAgentBridgeSelectionObserv
 - (void)unbindSelectionObservation
 {
 	[_observedTextView removeObserver:self forKeyPath:@"selectionString" context:kAgentBridgeSelectionObserverContext];
+	[_observedTextView removeObserver:self forKeyPath:@"document" context:kAgentBridgeSelectionObserverContext];
 	_observedTextView = nil;
 	_observedWindow   = nil;
 }

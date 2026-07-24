@@ -7,10 +7,22 @@ Run against a live TextMate instance (dev or release build with AgentBridge):
 
 It discovers the newest TextMate lock file in $CLAUDE_CONFIG_DIR/ide (or
 ~/.claude/ide), connects with the recorded auth token and exercises the MCP
-surface: initialize, tools/list, getWorkspaceFolders, getCurrentSelection,
-openDiff (expects a "not yet available" JSON-RPC error until WP2). It also
-asserts that wrong-token and missing-token connections are rejected, and
-that an abruptly killed half-open connection does not take the server down.
+surface: initialize (plus the initial selection_changed that seeds a new
+client's editor context), tools/list, getWorkspaceFolders,
+getCurrentSelection, getOpenEditors, getDiagnostics, and the document
+round trip openFile → checkDocumentDirty → saveDocument. It also asserts
+that wrong-token and missing-token connections are rejected, and that an
+abruptly killed half-open connection does not take the server down.
+
+The bridge PROVIDES CONTEXT ONLY — it advertises no write or approval tools.
+Agent edits land in the working tree and are reviewed after the fact against
+git; openDiff/close_tab/closeAllDiffTabs and the review-session machinery
+they drove are gone, and Claude falls back to its own terminal approval UI.
+
+NOTE: the openFile scenario opens a scratch document tab in the running
+TextMate instance and brings it frontmost — that is the tool's documented
+behavior, not a bug. The scratch tab remains open afterwards (the protocol
+has no tool that closes a real document tab); close it by hand.
 
 Pure stdlib on purpose (hand-rolled RFC 6455 client) so it can smoke-test
 any future Claude CLI update in seconds with no dependencies.
@@ -24,15 +36,15 @@ import secrets
 import socket
 import struct
 import sys
+import tempfile
 import time
 from urllib.parse import unquote, urlparse
 
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 EXPECTED_TOOLS = {
-    "openFile", "openDiff", "getCurrentSelection", "getLatestSelection",
+    "openFile", "getCurrentSelection", "getLatestSelection",
     "getOpenEditors", "getWorkspaceFolders", "getDiagnostics",
-    "checkDocumentDirty", "saveDocument", "close_tab", "closeAllDiffTabs",
-    "executeCode",
+    "checkDocumentDirty", "saveDocument", "executeCode",
 }
 
 
@@ -88,6 +100,7 @@ class WSClient:
         self.sock.settimeout(timeout)
         self.buffer = b""
         self.next_id = 0
+        self.responses = {}  # buffered responses by request id
         key = base64.b64encode(secrets.token_bytes(16)).decode()
         headers = [
             f"GET / HTTP/1.1",
@@ -177,19 +190,45 @@ class WSClient:
     def notify(self, method, params=None):
         self.send_text(json.dumps({"jsonrpc": "2.0", "method": method, "params": params or {}}))
 
-    def rpc(self, method, params=None):
+    def request(self, method, params=None):
+        """Send a request and return its id without waiting (deferred replies)."""
         self.next_id += 1
         request_id = self.next_id
         self.send_text(json.dumps({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params or {}}))
-        deadline = time.time() + 5
+        return request_id
+
+    def wait_response(self, request_id, timeout=5):
+        """Wait for a response by id; other responses are buffered, notifications dropped."""
+        if request_id in self.responses:
+            return self.responses.pop(request_id)
+        deadline = time.time() + timeout
         while time.time() < deadline:
             message = json.loads(self.recv_text())
-            if message.get("id") == request_id:
+            if "id" in message and ("result" in message or "error" in message):
+                if message["id"] == request_id:
+                    return message
+                self.responses[message["id"]] = message
+        raise TimeoutError(f"no response to request {request_id}")
+
+    def wait_notification(self, method, timeout=5):
+        """Wait for a notification by method; responses are buffered for wait_response."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            message = json.loads(self.recv_text())
+            if "id" in message and ("result" in message or "error" in message):
+                self.responses[message["id"]] = message
+            elif message.get("method") == method:
                 return message
-        raise TimeoutError(f"no response to {method}")
+        raise TimeoutError(f"no {method} notification")
+
+    def rpc(self, method, params=None):
+        return self.wait_response(self.request(method, params))
 
     def call_tool(self, name, arguments=None):
         return self.rpc("tools/call", {"name": name, "arguments": arguments or {}})
+
+    def call_tool_async(self, name, arguments=None):
+        return self.request("tools/call", {"name": name, "arguments": arguments or {}})
 
 
 def tool_text(response):
@@ -216,12 +255,23 @@ def main():
     ws.notify("notifications/initialized")
     passed.append(f"initialize (serverInfo={server_info})")
 
-    # 2. tools/list advertises the full 12-tool set
+    # 1b. handshake completion seeds the client's editor context: an initial
+    #     selection_changed carrying the active document's filePath must
+    #     arrive without any caret movement in the IDE (requires a file to be
+    #     open in the frontmost TextMate window).
+    note = ws.wait_notification("selection_changed")
+    params = note["params"]
+    assert params.get("filePath"), f"initial selection_changed lacks the active document's filePath: {params}"
+    assert params["fileUrl"].startswith("file://"), params
+    assert {"start", "end", "isEmpty"} <= set(params["selection"]), params
+    passed.append(f"initial selection_changed on connect (filePath={os.path.basename(params['filePath'])})")
+
+    # 2. tools/list advertises exactly the context-only tool set
     tools = ws.rpc("tools/list")
     names = {tool["name"] for tool in tools["result"]["tools"]}
     assert names == EXPECTED_TOOLS, f"tool set mismatch: {names ^ EXPECTED_TOOLS}"
     assert all("inputSchema" in tool for tool in tools["result"]["tools"])
-    passed.append("tools/list (12 tools with schemas)")
+    passed.append(f"tools/list ({len(EXPECTED_TOOLS)} tools with schemas, no write/approval tools)")
 
     # 3. getWorkspaceFolders (URIs are percent-encoded file:// URLs)
     folders = tool_text(ws.call_tool("getWorkspaceFolders"))
@@ -245,13 +295,48 @@ def main():
     assert "tabs" in editors, editors
     passed.append(f"getOpenEditors ({len(editors['tabs'])} tabs)")
 
-    # 6. openDiff is registered but deferred to WP2 → JSON-RPC error
-    open_diff = ws.call_tool("openDiff", {
-        "old_file_path": "/tmp/x", "new_file_path": "/tmp/x",
-        "new_file_contents": "", "tab_name": "smoke",
-    })
-    assert "error" in open_diff and "not yet available" in open_diff["error"]["message"], open_diff
-    passed.append("openDiff (deferred with JSON-RPC error)")
+    # 5b. getDiagnostics (shape only — whether any server is attached varies)
+    diagnostics = tool_text(ws.call_tool("getDiagnostics"))
+    assert isinstance(diagnostics, list), diagnostics
+    for entry in diagnostics:
+        assert {"uri", "diagnostics"} <= set(entry), entry
+    passed.append(f"getDiagnostics ({len(diagnostics)} files)")
+
+    # 6. document round trip against a scratch file: openFile brings it up as
+    #    a real tab, checkDocumentDirty reports the clean buffer, saveDocument
+    #    succeeds. No tool in the set can write file CONTENTS — that is the
+    #    point of the context-only surface.
+    scratch_dir = tempfile.mkdtemp(prefix="tm-agent-bridge-smoke-")
+    scratch = os.path.join(scratch_dir, "smoke_test.txt")
+    baseline = "alpha\nbeta\ngamma\n"
+    with open(scratch, "w") as f:
+        f.write(baseline)
+
+    opened = ws.call_tool("openFile", {"filePath": scratch})
+    assert "Opened file" in opened["result"]["content"][0]["text"], opened
+    time.sleep(1.0)  # allow the async open/focus to settle
+
+    editors = tool_text(ws.call_tool("getOpenEditors"))
+    assert any(scratch in tab["uri"] or scratch == unquote(urlparse(tab["uri"]).path) for tab in editors["tabs"]), editors
+
+    dirty = tool_text(ws.call_tool("checkDocumentDirty", {"filePath": scratch}))
+    assert dirty["success"] is True and dirty["isDirty"] is False, dirty
+
+    save = tool_text(ws.call_tool("saveDocument", {"filePath": scratch}))
+    # success only reports that the RPC was handled; saved is the actual
+    # write result, so a broken save path would slip past a success-only check
+    assert save["success"] is True, save
+    assert save["saved"] is True, save
+    with open(scratch) as f:
+        assert f.read() == baseline, "saveDocument must not alter an unedited document's contents"
+    passed.append("openFile → getOpenEditors → checkDocumentDirty → saveDocument round trip")
+
+    # 6b. the retired review tools must be gone from the wire, not just unused
+    for retired in ("openDiff", "close_tab", "closeAllDiffTabs"):
+        response = ws.call_tool(retired, {})
+        assert "error" in response, f"{retired} is still handled: {response}"
+        assert response["error"]["code"] == -32601, response
+    passed.append("retired review tools (openDiff/close_tab/closeAllDiffTabs) rejected as unknown")
 
     # 7. half-open socket: kill a client mid-frame, server must survive
     rude = WSClient(port, token)
