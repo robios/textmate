@@ -17,6 +17,8 @@
 #import <Preferences/Keys.h>
 #import <OakTextView/OakDocumentView.h>
 #import <FileBrowser/FileBrowserViewController.h>
+#import <Terminal/TerminalPaneController.h>
+#import <Terminal/TerminalGridView.h>
 #import <OakCommand/OakCommand.h>
 #import <HTMLOutputWindow/HTMLOutputWindow.h>
 #import <OakFilterList/FileChooser.h>
@@ -26,6 +28,8 @@
 #import <BundleEditor/BundleEditor.h>
 #import <file/path_info.h>
 #import <io/entries.h>
+#import <io/environment.h>
+#import <io/path.h>
 #import <scm/scm.h>
 #import <text/parse.h>
 #import <text/tokenize.h>
@@ -101,6 +105,8 @@ static void show_command_error (std::string const& message, oak::uuid_t const& u
 @property (nonatomic) HTMLOutputWindowController* htmlOutputWindowController;
 @property (nonatomic) OakHTMLOutputView*          htmlOutputView;
 @property (nonatomic) BOOL                        htmlOutputInWindow;
+
+@property (nonatomic) TerminalPaneController*     terminalPane;
 
 @property (nonatomic) NSSegmentedControl*         previousNextTouchBarControl;
 
@@ -320,6 +326,10 @@ static NSArray* const kObservedKeyPaths = @[ @"arrayController.arrangedObjects.p
 		[self.window makeFirstResponder:nil];
 
 	[_arrayController unbind:NSContentBinding];
+
+	if(_terminalPane)
+		[_textView removeObserver:self forKeyPath:@"themeUUID"];
+	[_terminalPane shutdown];
 
 	self.documents           = nil;
 	self.selectedDocument    = nil;
@@ -768,6 +778,9 @@ static NSArray* const kObservedKeyPaths = @[ @"arrayController.arrangedObjects.p
 
 - (void)observeValueForKeyPath:(NSString*)keyPath ofObject:(id)anObject change:(NSDictionary*)change context:(void*)context
 {
+	if(anObject == _textView && [keyPath isEqualToString:@"themeUUID"])
+		return [self updateTerminalPaneTheme];
+
 	OakDocument* document = self.selectedDocument;
 	if([keyPath isEqualToString:@"selectedDocument.path"] || [keyPath isEqualToString:@"selectedDocument.displayName"])
 	{
@@ -1958,6 +1971,145 @@ static NSArray* const kObservedKeyPaths = @[ @"arrayController.arrangedObjects.p
 	else	self.htmlOutputVisible = !self.htmlOutputVisible;
 }
 
+// ============
+// = Terminal =
+// ============
+
+- (NSSize)terminalSize                { return self.layoutView.terminalSize;  }
+- (void)setTerminalSize:(NSSize)aSize { self.layoutView.terminalSize = aSize; }
+
+- (std::map<std::string, std::string>)terminalEnvironment
+{
+	std::map<std::string, std::string> env = oak::basic_environment();
+	for(auto const& pair : [self variables])
+		env[pair.first] = pair.second;
+	env = variables_for_path(env, to_s(self.selectedDocument.path));
+
+	auto mate = env.find("TM_MATE");
+	if(mate != env.end())
+	{
+		auto path = env.find("PATH");
+		if(path != env.end())
+			path->second += ":" + path::parent(mate->second);
+	}
+	return env;
+}
+
+// Like the file browser, showing the terminal grows the window outward on
+// the pane’s edge (and hiding shrinks it back) instead of squeezing the
+// editor, screen space permitting.
+- (void)adjustWindowFrameForTerminalPane:(BOOL)makeVisibleFlag
+{
+	if(self.disableFileBrowserWindowResize || ([self.window styleMask] & NSWindowStyleMaskFullScreen) == NSWindowStyleMaskFullScreen)
+		return;
+
+	NSString* placement = self.layoutView.terminalPlacement;
+	BOOL bottom = [placement isEqualToString:@"bottom"];
+	BOOL left   = [placement isEqualToString:@"left"];
+	CGFloat delta = (bottom ? self.terminalSize.height : self.terminalSize.width) + 1;
+
+	NSRect windowFrame = self.window.frame;
+	NSRect screenFrame = [[self.window screen] visibleFrame];
+
+	if(makeVisibleFlag)
+	{
+		if(bottom)
+		{
+			windowFrame.origin.y    -= delta;
+			windowFrame.size.height += delta;
+			if(NSMinY(windowFrame) < NSMinY(screenFrame))
+				windowFrame.origin.y = NSMinY(screenFrame);
+			if(NSMaxY(windowFrame) > NSMaxY(screenFrame))
+				windowFrame.size.height = NSMaxY(screenFrame) - NSMinY(windowFrame);
+		}
+		else
+		{
+			if(left)
+				windowFrame.origin.x -= delta;
+			windowFrame.size.width += delta;
+			if(NSMinX(windowFrame) < NSMinX(screenFrame))
+				windowFrame.origin.x = NSMinX(screenFrame);
+			if(NSMaxX(windowFrame) > NSMaxX(screenFrame))
+			{
+				windowFrame.origin.x = std::max(NSMinX(screenFrame), NSMaxX(screenFrame) - NSWidth(windowFrame));
+				if(NSMaxX(windowFrame) > NSMaxX(screenFrame))
+					windowFrame.size.width = NSMaxX(screenFrame) - NSMinX(windowFrame);
+			}
+		}
+	}
+	else
+	{
+		if(bottom)
+		{
+			windowFrame.origin.y    += delta;
+			windowFrame.size.height -= delta;
+		}
+		else
+		{
+			if(left)
+				windowFrame.origin.x += delta;
+			windowFrame.size.width -= delta;
+		}
+	}
+
+	[self.window setFrame:windowFrame display:YES];
+}
+
+- (void)setTerminalVisible:(BOOL)makeVisibleFlag
+{
+	if(_terminalVisible != makeVisibleFlag)
+	{
+		_terminalVisible = makeVisibleFlag;
+		if(makeVisibleFlag)
+		{
+			if(!self.terminalPane)
+			{
+				self.terminalPane = [[TerminalPaneController alloc] init];
+				__weak DocumentWindowController* weakSelf = self;
+				self.terminalPane.shellExitedHandler = ^{
+					weakSelf.terminalVisible = NO;
+				};
+				[_textView addObserver:self forKeyPath:@"themeUUID" options:0 context:nullptr];
+			}
+			[self updateTerminalPaneTheme];
+			self.terminalPane.workingDirectory = self.projectPath ?: [self.selectedDocument.path stringByDeletingLastPathComponent] ?: NSHomeDirectory();
+			self.terminalPane.environment = [self terminalEnvironment];
+			self.layoutView.terminalView = self.terminalPane.view;
+			[self adjustWindowFrameForTerminalPane:YES];
+			[self.terminalPane startShellIfNeeded];
+			[self.window makeFirstResponder:self.terminalPane.gridView];
+		}
+		else
+		{
+			if([[self.window firstResponder] isKindOfClass:[NSView class]] && [(NSView*)[self.window firstResponder] isDescendantOf:self.layoutView.terminalView])
+				[self makeTextViewFirstResponder:self];
+			self.layoutView.terminalView = nil;
+			[self adjustWindowFrameForTerminalPane:NO];
+		}
+	}
+	[[self class] scheduleSessionBackup:self];
+}
+
+- (void)updateTerminalPaneTheme
+{
+	if(!self.terminalPane)
+		return;
+	if(theme_ptr theme = _textView.theme)
+		[self.terminalPane setThemeBackgroundColor:[NSColor colorWithCGColor:theme->background()] foregroundColor:[NSColor colorWithCGColor:theme->foreground()]];
+}
+
+- (IBAction)toggleTerminal:(id)sender
+{
+	if(self.terminalVisible && ![self terminalHasFocus])
+			[self.window makeFirstResponder:self.terminalPane.gridView];
+	else	self.terminalVisible = !self.terminalVisible;
+}
+
+- (BOOL)terminalHasFocus
+{
+	return [[self.window firstResponder] isKindOfClass:[NSView class]] && self.layoutView.terminalView && [(NSView*)[self.window firstResponder] isDescendantOf:self.layoutView.terminalView];
+}
+
 // =============================
 // = Opening Auxiliary Windows =
 // =============================
@@ -2274,6 +2426,8 @@ static NSArray* const kObservedKeyPaths = @[ @"arrayController.arrangedObjects.p
 		[menuItem setTitle:isVisibleAndKey ? @"Hide HTML Output" : @"Show HTML Output"];
 		active = !self.htmlOutputInWindow || self.htmlOutputWindowController;
 	}
+	else if([menuItem action] == @selector(toggleTerminal:))
+		[menuItem setTitle:self.terminalVisible && [self terminalHasFocus] ? @"Hide Terminal" : @"Show Terminal"];
 	else if([menuItem action] == @selector(newDocumentInDirectory:))
 	{
 		active = self.fileBrowserVisible && self.fileBrowser.directoryURLForNewItems;
@@ -2527,11 +2681,14 @@ static NSUInteger DisableSessionSavingCount = 0;
 		self.fileBrowserWidth = [fileBrowserWidth floatValue];
 	if(NSString* htmlOutputSize = project[@"htmlOutputSize"])
 		self.htmlOutputSize = NSSizeFromString(htmlOutputSize);
+	if(NSString* terminalSize = project[@"terminalSize"])
+		self.terminalSize = NSSizeFromString(terminalSize);
 
 	self.defaultProjectPath = project[@"projectPath"];
 	self.projectPath        = project[@"projectPath"];
 	self.fileBrowserHistory = project[@"archivedFileBrowserState"] ?: project[@"fileBrowserState"];
 	self.fileBrowserVisible = [project[@"fileBrowserVisible"] boolValue];
+	// The terminal deliberately never restores as visible — it is opened on demand.
 
 	NSMutableArray<OakDocument*>* documents = [NSMutableArray array];
 	NSInteger selectedTabIndex = 0;
@@ -2594,6 +2751,7 @@ static NSUInteger DisableSessionSavingCount = 0;
 	res[@"htmlOutputSize"]     = NSStringFromSize(self.htmlOutputSize);
 	res[@"fileBrowserVisible"] = @(self.fileBrowserVisible);
 	res[@"fileBrowserWidth"]   = @(self.fileBrowserWidth);
+	res[@"terminalSize"]       = NSStringFromSize(self.terminalSize);
 
 	NSMutableArray* docs = [NSMutableArray array];
 	for(OakDocument* document in _documents)

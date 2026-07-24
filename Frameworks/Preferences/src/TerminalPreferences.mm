@@ -2,6 +2,8 @@
 #import "Keys.h"
 #import <OakAppKit/NSAlert Additions.h>
 #import <OakAppKit/NSImage Additions.h>
+#import <OakAppKit/OakUIConstructionFunctions.h>
+#import <MenuBuilder/MenuBuilder.h>
 #import <OakFoundation/NSString Additions.h>
 #import <OakFoundation/OakStringListTransformer.h>
 #import <OakFoundation/OakCompareVersionStrings.h>
@@ -11,6 +13,21 @@
 #import <regexp/format_string.h>
 #import <bundles/bundles.h>
 #import <oak/compat.h>
+
+// Shared with the Terminal framework (raw keys, registered there as well)
+static NSString* const kUserDefaultsTerminalScrollbackLinesKey = @"terminalScrollbackLines";
+static NSString* const kUserDefaultsTerminalFontNameKey        = @"terminalFontName";
+static NSString* const kUserDefaultsTerminalFontSizeKey        = @"terminalFontSize";
+
+static NSFont* CurrentTerminalFont ()
+{
+	NSString* fontName = [NSUserDefaults.standardUserDefaults stringForKey:kUserDefaultsTerminalFontNameKey];
+	CGFloat fontSize = [NSUserDefaults.standardUserDefaults doubleForKey:kUserDefaultsTerminalFontSizeKey];
+	if(fontSize <= 0)
+		fontSize = 12;
+	NSFont* font = fontName ? [NSFont fontWithName:fontName size:fontSize] : nil;
+	return font ?: [NSFont userFixedPitchFontOfSize:fontSize];
+}
 
 static void CreateHyperLink (NSTextField* textField, NSString* text, NSString* url)
 {
@@ -151,20 +168,108 @@ static bool uninstall_mate (std::string const& path)
 }
 
 @implementation TerminalPreferences
+{
+	NSTextField* terminalFontLabel;
+}
+
 - (id)init
 {
 	if(self = [super initWithNibName:@"TerminalPreferences" label:@"Terminal" image:PreferencesToolbarImage(@"terminal", @"Terminal", [NSImage imageNamed:@"Terminal" inSameBundleAsClass:[self class]])])
 	{
 		[OakStringListTransformer createTransformerWithName:@"OakRMateInterfaceTransformer" andObjectsArray:@[ kRMateServerListenLocalhost, kRMateServerListenRemote ]];
+		[OakStringListTransformer createTransformerWithName:@"OakTerminalPlacementSettingsTransformer" andObjectsArray:@[ @"left", @"right", @"bottom" ]];
+
+		[NSUserDefaults.standardUserDefaults registerDefaults:@{
+			kUserDefaultsTerminalScrollbackLinesKey: @10000,
+		}];
 
 		self.defaultsProperties = @{
-			@"path":         kUserDefaultsMateInstallPathKey,
-			@"disableRMate": kUserDefaultsDisableRMateServerKey,
-			@"interface":    kUserDefaultsRMateServerListenKey,
-			@"port":         kUserDefaultsRMateServerPortKey,
+			@"path":              kUserDefaultsMateInstallPathKey,
+			@"disableRMate":      kUserDefaultsDisableRMateServerKey,
+			@"interface":         kUserDefaultsRMateServerListenKey,
+			@"port":              kUserDefaultsRMateServerPortKey,
+			@"terminalPlacement": kUserDefaultsTerminalPlacementKey,
+			@"terminalScrollback": kUserDefaultsTerminalScrollbackLinesKey,
 		};
 	}
 	return self;
+}
+
+// ==========================
+// = Terminal pane settings =
+// ==========================
+
+- (NSView*)terminalPaneSectionView
+{
+	NSPopUpButton* placementPopUp = OakCreatePopUpButton();
+	MBMenu const placementMenuItems = {
+		{ @"Left side",  .tag = 0 },
+		{ @"Right side", .tag = 1 },
+		{ @"Bottom",     .tag = 2 },
+	};
+	MBCreateMenu(placementMenuItems, placementPopUp.menu);
+
+	NSTextField* scrollbackTextField = [NSTextField textFieldWithString:@""];
+	NSNumberFormatter* formatter = [NSNumberFormatter new];
+	formatter.numberStyle = NSNumberFormatterNoStyle;
+	formatter.minimum = @0;
+	scrollbackTextField.formatter = formatter;
+	NSStackView* scrollbackStackView = [NSStackView stackViewWithViews:@[ scrollbackTextField, OakCreateLabel(@"lines") ]];
+
+	terminalFontLabel = OakCreateLabel(@"");
+	NSButton* selectFontButton = OakCreateButton(@"Select…");
+	selectFontButton.target = self;
+	selectFontButton.action = @selector(selectTerminalFont:);
+	NSStackView* fontStackView = [NSStackView stackViewWithViews:@[ terminalFontLabel, selectFontButton ]];
+	[self updateTerminalFontLabel];
+
+	NSGridView* gridView = [NSGridView gridViewWithViews:@[
+		@[ ],
+		@[ OakCreateLabel(@"Show terminal on:"), placementPopUp        ],
+		@[ OakCreateLabel(@"Scrollback:"),       scrollbackStackView   ],
+		@[ OakCreateLabel(@"Font:"),             fontStackView         ],
+	]];
+
+	[placementPopUp.widthAnchor constraintEqualToConstant:160].active = YES;
+	[scrollbackTextField.widthAnchor constraintEqualToConstant:80].active = YES;
+
+	NSView* res = OakSetupGridViewWithSeparators(gridView, { 0 });
+
+	[placementPopUp bind:NSSelectedTagBinding toObject:self withKeyPath:@"terminalPlacement" options:@{ NSValueTransformerNameBindingOption: @"OakTerminalPlacementSettingsTransformer" }];
+	[scrollbackTextField bind:NSValueBinding toObject:self withKeyPath:@"terminalScrollback" options:nil];
+
+	return res;
+}
+
+- (void)updateTerminalFontLabel
+{
+	NSFont* font = CurrentTerminalFont();
+	terminalFontLabel.stringValue = [NSString stringWithFormat:@"%@ %g", font.displayName ?: font.fontName, font.pointSize];
+}
+
+- (void)selectTerminalFont:(id)sender
+{
+	NSFontManager* fontManager = NSFontManager.sharedFontManager;
+	[fontManager setSelectedFont:CurrentTerminalFont() isMultiple:NO];
+	fontManager.target = self;
+	[fontManager orderFrontFontPanel:self];
+}
+
+- (void)changeFont:(NSFontManager*)sender
+{
+	NSFont* font = [sender convertFont:CurrentTerminalFont()];
+	if(!font)
+		return;
+	[NSUserDefaults.standardUserDefaults setObject:font.fontName forKey:kUserDefaultsTerminalFontNameKey];
+	[NSUserDefaults.standardUserDefaults setDouble:font.pointSize forKey:kUserDefaultsTerminalFontSizeKey];
+	[self updateTerminalFontLabel];
+}
+
+- (void)viewDidDisappear
+{
+	[super viewDidDisappear];
+	if(NSFontManager.sharedFontManager.target == self)
+		NSFontManager.sharedFontManager.target = nil;
 }
 
 - (void)selectInstallPath:(id)sender
@@ -239,6 +344,18 @@ static bool uninstall_mate (std::string const& path)
 
 	CreateHyperLink(rmateSummaryText, @"rmate", @"https://github.com/textmate/rmate/");
 	LSSetDefaultHandlerForURLScheme(CFSTR("txmt"), CFBundleGetIdentifier(CFBundleGetMainBundle()));
+
+	// Append the terminal-pane settings below the nib content
+	NSView* nibView = self.view;
+	NSView* sectionView = [self terminalPaneSectionView];
+
+	CGFloat width = std::max(NSWidth(nibView.frame), NSWidth(sectionView.frame));
+	NSView* containerView = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, width, NSHeight(nibView.frame) + NSHeight(sectionView.frame))];
+	sectionView.frame = NSMakeRect(0, 0, width, NSHeight(sectionView.frame));
+	nibView.frame = NSMakeRect(0, NSHeight(sectionView.frame), NSWidth(nibView.frame), NSHeight(nibView.frame));
+	[containerView addSubview:nibView];
+	[containerView addSubview:sectionView];
+	self.view = containerView;
 }
 
 - (NSSize)preferredContentSize

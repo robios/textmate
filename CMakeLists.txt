@@ -102,6 +102,7 @@ add_subdirectory(vendor/Onigmo)
 add_subdirectory(vendor/kvdb)
 add_subdirectory(vendor/xdiff)
 add_subdirectory(vendor/cmark-gfm)
+add_subdirectory(vendor/libghostty-vt)
 
 # === Leaf Frameworks (no internal deps or only text) ===
 add_subdirectory(Frameworks/text)
@@ -155,6 +156,7 @@ add_subdirectory(Frameworks/Find)
 add_subdirectory(Frameworks/FileBrowser)
 add_subdirectory(Frameworks/OakTextView)
 add_subdirectory(Frameworks/document)
+add_subdirectory(Frameworks/Terminal)
 add_subdirectory(Frameworks/DocumentWindow)
 add_subdirectory(Frameworks/CommitWindow)
 

@@ -21,6 +21,9 @@
 @property (nonatomic) BOOL                                       htmlOutputVisible;
 @property (nonatomic) NSSize                                     htmlOutputSize;
 
+@property (nonatomic) BOOL                                       terminalVisible;
+@property (nonatomic) NSSize                                     terminalSize;
+
 + (BOOL)restoreSession;
 + (void)disableSessionSave;
 + (void)enableSessionSave;
@@ -45,6 +48,7 @@
 - (NSPoint)positionForWindowUnderCaret;
 - (void)performBundleItem:(bundles::item_ptr)anItem;
 - (IBAction)toggleHTMLOutput:(id)sender;
+- (IBAction)toggleTerminal:(id)sender;
 
 - (IBAction)moveFocus:(id)sender;
 

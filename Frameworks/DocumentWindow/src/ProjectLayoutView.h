@@ -4,10 +4,14 @@
 @property (nonatomic) NSView* documentView;
 @property (nonatomic) NSView* fileBrowserView;
 @property (nonatomic) NSView* htmlOutputView;
+@property (nonatomic) NSView* terminalView;
 
 @property (nonatomic) CGFloat fileBrowserWidth;
 @property (nonatomic) BOOL fileBrowserOnRight;
 
 @property (nonatomic) NSSize htmlOutputSize;
 @property (nonatomic) BOOL htmlOutputOnRight;
+
+@property (nonatomic) NSSize terminalSize;
+@property (nonatomic) NSString* terminalPlacement; // left / right / bottom
 @end

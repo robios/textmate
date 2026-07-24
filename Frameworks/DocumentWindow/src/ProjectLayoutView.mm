@@ -5,14 +5,17 @@
 #import <oak/misc.h>
 #import <oak/debug.h>
 
-NSString* const kUserDefaultsFileBrowserWidthKey = @"fileBrowserWidth";
-NSString* const kUserDefaultsHTMLOutputSizeKey   = @"htmlOutputSize";
+NSString* const kUserDefaultsFileBrowserWidthKey  = @"fileBrowserWidth";
+NSString* const kUserDefaultsHTMLOutputSizeKey    = @"htmlOutputSize";
+NSString* const kUserDefaultsTerminalViewSizeKey  = @"terminalViewSize";
 
 @interface ProjectLayoutView () <OakUserDefaultsObserver>
 @property (nonatomic) NSView* fileBrowserDivider;
 @property (nonatomic) NSView* htmlOutputDivider;
+@property (nonatomic) NSView* terminalDivider;
 @property (nonatomic) NSLayoutConstraint* fileBrowserWidthConstraint;
 @property (nonatomic) NSLayoutConstraint* htmlOutputSizeConstraint;
+@property (nonatomic) NSLayoutConstraint* terminalSizeConstraint;
 @property (nonatomic) NSMutableArray* myConstraints;
 @property (nonatomic) BOOL mouseDownRecursionGuard;
 @end
@@ -22,7 +25,8 @@ NSString* const kUserDefaultsHTMLOutputSizeKey   = @"htmlOutputSize";
 {
 	[NSUserDefaults.standardUserDefaults registerDefaults:@{
 		kUserDefaultsFileBrowserWidthKey: @250,
-		kUserDefaultsHTMLOutputSizeKey:   NSStringFromSize(NSMakeSize(200, 200))
+		kUserDefaultsHTMLOutputSizeKey:   NSStringFromSize(NSMakeSize(200, 200)),
+		kUserDefaultsTerminalViewSizeKey: NSStringFromSize(NSMakeSize(480, 240)),
 	}];
 }
 
@@ -30,9 +34,11 @@ NSString* const kUserDefaultsHTMLOutputSizeKey   = @"htmlOutputSize";
 {
 	if(self = [super initWithFrame:aRect])
 	{
-		_myConstraints    = [NSMutableArray array];
-		_fileBrowserWidth = [NSUserDefaults.standardUserDefaults integerForKey:kUserDefaultsFileBrowserWidthKey];
-		_htmlOutputSize   = NSSizeFromString([NSUserDefaults.standardUserDefaults stringForKey:kUserDefaultsHTMLOutputSizeKey]);
+		_myConstraints     = [NSMutableArray array];
+		_fileBrowserWidth  = [NSUserDefaults.standardUserDefaults integerForKey:kUserDefaultsFileBrowserWidthKey];
+		_htmlOutputSize    = NSSizeFromString([NSUserDefaults.standardUserDefaults stringForKey:kUserDefaultsHTMLOutputSizeKey]);
+		_terminalSize      = NSSizeFromString([NSUserDefaults.standardUserDefaults stringForKey:kUserDefaultsTerminalViewSizeKey]);
+		_terminalPlacement = @"right";
 
 		[self userDefaultsDidChange:nil];
 		OakObserveUserDefaults(self);
@@ -48,7 +54,16 @@ NSString* const kUserDefaultsHTMLOutputSizeKey   = @"htmlOutputSize";
 - (void)userDefaultsDidChange:(NSNotification*)aNotification
 {
 	self.htmlOutputOnRight = [[NSUserDefaults.standardUserDefaults stringForKey:kUserDefaultsHTMLOutputPlacementKey] isEqualToString:@"right"];
+
+	NSString* terminalPlacement = [NSUserDefaults.standardUserDefaults stringForKey:kUserDefaultsTerminalPlacementKey];
+	if(![terminalPlacement isEqualToString:@"left"] && ![terminalPlacement isEqualToString:@"bottom"])
+		terminalPlacement = @"right";
+	self.terminalPlacement = terminalPlacement;
 }
+
+- (BOOL)terminalAtBottom { return _terminalView && [_terminalPlacement isEqualToString:@"bottom"]; }
+- (BOOL)terminalOnLeft   { return _terminalView && [_terminalPlacement isEqualToString:@"left"]; }
+- (BOOL)terminalOnRight  { return _terminalView && ![self terminalAtBottom] && ![self terminalOnLeft]; }
 
 - (NSView*)replaceView:(NSView*)oldView withView:(NSView*)newView
 {
@@ -66,7 +81,7 @@ NSString* const kUserDefaultsHTMLOutputSizeKey   = @"htmlOutputSize";
 - (void)updateKeyViewLoop
 {
 	NSMutableArray<NSView*>* views = [NSMutableArray array];
-	for(NSView* view : { _documentView, _htmlOutputView, _fileBrowserView })
+	for(NSView* view : { _documentView, _htmlOutputView, _fileBrowserView, _terminalView })
 	{
 		if(view)
 			[views addObject:view];
@@ -97,6 +112,29 @@ NSString* const kUserDefaultsHTMLOutputSizeKey   = @"htmlOutputSize";
 	_fileBrowserDivider = [self replaceView:_fileBrowserDivider withView:aFileBrowserView ? [self createDividerAlongYAxis:YES] : nil];
 	_fileBrowserView    = [self replaceView:_fileBrowserView withView:aFileBrowserView];
 	[self updateKeyViewLoop];
+}
+
+- (void)setTerminalView:(NSView*)aTerminalView
+{
+	_terminalDivider = [self replaceView:_terminalDivider withView:(aTerminalView ? [self createDividerAlongYAxis:![_terminalPlacement isEqualToString:@"bottom"]] : nil)];
+	_terminalView    = [self replaceView:_terminalView withView:aTerminalView];
+	[self updateKeyViewLoop];
+}
+
+- (void)setTerminalPlacement:(NSString*)aPlacement
+{
+	if(![_terminalPlacement isEqualToString:aPlacement])
+	{
+		_terminalPlacement = aPlacement;
+		self.terminalView = _terminalView; // recreate divider line, required due to <rdar://13093498>
+	}
+}
+
+- (void)setTerminalSize:(NSSize)aSize
+{
+	_terminalSize = aSize;
+	if(_terminalView)
+		[self setNeedsUpdateConstraints:YES];
 }
 
 - (void)setFileBrowserOnRight:(BOOL)flag
@@ -134,7 +172,15 @@ NSString* const kUserDefaultsHTMLOutputSizeKey   = @"htmlOutputSize";
 		@"fileBrowserDivider": _fileBrowserDivider ?: [NSNull null],
 		@"htmlOutputView":     _htmlOutputView     ?: [NSNull null],
 		@"htmlOutputDivider":  _htmlOutputDivider  ?: [NSNull null],
+		@"terminalView":       _terminalView       ?: [NSNull null],
+		@"terminalDivider":    _terminalDivider    ?: [NSNull null],
 	};
+
+	// The terminal claims an entire window edge (left, right, or bottom);
+	// everything else lays out in the remaining rectangle.
+	BOOL terminalAtBottom = [self terminalAtBottom];
+	BOOL terminalOnLeft   = [self terminalOnLeft];
+	BOOL terminalOnRight  = [self terminalOnRight];
 
 	// ========================
 	// = Anchor Document View =
@@ -146,12 +192,16 @@ NSString* const kUserDefaultsHTMLOutputSizeKey   = @"htmlOutputSize";
 	// bottom
 	if(_htmlOutputView && !_htmlOutputOnRight)
 		CONSTRAINT(@"V:[documentView][htmlOutputDivider]", 0);
+	else if(terminalAtBottom)
+		CONSTRAINT(@"V:[documentView][terminalDivider]", 0);
 	else
 		CONSTRAINT(@"V:[documentView]|", 0);
 
 	// left
 	if(_fileBrowserView && !_fileBrowserOnRight)
 		CONSTRAINT(@"H:[fileBrowserDivider][documentView]", 0);
+	else if(terminalOnLeft)
+		CONSTRAINT(@"H:[terminalDivider][documentView]", 0);
 	else
 		CONSTRAINT(@"H:|[documentView]", 0);
 
@@ -160,6 +210,8 @@ NSString* const kUserDefaultsHTMLOutputSizeKey   = @"htmlOutputSize";
 		CONSTRAINT(@"H:[documentView][htmlOutputDivider]", 0);
 	else if(_fileBrowserView && _fileBrowserOnRight)
 		CONSTRAINT(@"H:[documentView][fileBrowserDivider]", 0);
+	else if(terminalOnRight)
+		CONSTRAINT(@"H:[documentView][terminalDivider]", 0);
 	else
 		CONSTRAINT(@"H:[documentView]|", 0);
 
@@ -184,6 +236,11 @@ NSString* const kUserDefaultsHTMLOutputSizeKey   = @"htmlOutputSize";
 			CONSTRAINT(@"V:[fileBrowserView][htmlOutputDivider]", 0);
 			CONSTRAINT(@"V:[fileBrowserDivider][htmlOutputDivider]", 0);
 		}
+		else if(terminalAtBottom)
+		{
+			CONSTRAINT(@"V:[fileBrowserView][terminalDivider]", 0);
+			CONSTRAINT(@"V:[fileBrowserDivider][terminalDivider]", 0);
+		}
 		else
 		{
 			CONSTRAINT(@"V:[fileBrowserView]|", 0);
@@ -195,11 +252,15 @@ NSString* const kUserDefaultsHTMLOutputSizeKey   = @"htmlOutputSize";
 			CONSTRAINT(@"H:[htmlOutputView][fileBrowserDivider][fileBrowserView]", 0);
 		else if(_fileBrowserOnRight)
 			CONSTRAINT(@"H:[documentView][fileBrowserDivider][fileBrowserView]", 0);
+		else if(terminalOnLeft)
+			CONSTRAINT(@"H:[terminalDivider][fileBrowserView][fileBrowserDivider]", 0);
 		else
 			CONSTRAINT(@"H:|[fileBrowserView][fileBrowserDivider]", 0);
 
 		// right
-		if(_fileBrowserOnRight)
+		if(_fileBrowserOnRight && terminalOnRight)
+			CONSTRAINT(@"H:[fileBrowserView][terminalDivider]", 0);
+		else if(_fileBrowserOnRight)
 			CONSTRAINT(@"H:[fileBrowserView]|", 0);
 		else
 			CONSTRAINT(@"H:[fileBrowserDivider][documentView]", 0);
@@ -219,23 +280,87 @@ NSString* const kUserDefaultsHTMLOutputSizeKey   = @"htmlOutputSize";
 		if(_htmlOutputOnRight)
 		{
 			// top + bottom
-			CONSTRAINT(@"V:|[htmlOutputView]|", 0);
-			CONSTRAINT(@"V:|[htmlOutputDivider]|", 0);
+			CONSTRAINT(@"V:|[htmlOutputView]", 0);
+			CONSTRAINT(@"V:|[htmlOutputDivider]", 0);
+			if(terminalAtBottom)
+			{
+				CONSTRAINT(@"V:[htmlOutputView][terminalDivider]", 0);
+				CONSTRAINT(@"V:[htmlOutputDivider][terminalDivider]", 0);
+			}
+			else
+			{
+				CONSTRAINT(@"V:[htmlOutputView]|", 0);
+				CONSTRAINT(@"V:[htmlOutputDivider]|", 0);
+			}
 
 			// left + right
 			if(_fileBrowserView && _fileBrowserOnRight)
 				CONSTRAINT(@"H:[documentView][htmlOutputDivider][htmlOutputView][fileBrowserDivider]", 0);
+			else if(terminalOnRight)
+				CONSTRAINT(@"H:[documentView][htmlOutputDivider][htmlOutputView][terminalDivider]", 0);
 			else
 				CONSTRAINT(@"H:[documentView][htmlOutputDivider][htmlOutputView]|", 0);
 		}
 		else
 		{
 			// top + bottom
-			CONSTRAINT(@"V:[documentView][htmlOutputDivider][htmlOutputView]|", 0);
+			if(terminalAtBottom)
+				CONSTRAINT(@"V:[documentView][htmlOutputDivider][htmlOutputView][terminalDivider]", 0);
+			else
+				CONSTRAINT(@"V:[documentView][htmlOutputDivider][htmlOutputView]|", 0);
 
 			// left + right
-			CONSTRAINT(@"H:|[htmlOutputView]|", 0);
-			CONSTRAINT(@"H:|[htmlOutputDivider]|", 0);
+			if(terminalOnLeft)
+			{
+				CONSTRAINT(@"H:[terminalDivider][htmlOutputView]", 0);
+				CONSTRAINT(@"H:[terminalDivider][htmlOutputDivider]", 0);
+			}
+			else
+			{
+				CONSTRAINT(@"H:|[htmlOutputView]", 0);
+				CONSTRAINT(@"H:|[htmlOutputDivider]", 0);
+			}
+
+			if(terminalOnRight)
+			{
+				CONSTRAINT(@"H:[htmlOutputView][terminalDivider]", 0);
+				CONSTRAINT(@"H:[htmlOutputDivider][terminalDivider]", 0);
+			}
+			else
+			{
+				CONSTRAINT(@"H:[htmlOutputView]|", 0);
+				CONSTRAINT(@"H:[htmlOutputDivider]|", 0);
+			}
+		}
+	}
+
+	// ========================
+	// = Anchor Terminal View =
+	// ========================
+
+	if(_terminalView)
+	{
+		self.terminalSizeConstraint = terminalAtBottom ? [NSLayoutConstraint constraintWithItem:_terminalView attribute:NSLayoutAttributeHeight relatedBy:NSLayoutRelationEqual toItem:nil attribute:NSLayoutAttributeNotAnAttribute multiplier:1 constant:_terminalSize.height] : [NSLayoutConstraint constraintWithItem:_terminalView attribute:NSLayoutAttributeWidth relatedBy:NSLayoutRelationEqual toItem:nil attribute:NSLayoutAttributeNotAnAttribute multiplier:1 constant:_terminalSize.width];
+		self.terminalSizeConstraint.priority = NSLayoutPriorityDragThatCannotResizeWindow-1;
+		[_myConstraints addObject:self.terminalSizeConstraint];
+
+		if(terminalAtBottom)
+		{
+			CONSTRAINT(@"V:[terminalDivider][terminalView]|", 0);
+			CONSTRAINT(@"H:|[terminalView]|", 0);
+			CONSTRAINT(@"H:|[terminalDivider]|", 0);
+		}
+		else if(terminalOnLeft)
+		{
+			CONSTRAINT(@"V:|[terminalView]|", 0);
+			CONSTRAINT(@"V:|[terminalDivider]|", 0);
+			CONSTRAINT(@"H:|[terminalView][terminalDivider]", 0);
+		}
+		else
+		{
+			CONSTRAINT(@"V:|[terminalView]|", 0);
+			CONSTRAINT(@"V:|[terminalDivider]|", 0);
+			CONSTRAINT(@"H:[terminalDivider][terminalView]|", 0);
 		}
 	}
 
@@ -261,10 +386,21 @@ NSString* const kUserDefaultsHTMLOutputSizeKey   = @"htmlOutputSize";
 	return _htmlOutputOnRight ? NSMakeRect(NSMinX(r)-3, NSMinY(r), 10, NSHeight(r)) : NSMakeRect(NSMinX(r), NSMaxY(r)-4, NSWidth(r), 10);
 }
 
+- (NSRect)terminalResizeRect
+{
+	if(!_terminalView)
+		return NSZeroRect;
+	NSRect r = _terminalView.frame;
+	if([self terminalAtBottom])
+		return NSMakeRect(NSMinX(r), NSMaxY(r)-4, NSWidth(r), 10);
+	return [self terminalOnRight] ? NSMakeRect(NSMinX(r)-3, NSMinY(r), 10, NSHeight(r)) : NSMakeRect(NSMaxX(r)-4, NSMinY(r), 10, NSHeight(r));
+}
+
 - (void)resetCursorRects
 {
 	[self addCursorRect:[self fileBrowserResizeRect] cursor:[NSCursor resizeLeftRightCursor]];
 	[self addCursorRect:[self htmlOutputResizeRect]  cursor:_htmlOutputOnRight ? [NSCursor resizeLeftRightCursor] : [NSCursor resizeUpDownCursor]];
+	[self addCursorRect:[self terminalResizeRect]    cursor:[self terminalAtBottom] ? [NSCursor resizeUpDownCursor] : [NSCursor resizeLeftRightCursor]];
 }
 
 - (BOOL)mouseDownCanMoveWindow
@@ -277,6 +413,8 @@ NSString* const kUserDefaultsHTMLOutputSizeKey   = @"htmlOutputSize";
 	if(NSMouseInRect([self convertPoint:aPoint fromView:[self superview]], [self fileBrowserResizeRect], [self isFlipped]))
 		return self;
 	if(NSMouseInRect([self convertPoint:aPoint fromView:[self superview]], [self htmlOutputResizeRect], [self isFlipped]))
+		return self;
+	if(NSMouseInRect([self convertPoint:aPoint fromView:[self superview]], [self terminalResizeRect], [self isFlipped]))
 		return self;
 	return [super hitTest:aPoint];
 }
@@ -293,6 +431,8 @@ NSString* const kUserDefaultsHTMLOutputSizeKey   = @"htmlOutputSize";
 		view = _fileBrowserView;
 	else if(NSMouseInRect(mouseDownPos, [self htmlOutputResizeRect], [self isFlipped]))
 		view = _htmlOutputView;
+	else if(NSMouseInRect(mouseDownPos, [self terminalResizeRect], [self isFlipped]))
+		view = _terminalView;
 
 	if(!view || [anEvent type] != NSEventTypeLeftMouseDown)
 	{
@@ -312,6 +452,14 @@ NSString* const kUserDefaultsHTMLOutputSizeKey   = @"htmlOutputSize";
 					self.htmlOutputSizeConstraint.constant = NSWidth(_htmlOutputView.frame);
 			else	self.htmlOutputSizeConstraint.constant = NSHeight(_htmlOutputView.frame);
 			self.htmlOutputSizeConstraint.priority = NSLayoutPriorityDragThatCannotResizeWindow;
+		}
+
+		if(_terminalView)
+		{
+			if([self terminalAtBottom])
+					self.terminalSizeConstraint.constant = NSHeight(_terminalView.frame);
+			else	self.terminalSizeConstraint.constant = NSWidth(_terminalView.frame);
+			self.terminalSizeConstraint.priority = NSLayoutPriorityDragThatCannotResizeWindow;
 		}
 
 		NSEvent* mouseDownEvent = anEvent;
@@ -355,6 +503,24 @@ NSString* const kUserDefaultsHTMLOutputSizeKey   = @"htmlOutputSize";
 
 				[NSUserDefaults.standardUserDefaults setInteger:_fileBrowserWidth forKey:kUserDefaultsFileBrowserWidthKey];
 			}
+			else if(view == _terminalView)
+			{
+				if([self terminalAtBottom])
+				{
+					CGFloat height = NSHeight(initialFrame) + (mouseCurrentPos.y - mouseDownPos.y);
+					_terminalSize.height = std::max<CGFloat>(50, round(height));
+					self.terminalSizeConstraint.constant = _terminalSize.height;
+				}
+				else
+				{
+					CGFloat width = NSWidth(initialFrame) + (mouseCurrentPos.x - mouseDownPos.x) * ([self terminalOnRight] ? -1 : +1);
+					_terminalSize.width = std::max<CGFloat>(100, round(width));
+					self.terminalSizeConstraint.constant = _terminalSize.width;
+				}
+				self.terminalSizeConstraint.priority = NSLayoutPriorityDragThatCannotResizeWindow-1;
+
+				[NSUserDefaults.standardUserDefaults setObject:NSStringFromSize(_terminalSize) forKey:kUserDefaultsTerminalViewSizeKey];
+			}
 
 			[[self window] invalidateCursorRectsForView:self];
 			didDrag = YES;
@@ -372,6 +538,7 @@ NSString* const kUserDefaultsHTMLOutputSizeKey   = @"htmlOutputSize";
 
 		self.fileBrowserWidthConstraint.priority = NSLayoutPriorityDragThatCannotResizeWindow;
 		self.htmlOutputSizeConstraint.priority   = NSLayoutPriorityDragThatCannotResizeWindow-1;
+		self.terminalSizeConstraint.priority     = NSLayoutPriorityDragThatCannotResizeWindow-1;
 	}
 
 	_mouseDownRecursionGuard = NO;
