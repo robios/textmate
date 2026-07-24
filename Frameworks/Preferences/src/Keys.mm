@@ -24,6 +24,7 @@ static NSDictionary* default_settings ()
 		kUserDefaultsHTMLOutputPlacementKey:     @"window",
 		kUserDefaultsFileBrowserPlacementKey:    @"right",
 		kUserDefaultsTerminalPlacementKey:       @"right",
+		kUserDefaultsMarkdownPreviewPlacementKey: @"right",
 		kUserDefaultsShowFileExtensionsKey:      @NO,
 		kUserDefaultsEnvironmentVariablesKey:    default_environment(),
 		kUserDefaultsDisableBundleUpdatesKey:    @NO,
@@ -75,6 +76,7 @@ NSString* const kUserDefaultsFileBrowserOpenAnimationDisabled  = @"fileBrowserOp
 NSString* const kUserDefaultsFileBrowserStyleKey               = @"fileBrowserStyle";
 NSString* const kUserDefaultsHTMLOutputPlacementKey            = @"htmlOutputPlacement";
 NSString* const kUserDefaultsTerminalPlacementKey              = @"terminalPlacement";
+NSString* const kUserDefaultsMarkdownPreviewPlacementKey       = @"markdownPreviewPlacement";
 NSString* const kUserDefaultsDisableFileBrowserWindowResizeKey = @"disableFileBrowserWindowResize";
 NSString* const kUserDefaultsAutoRevealFileKey                 = @"autoRevealFile";
 NSString* const kUserDefaultsDisableTabReorderingKey           = @"disableTabReordering";

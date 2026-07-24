@@ -16,6 +16,7 @@
 #import <OakFoundation/NSString Additions.h>
 #import <Preferences/Keys.h>
 #import <OakTextView/OakDocumentView.h>
+#import <OakTextView/MarkdownPreviewView.h>
 #import <FileBrowser/FileBrowserViewController.h>
 #import <Terminal/TerminalPaneController.h>
 #import <Terminal/TerminalGridView.h>
@@ -108,6 +109,9 @@ static void show_command_error (std::string const& message, oak::uuid_t const& u
 
 @property (nonatomic) TerminalPaneController*     terminalPane;
 
+@property (nonatomic) MarkdownPreviewView*        markdownPreviewPane;
+@property (nonatomic) BOOL                        observingThemeUUID; // terminal pane and markdown preview share the themeUUID observation
+
 @property (nonatomic) NSSegmentedControl*         previousNextTouchBarControl;
 
 @property (nonatomic) NSString*                   projectPath;
@@ -171,7 +175,7 @@ namespace
 	}
 }
 
-static NSArray* const kObservedKeyPaths = @[ @"arrayController.arrangedObjects.path", @"arrayController.arrangedObjects.displayName", @"arrayController.arrangedObjects.documentEdited", @"selectedDocument.path", @"selectedDocument.displayName", @"selectedDocument.icon", @"selectedDocument.onDisk" , @"selectedDocument.documentEdited" ];
+static NSArray* const kObservedKeyPaths = @[ @"arrayController.arrangedObjects.path", @"arrayController.arrangedObjects.displayName", @"arrayController.arrangedObjects.documentEdited", @"selectedDocument.path", @"selectedDocument.displayName", @"selectedDocument.icon", @"selectedDocument.onDisk" , @"selectedDocument.documentEdited", @"selectedDocument.fileType" ];
 
 @implementation DocumentWindowController
 + (KVDB*)sharedProjectStateDB
@@ -327,8 +331,11 @@ static NSArray* const kObservedKeyPaths = @[ @"arrayController.arrangedObjects.p
 
 	[_arrayController unbind:NSContentBinding];
 
-	if(_terminalPane)
+	if(_observingThemeUUID)
+	{
 		[_textView removeObserver:self forKeyPath:@"themeUUID"];
+		_observingThemeUUID = NO;
+	}
 	[_terminalPane shutdown];
 
 	self.documents           = nil;
@@ -779,7 +786,14 @@ static NSArray* const kObservedKeyPaths = @[ @"arrayController.arrangedObjects.p
 - (void)observeValueForKeyPath:(NSString*)keyPath ofObject:(id)anObject change:(NSDictionary*)change context:(void*)context
 {
 	if(anObject == _textView && [keyPath isEqualToString:@"themeUUID"])
-		return [self updateTerminalPaneTheme];
+	{
+		[self updateTerminalPaneTheme];
+		[self updateMarkdownPreviewPaneTheme];
+		return;
+	}
+
+	if([keyPath isEqualToString:@"selectedDocument.fileType"])
+		[self updateMarkdownPreviewDocument]; // re-target when the active document is (or becomes) Markdown
 
 	OakDocument* document = self.selectedDocument;
 	if([keyPath isEqualToString:@"selectedDocument.path"] || [keyPath isEqualToString:@"selectedDocument.displayName"])
@@ -2069,7 +2083,7 @@ static NSArray* const kObservedKeyPaths = @[ @"arrayController.arrangedObjects.p
 				self.terminalPane.shellExitedHandler = ^{
 					weakSelf.terminalVisible = NO;
 				};
-				[_textView addObserver:self forKeyPath:@"themeUUID" options:0 context:nullptr];
+				[self observeThemeUUIDIfNeeded];
 			}
 			[self updateTerminalPaneTheme];
 			self.terminalPane.workingDirectory = self.projectPath ?: [self.selectedDocument.path stringByDeletingLastPathComponent] ?: NSHomeDirectory();
@@ -2108,6 +2122,146 @@ static NSArray* const kObservedKeyPaths = @[ @"arrayController.arrangedObjects.p
 - (BOOL)terminalHasFocus
 {
 	return [[self.window firstResponder] isKindOfClass:[NSView class]] && self.layoutView.terminalView && [(NSView*)[self.window firstResponder] isDescendantOf:self.layoutView.terminalView];
+}
+
+- (void)observeThemeUUIDIfNeeded
+{
+	if(!_observingThemeUUID)
+	{
+		[_textView addObserver:self forKeyPath:@"themeUUID" options:0 context:nullptr];
+		_observingThemeUUID = YES;
+	}
+}
+
+// ====================
+// = Markdown Preview =
+// ====================
+
+- (NSSize)markdownPreviewSize                { return self.layoutView.markdownPreviewSize;  }
+- (void)setMarkdownPreviewSize:(NSSize)aSize { self.layoutView.markdownPreviewSize = aSize; }
+
+// Like the terminal, showing the preview grows the window outward on the
+// pane’s edge (and hiding shrinks it back) instead of squeezing the editor,
+// screen space permitting.
+- (void)adjustWindowFrameForMarkdownPreviewPane:(BOOL)makeVisibleFlag
+{
+	if(self.disableFileBrowserWindowResize || ([self.window styleMask] & NSWindowStyleMaskFullScreen) == NSWindowStyleMaskFullScreen)
+		return;
+
+	BOOL bottom = [self.layoutView.markdownPreviewPlacement isEqualToString:@"bottom"];
+	CGFloat delta = (bottom ? self.markdownPreviewSize.height : self.markdownPreviewSize.width) + 1;
+
+	NSRect windowFrame = self.window.frame;
+	NSRect screenFrame = [[self.window screen] visibleFrame];
+
+	if(makeVisibleFlag)
+	{
+		if(bottom)
+		{
+			windowFrame.origin.y    -= delta;
+			windowFrame.size.height += delta;
+			if(NSMinY(windowFrame) < NSMinY(screenFrame))
+				windowFrame.origin.y = NSMinY(screenFrame);
+			if(NSMaxY(windowFrame) > NSMaxY(screenFrame))
+				windowFrame.size.height = NSMaxY(screenFrame) - NSMinY(windowFrame);
+		}
+		else
+		{
+			windowFrame.size.width += delta;
+			if(NSMaxX(windowFrame) > NSMaxX(screenFrame))
+			{
+				windowFrame.origin.x = std::max(NSMinX(screenFrame), NSMaxX(screenFrame) - NSWidth(windowFrame));
+				if(NSMaxX(windowFrame) > NSMaxX(screenFrame))
+					windowFrame.size.width = NSMaxX(screenFrame) - NSMinX(windowFrame);
+			}
+		}
+	}
+	else
+	{
+		if(bottom)
+		{
+			windowFrame.origin.y    += delta;
+			windowFrame.size.height -= delta;
+		}
+		else
+		{
+			windowFrame.size.width -= delta;
+		}
+	}
+
+	[self.window setFrame:windowFrame display:YES];
+}
+
+- (void)setMarkdownPreviewVisible:(BOOL)makeVisibleFlag
+{
+	if(_markdownPreviewVisible != makeVisibleFlag)
+	{
+		_markdownPreviewVisible = makeVisibleFlag;
+		if(makeVisibleFlag)
+		{
+			if(!self.markdownPreviewPane)
+			{
+				self.markdownPreviewPane = [[MarkdownPreviewView alloc] initWithFrame:NSZeroRect];
+
+				__weak DocumentWindowController* weakSelf = self;
+				self.markdownPreviewPane.closeHandler = ^{
+					weakSelf.markdownPreviewVisible = NO;
+				};
+
+				[self observeThemeUUIDIfNeeded];
+			}
+			// Target and theme before activating: activation loads the shell
+			// page once, with the document’s baseURL and the theme variables
+			// already seeded (white-flash avoidance).
+			[self updateMarkdownPreviewDocument];
+			[self updateMarkdownPreviewPaneTheme];
+			self.markdownPreviewPane.active = YES;
+			self.layoutView.markdownPreviewView = self.markdownPreviewPane;
+			[self adjustWindowFrameForMarkdownPreviewPane:YES];
+		}
+		else
+		{
+			if([[self.window firstResponder] isKindOfClass:[NSView class]] && [(NSView*)[self.window firstResponder] isDescendantOf:self.layoutView.markdownPreviewView])
+				[self makeTextViewFirstResponder:self];
+			self.layoutView.markdownPreviewView = nil;
+			self.markdownPreviewPane.active = NO; // tears down the web view — the renderer is cheap and stateless
+			[self adjustWindowFrameForMarkdownPreviewPane:NO];
+		}
+	}
+	[[self class] scheduleSessionBackup:self];
+}
+
+// The pane follows the active document while that document is Markdown;
+// switching to a non-Markdown tab keeps the last Markdown document’s preview
+// on screen (the way VS Code’s preview and Marked behave). Scroll sync and
+// click-to-jump only run while the text view shows the previewed document.
+- (void)updateMarkdownPreviewDocument
+{
+	if(!self.markdownPreviewPane)
+		return;
+
+	OakDocument* doc = self.selectedDocument;
+	if(doc && [doc.fileType hasPrefix:@"text.html.markdown"])
+		self.markdownPreviewPane.document = doc;
+
+	self.markdownPreviewPane.textView = self.markdownPreviewPane.document == doc ? self.textView : nil;
+}
+
+- (void)updateMarkdownPreviewPaneTheme
+{
+	if(!self.markdownPreviewPane)
+		return;
+	if(theme_ptr theme = _textView.theme)
+	{
+		std::string const scope = to_s(self.markdownPreviewPane.document.fileType ?: @"text.html.markdown");
+		self.markdownPreviewPane.themeBackgroundColor = [NSColor colorWithCGColor:theme->background(scope)];
+		self.markdownPreviewPane.themeForegroundColor = [NSColor colorWithCGColor:theme->styles_for_scope(scope).foreground()];
+	}
+}
+
+- (IBAction)toggleMarkdownPreview:(id)sender
+{
+	self.markdownPreviewVisible = !self.markdownPreviewVisible;
 }
 
 // =============================
@@ -2428,6 +2582,14 @@ static NSArray* const kObservedKeyPaths = @[ @"arrayController.arrangedObjects.p
 	}
 	else if([menuItem action] == @selector(toggleTerminal:))
 		[menuItem setTitle:self.terminalVisible && [self terminalHasFocus] ? @"Hide Terminal" : @"Show Terminal"];
+	else if([menuItem action] == @selector(toggleMarkdownPreview:))
+	{
+		[menuItem setTitle:self.markdownPreviewVisible ? @"Hide Markdown Preview" : @"Show Markdown Preview"];
+		// Enabled for Markdown documents — and always when visible, so the
+		// pane (which keeps showing the last Markdown document) can be closed
+		// from any tab.
+		active = self.markdownPreviewVisible || [self.selectedDocument.fileType hasPrefix:@"text.html.markdown"];
+	}
 	else if([menuItem action] == @selector(newDocumentInDirectory:))
 	{
 		active = self.fileBrowserVisible && self.fileBrowser.directoryURLForNewItems;
@@ -2683,12 +2845,17 @@ static NSUInteger DisableSessionSavingCount = 0;
 		self.htmlOutputSize = NSSizeFromString(htmlOutputSize);
 	if(NSString* terminalSize = project[@"terminalSize"])
 		self.terminalSize = NSSizeFromString(terminalSize);
+	if(NSString* markdownPreviewSize = project[@"markdownPreviewSize"])
+		self.markdownPreviewSize = NSSizeFromString(markdownPreviewSize);
 
 	self.defaultProjectPath = project[@"projectPath"];
 	self.projectPath        = project[@"projectPath"];
 	self.fileBrowserHistory = project[@"archivedFileBrowserState"] ?: project[@"fileBrowserState"];
 	self.fileBrowserVisible = [project[@"fileBrowserVisible"] boolValue];
-	// The terminal deliberately never restores as visible — it is opened on demand.
+	// The terminal deliberately never restores as visible — it is opened on
+	// demand. The Markdown preview does restore (file-browser rule): its
+	// renderer is cheap and stateless.
+	self.markdownPreviewVisible = [project[@"markdownPreviewVisible"] boolValue];
 
 	NSMutableArray<OakDocument*>* documents = [NSMutableArray array];
 	NSInteger selectedTabIndex = 0;
@@ -2751,7 +2918,9 @@ static NSUInteger DisableSessionSavingCount = 0;
 	res[@"htmlOutputSize"]     = NSStringFromSize(self.htmlOutputSize);
 	res[@"fileBrowserVisible"] = @(self.fileBrowserVisible);
 	res[@"fileBrowserWidth"]   = @(self.fileBrowserWidth);
-	res[@"terminalSize"]       = NSStringFromSize(self.terminalSize);
+	res[@"terminalSize"]            = NSStringFromSize(self.terminalSize);
+	res[@"markdownPreviewSize"]     = NSStringFromSize(self.markdownPreviewSize);
+	res[@"markdownPreviewVisible"]  = @(self.markdownPreviewVisible);
 
 	NSMutableArray* docs = [NSMutableArray array];
 	for(OakDocument* document in _documents)

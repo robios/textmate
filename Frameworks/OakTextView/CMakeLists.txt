@@ -5,8 +5,10 @@ textmate_framework(OakTextView)
 target_link_libraries(OakTextView PUBLIC
   BundleMenu BundlesManager Find HTMLOutput MenuBuilder OakAppKit OakCommand
   OakFilterList OakFoundation OakSystem Preferences buffer bundles cf command
-  crash document editor file io layout lsp ns scm settings text theme
-  "-framework Cocoa")
+  cmark-gfm crash document editor file io layout lsp ns scm settings text theme
+  "-framework Cocoa" "-framework WebKit")
+
+textmate_add_tests(OakTextView)
 
 # OakSwiftUI — include path for the generated Swift header
 if(OakSwiftUI_LIB)

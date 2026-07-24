@@ -21,6 +21,7 @@
 	{
 		[OakStringListTransformer createTransformerWithName:@"OakFileBrowserPlacementSettingsTransformer" andObjectsArray:@[ @"left", @"right" ]];
 		[OakStringListTransformer createTransformerWithName:@"OakHTMLOutputPlacementSettingsTransformer" andObjectsArray:@[ @"bottom", @"right", @"window" ]];
+		[OakStringListTransformer createTransformerWithName:@"OakMarkdownPreviewPlacementSettingsTransformer" andObjectsArray:@[ @"right", @"bottom" ]];
 
 		self.defaultsProperties = @{
 			@"foldersOnTop":                 kUserDefaultsFoldersOnTopKey,
@@ -30,6 +31,7 @@
 			@"autoRevealFile":               kUserDefaultsAutoRevealFileKey,
 			@"fileBrowserPlacement":         kUserDefaultsFileBrowserPlacementKey,
 			@"htmlOutputPlacement":          kUserDefaultsHTMLOutputPlacementKey,
+			@"markdownPreviewPlacement":     kUserDefaultsMarkdownPreviewPlacementKey,
 
 			@"allowExpandingLinks":          kUserDefaultsAllowExpandingLinksKey,
 			@"fileBrowserSingleClickToOpen": kUserDefaultsFileBrowserSingleClickToOpenKey,
@@ -138,6 +140,7 @@
 	NSTextField* nonTextFilesTextField                 = [NSTextField textFieldWithString:@""];
 
 	NSPopUpButton* showCommandOutputPopUp              = OakCreatePopUpButton();
+	NSPopUpButton* markdownPreviewPositionPopUp        = OakCreatePopUpButton();
 
 	MBMenu const fileBrowserPositionMenuItems = {
 		{ @"Left side",  .tag = 0 },
@@ -151,6 +154,12 @@
 		{ @"New window",         .tag = 2 },
 	};
 	MBCreateMenu(showCommandOutputMenuItems, showCommandOutputPopUp.menu);
+
+	MBMenu const markdownPreviewPositionMenuItems = {
+		{ @"Right of text view", .tag = 0 },
+		{ @"Below text view",    .tag = 1 },
+	};
+	MBCreateMenu(markdownPreviewPositionMenuItems, markdownPreviewPositionPopUp.menu);
 
 	NSGridView* gridView = [NSGridView gridViewWithViews:@[
 		@[ OakCreateLabel(@"File browser location:"),  fileBrowserLocationPopUp                 ],
@@ -171,9 +180,10 @@
 		@[ OakCreateLabel(@"Non-text files:"),         nonTextFilesTextField                    ],
 		@[ ],
 		@[ OakCreateLabel(@"Show command output:"),    showCommandOutputPopUp                   ],
+		@[ OakCreateLabel(@"Show Markdown preview:"),  markdownPreviewPositionPopUp             ],
 	]];
 
-	for(NSView* popUpButton in @[ fileBrowserPositionPopUp, showCommandOutputPopUp ])
+	for(NSView* popUpButton in @[ fileBrowserPositionPopUp, showCommandOutputPopUp, markdownPreviewPositionPopUp ])
 		[popUpButton.widthAnchor constraintEqualToAnchor:fileBrowserLocationPopUp.widthAnchor].active = YES;
 
 	[excludeFilesTextField.widthAnchor constraintEqualToConstant:360].active = YES;
@@ -198,5 +208,6 @@
 	[includeFilesTextField                    bind:NSValueBinding       toObject:self withKeyPath:@"includePattern"               options:nil];
 	[nonTextFilesTextField                    bind:NSValueBinding       toObject:self withKeyPath:@"binaryPattern"                options:nil];
 	[showCommandOutputPopUp                   bind:NSSelectedTagBinding toObject:self withKeyPath:@"htmlOutputPlacement"          options:@{ NSValueTransformerNameBindingOption: @"OakHTMLOutputPlacementSettingsTransformer" }];
+	[markdownPreviewPositionPopUp             bind:NSSelectedTagBinding toObject:self withKeyPath:@"markdownPreviewPlacement"     options:@{ NSValueTransformerNameBindingOption: @"OakMarkdownPreviewPlacementSettingsTransformer" }];
 }
 @end

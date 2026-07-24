@@ -1,0 +1,815 @@
+#import "MarkdownPreviewView.h"
+#import "OakTextView.h"
+#import "markdown_render.h"
+#import <WebKit/WebKit.h>
+#import <QuartzCore/QuartzCore.h>
+#import <document/OakDocument.h>
+#import <document/OakDocument Private.h>
+#import <HTMLOutput/helpers/OakFileURLSchemeHandler.h>
+#import <buffer/buffer.h>
+#import <ns/ns.h>
+
+static CGFloat const kMarkdownPreviewMinWidth = 150;
+static CGFloat const kMarkdownPreviewHeaderHeight = 24; // same band as the diff pane’s header
+static NSTimeInterval const kRenderDebounceInterval = 0.25;
+static NSTimeInterval const kScrollSyncThrottleInterval = 0.1;
+
+// The header takes its colors from the editor theme, like the rest of the
+// pane: semantic system colors track the macOS appearance, NOT the theme, so
+// secondaryLabelColor on a dark theme under a light system appearance is
+// dark-on-dark. Dimmed foregrounds are the theme foreground blended toward
+// the theme background, so they keep contrast on any theme.
+static NSColor* BlendedColor (NSColor* from, NSColor* toward, CGFloat fraction)
+{
+	NSColor* fromRGB   = [from colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+	NSColor* towardRGB = [toward colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+	if(!fromRGB) // pattern/catalog color: fall back to something readable, never to the background
+		return from ?: NSColor.textColor;
+	NSColor* blended = towardRGB ? [fromRGB blendedColorWithFraction:fraction ofColor:towardRGB] : nil;
+	return blended ?: fromRGB;
+}
+
+// ===============================
+// = MarkdownPreviewDividerView  =
+// ===============================
+
+// In-editor pane divider, used by the diff pane (the Markdown preview itself
+// is a window-level pane laid out by ProjectLayoutView, which has its own
+// resize handling). Drawn purely with layer background colors — never via
+// drawRect:. A plain sibling whose drawRect runs in the same window commit
+// as OakTextView’s giant tiled layer causes AppKit to drop the tile render
+// (the editor goes permanently blank); see the minimap commit for the
+// original diagnosis.
+@implementation MarkdownPreviewDividerView
+{
+	CALayer* _lineLayer;
+}
+
+- (id)initWithFrame:(NSRect)aRect
+{
+	if(self = [super initWithFrame:aRect])
+	{
+		self.wantsLayer = YES;
+		_lineLayer = [CALayer layer];
+		[self.layer addSublayer:_lineLayer];
+		[self applyLayerColors];
+	}
+	return self;
+}
+
+- (void)setBackgroundColor:(NSColor*)aColor { _backgroundColor = aColor; [self applyLayerColors]; }
+- (void)setLineColor:(NSColor*)aColor       { _lineColor = aColor;       [self applyLayerColors]; }
+
+- (void)applyLayerColors
+{
+	[CATransaction begin];
+	[CATransaction setDisableActions:YES];
+	self.layer.backgroundColor = (self.backgroundColor ?: NSColor.windowBackgroundColor).CGColor;
+	_lineLayer.backgroundColor = (self.lineColor ?: NSColor.separatorColor).CGColor;
+	[CATransaction commit];
+}
+
+- (void)layout
+{
+	[super layout];
+	[CATransaction begin];
+	[CATransaction setDisableActions:YES];
+	_lineLayer.frame = CGRectMake(floor(NSWidth(self.bounds) / 2), 0, 1, NSHeight(self.bounds));
+	[CATransaction commit];
+}
+
+- (void)resetCursorRects
+{
+	[self addCursorRect:self.bounds cursor:NSCursor.resizeLeftRightCursor];
+}
+
+- (void)mouseDown:(NSEvent*)anEvent
+{
+	NSView* target = self.resizedView;
+	if(!target || !self.widthChangeHandler)
+		return;
+
+	CGFloat const initialWidth = NSWidth(target.frame);
+	CGFloat const startX       = anEvent.locationInWindow.x;
+
+	while(true)
+	{
+		NSEvent* event = [self.window nextEventMatchingMask:NSEventMaskLeftMouseDragged|NSEventMaskLeftMouseUp];
+		if(event.type == NSEventTypeLeftMouseUp)
+			break;
+		// The preview sits right of the divider: dragging left grows it.
+		self.widthChangeHandler(std::max<CGFloat>(kMarkdownPreviewMinWidth, initialWidth + (startX - event.locationInWindow.x)));
+	}
+}
+@end
+
+// =============================
+// = MarkdownPreviewHeaderView =
+// =============================
+
+// The pane’s title band: close control, then the previewed document’s name.
+// Modelled on the diff pane’s header, but — like the divider above — drawn
+// with layer background colors instead of drawRect:.
+@interface MarkdownPreviewHeaderView : NSView
+@property (nonatomic) NSColor* backgroundColor;
+@property (nonatomic) NSColor* separatorColor;
+@property (nonatomic, readonly) NSTextField* titleField;
+@property (nonatomic, readonly) NSButton* closeButton;
+- (id)initWithFrame:(NSRect)aRect closeTarget:(id)aTarget closeAction:(SEL)anAction;
+@end
+
+@implementation MarkdownPreviewHeaderView
+{
+	CALayer* _separatorLayer;
+}
+
+- (id)initWithFrame:(NSRect)aRect closeTarget:(id)aTarget closeAction:(SEL)anAction
+{
+	if(self = [super initWithFrame:aRect])
+	{
+		self.wantsLayer = YES;
+		_separatorLayer = [CALayer layer];
+		[self.layer addSublayer:_separatorLayer];
+
+		_closeButton = [NSButton buttonWithImage:[NSImage imageWithSystemSymbolName:@"xmark.circle.fill" accessibilityDescription:@"Close Preview"] target:aTarget action:anAction];
+		_closeButton.bordered = NO;
+		_closeButton.toolTip  = @"Close preview";
+
+		_titleField = [[NSTextField alloc] initWithFrame:NSZeroRect];
+		_titleField.bordered        = NO;
+		_titleField.editable        = NO;
+		_titleField.selectable      = NO;
+		_titleField.bezeled         = NO;
+		_titleField.drawsBackground = NO;
+		_titleField.font            = [NSFont systemFontOfSize:[NSFont systemFontSizeForControlSize:NSControlSizeSmall]];
+		[[_titleField cell] setLineBreakMode:NSLineBreakByTruncatingMiddle]; // long names keep their extension visible, like the status-bar fields
+
+		[self addSubview:_closeButton];
+		[self addSubview:_titleField];
+
+		[self applyLayerColors];
+	}
+	return self;
+}
+
+- (void)setBackgroundColor:(NSColor*)aColor { _backgroundColor = aColor; [self applyLayerColors]; }
+- (void)setSeparatorColor:(NSColor*)aColor  { _separatorColor  = aColor; [self applyLayerColors]; }
+
+- (void)applyLayerColors
+{
+	[CATransaction begin];
+	[CATransaction setDisableActions:YES];
+	self.layer.backgroundColor = (self.backgroundColor ?: NSColor.textBackgroundColor).CGColor;
+	_separatorLayer.backgroundColor = (self.separatorColor ?: NSColor.separatorColor).CGColor;
+	[CATransaction commit];
+}
+
+- (void)layout
+{
+	[super layout];
+	NSRect const bounds = self.bounds;
+
+	[CATransaction begin];
+	[CATransaction setDisableActions:YES];
+	_separatorLayer.frame = CGRectMake(0, 0, NSWidth(bounds), 1); // hairline along the bottom, against the page
+	[CATransaction commit];
+
+	// close ⋅ title, with the diff pane header’s 8 pt edge margin and 10 pt
+	// group gap. The horizontal math uses alignment rects: a borderless
+	// image button still carries invisible frame padding, so frame-based
+	// gaps render wider than specified.
+	CGFloat const edgeMargin = 8, sectionGap = 10, buttonSize = 16;
+
+	NSRect const closeRect = NSMakeRect(edgeMargin, round((NSHeight(bounds) - buttonSize) / 2), buttonSize, buttonSize);
+	_closeButton.frame = [_closeButton frameForAlignmentRect:closeRect];
+
+	[_titleField sizeToFit];
+	CGFloat const x = NSMaxX(closeRect) + sectionGap;
+	CGFloat const titleHeight = NSHeight(_titleField.frame);
+	_titleField.frame = NSMakeRect(x, round((NSHeight(bounds) - titleHeight) / 2), std::max<CGFloat>(0, NSMaxX(bounds) - edgeMargin - x), titleHeight);
+}
+@end
+
+// =======================
+// = MarkdownPreviewView =
+// =======================
+
+@interface MarkdownPreviewView () <WKNavigationDelegate, WKScriptMessageHandler>
+- (void)bufferDidChange;
+@end
+
+// WKUserContentController retains its script message handlers; this weak
+// forwarder keeps the web view from retaining the preview view in a cycle.
+@interface MarkdownPreviewWeakMessageHandler : NSObject <WKScriptMessageHandler>
+@property (nonatomic, weak) id <WKScriptMessageHandler> target;
+@end
+
+@implementation MarkdownPreviewWeakMessageHandler
+- (void)userContentController:(WKUserContentController*)userContentController didReceiveScriptMessage:(WKScriptMessage*)message
+{
+	[self.target userContentController:userContentController didReceiveScriptMessage:message];
+}
+@end
+
+namespace
+{
+	struct preview_buffer_callback_t : ng::callback_t
+	{
+		preview_buffer_callback_t (MarkdownPreviewView* view) : _view(view) { }
+		void did_replace (size_t from, size_t to, char const* buf, size_t len) override { [_view bufferDidChange]; }
+	private:
+		__weak MarkdownPreviewView* _view;
+	};
+}
+
+// The static page loaded once per baseURL; all updates patch #content. CSS
+// falls back to prefers-color-scheme palettes unless the editor theme has
+// injected --tm-bg/--tm-fg. TMPreview.scrollToLine implements the one-way
+// editor → preview sync via cmark’s data-sourcepos attributes, and stands
+// down for a second whenever the user scrolls the preview themselves.
+static NSString* const kMarkdownPreviewShell =
+	@"<!DOCTYPE html><html><head><meta charset='utf-8'>"
+	 "<style>"
+	 ":root { color-scheme: light dark; --bg: #ffffff; --fg: #1f2328; --muted: #59636e; --border: #d1d9e0; --code-bg: rgba(129,139,152,0.15); }"
+	 "@media (prefers-color-scheme: dark) { :root { --bg: #1e1e1e; --fg: #e8e8e8; --muted: #9198a1; --border: #3d444d; } }"
+	 "html { background: var(--tm-bg, var(--bg)); }"
+	 "body { background: var(--tm-bg, var(--bg)); color: var(--tm-fg, var(--fg));"
+	 "  font: 15px/1.6 -apple-system, sans-serif; margin: 0; -webkit-text-size-adjust: 100%; }"
+	 "article { max-width: 44em; margin: 0 auto; padding: 1.5em 2em 4em; box-sizing: border-box; }"
+	 "h1, h2 { padding-bottom: 0.3em; border-bottom: 1px solid var(--border); }"
+	 "h1:first-child, h2:first-child, h3:first-child, p:first-child { margin-top: 0; }"
+	 "a { color: #4493f8; text-decoration: none; } a:hover { text-decoration: underline; }"
+	 "@media (prefers-color-scheme: light) { a { color: #0969da; } }"
+	 "code, pre { font: 0.9em/1.45 ui-monospace, Menlo, monospace; }"
+	 "code { background: var(--code-bg); border-radius: 4px; padding: 0.15em 0.3em; }"
+	 "pre { background: var(--code-bg); border-radius: 6px; padding: 1em; overflow-x: auto; }"
+	 "pre code { background: none; padding: 0; }"
+	 "blockquote { margin: 0; padding-left: 1em; border-left: 0.25em solid var(--border); color: var(--muted); }"
+	 "table { border-collapse: collapse; display: block; overflow-x: auto; }"
+	 "th, td { border: 1px solid var(--border); padding: 0.35em 0.8em; }"
+	 "img { max-width: 100%; }"
+	 "hr { border: none; border-top: 1px solid var(--border); }"
+	 "ul.contains-task-list { list-style: none; padding-left: 1em; }"
+	 "</style>"
+	 "<script>"
+	 "window.TMPreview = {"
+	 "  setContent: function(html) { document.getElementById('content').innerHTML = html; },"
+	 "  scrollToLine: function(line, atEnd) {"
+	 "    if(Date.now() < (window.__tmUserScrollUntil || 0)) return;"
+	 "    if(atEnd) { window.scrollTo(0, document.body.scrollHeight); return; }"
+	 "    if(line <= 1) { window.scrollTo(0, 0); return; }"
+	 "    var els = document.querySelectorAll('#content [data-sourcepos]');"
+	 "    for(var i = 0; i < els.length; ++i) {"
+	 "      if(parseInt(els[i].getAttribute('data-sourcepos'), 10) >= line) {"
+	 "        els[i].scrollIntoView({ behavior: 'auto', block: 'start' });"
+	 "        return;"
+	 "      }"
+	 "    }"
+	 "    window.scrollTo(0, document.body.scrollHeight);"
+	 "  }"
+	 "};"
+	 "window.addEventListener('wheel', function() { window.__tmUserScrollUntil = Date.now() + 1000; }, { passive: true });"
+	 "document.addEventListener('click', function(ev) {"
+	 "  window.__tmUserScrollUntil = Date.now() + 1000;" // clicking is interacting — hold off editor → preview sync
+	 "  if(!ev.target.closest || ev.target.closest('a')) return;" // links open in the browser instead
+	 "  var el = ev.target.closest('[data-sourcepos]');"
+	 "  if(el) webkit.messageHandlers.tmPreview.postMessage(el.getAttribute('data-sourcepos').split('-')[0]);" // start of range, “line:column”
+	 "});"
+	 "</script></head><body><article id='content'></article></body></html>";
+
+static NSString* JSONStringLiteral (NSString* aString)
+{
+	NSData* data = [NSJSONSerialization dataWithJSONObject:(aString ?: @"") options:NSJSONWritingFragmentsAllowed error:nil];
+	return [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+}
+
+static NSString* CSSColorString (NSColor* aColor)
+{
+	NSColor* color = [aColor colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+	if(!color)
+		return nil;
+	return [NSString stringWithFormat:@"rgba(%d, %d, %d, %.3f)", (int)round(255 * color.redComponent), (int)round(255 * color.greenComponent), (int)round(255 * color.blueComponent), color.alphaComponent];
+}
+
+@implementation MarkdownPreviewView
+{
+	WKWebView* _webView;
+	MarkdownPreviewHeaderView* _headerView;
+	BOOL _shellLoaded;
+	NSURL* _baseURL;
+	NSString* _pendingContent;
+
+	std::unique_ptr<preview_buffer_callback_t> _bufferCallback;
+	ng::buffer_t* _attachedBuffer;
+
+	NSTimer* _renderDebounceTimer;
+	NSTimer* _scrollSyncTimer;
+	NSUInteger _renderGeneration;
+	dispatch_queue_t _renderQueue;
+}
+
+- (id)initWithFrame:(NSRect)aRect
+{
+	if(self = [super initWithFrame:aRect])
+	{
+		_renderQueue = dispatch_queue_create("com.macromates.markdown-preview.render", DISPATCH_QUEUE_SERIAL);
+
+		// The layer background shows through the transparent web view until
+		// the shell’s first themed paint — this is what avoids the white flash.
+		self.wantsLayer = YES;
+		[self applyLayerBackground];
+
+		// The header outlives the web view: it is what the pane looks like
+		// while inactive, and it says which document the page belongs to.
+		_headerView = [[MarkdownPreviewHeaderView alloc] initWithFrame:NSZeroRect closeTarget:self closeAction:@selector(didClickClose:)];
+		[self addSubview:_headerView];
+		[self applyHeaderColors];
+		[self updateHeader];
+	}
+	return self;
+}
+
+// The header sits above the page; the web view takes what is left. Both
+// frames are set here rather than by autoresizing, so the two can never
+// overlap.
+- (void)layout
+{
+	[super layout];
+
+	NSRect headerRect, contentRect;
+	NSDivideRect(self.bounds, &headerRect, &contentRect, kMarkdownPreviewHeaderHeight, NSMaxYEdge);
+
+	_headerView.frame = headerRect;
+	_webView.frame    = contentRect;
+}
+
+- (NSRect)pageRect
+{
+	NSRect headerRect, contentRect;
+	NSDivideRect(self.bounds, &headerRect, &contentRect, kMarkdownPreviewHeaderHeight, NSMaxYEdge);
+	return contentRect;
+}
+
+- (void)didClickClose:(id)sender
+{
+	if(_closeHandler)
+		_closeHandler();
+}
+
+- (void)updateHeader
+{
+	_headerView.titleField.stringValue = _document.displayName ?: @"";
+	_headerView.titleField.toolTip     = _document.path ?: _document.displayName;
+	_headerView.needsLayout            = YES;
+}
+
+- (void)dealloc
+{
+	[self detachBuffer];
+	[_renderDebounceTimer invalidate];
+	[_scrollSyncTimer invalidate];
+}
+
+// =====================
+// = Partner text view =
+// =====================
+
+- (void)setTextView:(OakTextView*)aTextView
+{
+	if(_textView == aTextView)
+		return;
+
+	if(_textView)
+		[NSNotificationCenter.defaultCenter removeObserver:self name:NSViewBoundsDidChangeNotification object:[[_textView enclosingScrollView] contentView]];
+
+	if(_textView = aTextView)
+		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(textViewDidScroll:) name:NSViewBoundsDidChangeNotification object:[[_textView enclosingScrollView] contentView]];
+}
+
+// =============
+// = Lifecycle =
+// =============
+
+- (void)setActive:(BOOL)flag
+{
+	if(_active == flag)
+		return;
+	_active = flag;
+
+	if(_active)
+	{
+		[self createWebViewIfNeeded];
+		[self attachBuffer];
+		[self renderNow];
+		[self scheduleScrollSync];
+	}
+	else
+	{
+		[self detachBuffer];
+		[_renderDebounceTimer invalidate];
+		_renderDebounceTimer = nil;
+		[_scrollSyncTimer invalidate];
+		_scrollSyncTimer = nil;
+		++_renderGeneration; // orphan any in-flight render
+
+		[_webView.configuration.userContentController removeScriptMessageHandlerForName:@"tmPreview"];
+		[_webView removeFromSuperview];
+		_webView.navigationDelegate = nil;
+		_webView = nil;
+		_shellLoaded = NO;
+		_pendingContent = nil;
+	}
+}
+
+- (void)createWebViewIfNeeded
+{
+	if(_webView)
+		return;
+
+	WKWebViewConfiguration* config = [[WKWebViewConfiguration alloc] init];
+	// WebKit’s (always sandboxed) content process gets no file access from
+	// loadHTMLString:baseURL:, so relative images are served through the same
+	// tm-file scheme handler HTMLOutput uses.
+	[config setURLSchemeHandler:[OakFileURLSchemeHandler new] forURLScheme:@"tm-file"];
+
+	// Clicking an element jumps the editor to its data-sourcepos line.
+	MarkdownPreviewWeakMessageHandler* messageHandler = [MarkdownPreviewWeakMessageHandler new];
+	messageHandler.target = self;
+	[config.userContentController addScriptMessageHandler:messageHandler name:@"tmPreview"];
+
+	// Seed the theme CSS variables before the shell’s first paint — applying
+	// them from didFinishNavigation would flash the page’s fallback palette.
+	if(NSString* js = [self themeVariablesJS])
+		[config.userContentController addUserScript:[[WKUserScript alloc] initWithSource:js injectionTime:WKUserScriptInjectionTimeAtDocumentStart forMainFrameOnly:YES]];
+
+	_webView = [[WKWebView alloc] initWithFrame:[self pageRect] configuration:config];
+	_webView.autoresizingMask = NSViewNotSizable; // -layout owns the frame, so the header is never overlapped
+	_webView.navigationDelegate = self;
+
+	// Transparent until the page paints: the opaque white base WKWebView draws
+	// before first paint reads as a flash. The scroll view behind us carries
+	// the theme background. (KVC onto WebKit’s long-standing SPI.)
+	@try {
+		[_webView setValue:@NO forKey:@"drawsBackground"];
+	}
+	@catch(NSException* e) { }
+
+	[self addSubview:_webView];
+
+	[self loadShell];
+}
+
+- (void)loadShell
+{
+	if(!_webView)
+		return;
+	_shellLoaded = NO;
+	_baseURL = [self documentBaseURL];
+	[_webView loadHTMLString:kMarkdownPreviewShell baseURL:_baseURL];
+}
+
+- (NSURL*)documentBaseURL
+{
+	// The document’s directory, so relative image links resolve — via the
+	// tm-file scheme, since WebKit denies plain file access to HTML strings.
+	NSString* directory = _document.path ? [_document.path stringByDeletingLastPathComponent] : NSHomeDirectory();
+	NSURLComponents* components = [NSURLComponents new];
+	components.scheme = @"tm-file";
+	components.host   = @"";
+	components.path   = [directory stringByAppendingString:@"/"];
+	return components.URL;
+}
+
+// ============
+// = Document =
+// ============
+
+- (void)setDocument:(OakDocument*)aDocument
+{
+	if(_document == aDocument)
+		return;
+
+	if(_document)
+	{
+		[NSNotificationCenter.defaultCenter removeObserver:self name:OakDocumentContentDidChangeNotification object:_document];
+		[NSNotificationCenter.defaultCenter removeObserver:self name:OakDocumentDidSaveNotification object:_document];
+		[NSNotificationCenter.defaultCenter removeObserver:self name:OakDocumentWillCloseNotification object:_document];
+	}
+
+	[self detachBuffer];
+
+	if(_document = aDocument)
+	{
+		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(documentContentDidChange:) name:OakDocumentContentDidChangeNotification object:_document];
+		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(documentDidSave:) name:OakDocumentDidSaveNotification object:_document];
+		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(documentWillClose:) name:OakDocumentWillCloseNotification object:_document];
+	}
+
+	[self updateHeader];
+
+	if(_active)
+	{
+		// A different document usually means a different directory; reloading
+		// the shell is the only way to change baseURL and is rare enough.
+		if(![[self documentBaseURL] isEqual:_baseURL])
+				[self loadShell];
+		else	[self attachBufferAndRender];
+	}
+}
+
+// Re-attaches the buffer callback when the document (re)creates its buffer,
+// e.g. after being re-opened by a tab switch back to it.
+- (void)documentContentDidChange:(NSNotification*)aNotification
+{
+	if(!_active || !_document || !_document.isLoaded)
+		return;
+	if(_attachedBuffer == &[_document buffer])
+		return;
+	[self attachBufferAndRender];
+}
+
+// The path may have changed (Save As) — baseURL and the header name follow it.
+- (void)documentDidSave:(NSNotification*)aNotification
+{
+	[self updateHeader];
+	if(_active && ![[self documentBaseURL] isEqual:_baseURL])
+		[self loadShell];
+}
+
+// The document’s buffer is about to be deleted (last open reference closed,
+// e.g. the tab switched away or was closed). Detach the buffer callback but
+// keep the last render on screen until the pane is re-targeted.
+- (void)documentWillClose:(NSNotification*)aNotification
+{
+	[self detachBuffer];
+	[_renderDebounceTimer invalidate];
+	_renderDebounceTimer = nil;
+	++_renderGeneration; // orphan any in-flight render
+}
+
+- (void)attachBufferAndRender
+{
+	[self detachBuffer];
+	[self attachBuffer];
+	[self renderNow];
+}
+
+- (void)attachBuffer
+{
+	if(_attachedBuffer || !_document || !_document.isLoaded)
+		return;
+	_attachedBuffer = &[_document buffer];
+	_bufferCallback = std::make_unique<preview_buffer_callback_t>(self);
+	_attachedBuffer->add_callback(_bufferCallback.get());
+}
+
+- (void)detachBuffer
+{
+	if(_attachedBuffer && _bufferCallback)
+		_attachedBuffer->remove_callback(_bufferCallback.get());
+	_attachedBuffer = nullptr;
+	_bufferCallback.reset();
+}
+
+// ===================
+// = Update pipeline =
+// ===================
+
+- (void)bufferDidChange
+{
+	if(!_active)
+		return;
+
+	[_renderDebounceTimer invalidate];
+	__weak MarkdownPreviewView* weakSelf = self;
+	_renderDebounceTimer = [NSTimer scheduledTimerWithTimeInterval:kRenderDebounceInterval repeats:NO block:^(NSTimer*){
+		[weakSelf renderNow];
+	}];
+}
+
+- (void)renderNow
+{
+	[_renderDebounceTimer invalidate];
+	_renderDebounceTimer = nil;
+
+	if(!_active)
+		return;
+
+	if(!_attachedBuffer) // no buffer (yet): keep whatever is on screen — the
+		return;           // content-did-change notification re-attaches and renders
+
+	std::string const text = _attachedBuffer->substr(0, _attachedBuffer->size());
+	NSUInteger const generation = ++_renderGeneration;
+
+	__weak MarkdownPreviewView* weakSelf = self;
+	dispatch_async(_renderQueue, ^{
+		NSString* html = to_ns(markdown::to_html(text));
+		dispatch_async(dispatch_get_main_queue(), ^{
+			MarkdownPreviewView* strongSelf = weakSelf;
+			if(strongSelf && generation == strongSelf->_renderGeneration)
+				[strongSelf applyContent:html];
+		});
+	});
+}
+
+- (void)applyContent:(NSString*)html
+{
+	if(!_shellLoaded)
+	{
+		_pendingContent = html;
+		return;
+	}
+	[_webView evaluateJavaScript:[NSString stringWithFormat:@"TMPreview.setContent(%@);", JSONStringLiteral(html)] completionHandler:nil];
+	[self scheduleScrollSync]; // content height changed — re-anchor (e.g. keep the bottom pinned while typing at the end)
+}
+
+// ===============
+// = Scroll sync =
+// ===============
+
+- (void)textViewDidScroll:(NSNotification*)aNotification
+{
+	if(_active)
+		[self scheduleScrollSync];
+}
+
+- (void)scheduleScrollSync
+{
+	if(_scrollSyncTimer)
+		return; // trailing-edge throttle: one sync per interval, using fresh state
+
+	__weak MarkdownPreviewView* weakSelf = self;
+	_scrollSyncTimer = [NSTimer scheduledTimerWithTimeInterval:kScrollSyncThrottleInterval repeats:NO block:^(NSTimer*){
+		[weakSelf performScrollSync];
+	}];
+}
+
+- (void)performScrollSync
+{
+	[_scrollSyncTimer invalidate];
+	_scrollSyncTimer = nil;
+
+	if(!_active || !_shellLoaded || !_textView)
+		return;
+
+	NSClipView* textClipView = [[_textView enclosingScrollView] contentView];
+	GVLineRecord const record = [_textView lineRecordForPosition:NSMinY(textClipView.bounds)];
+	if(record.lineNumber == NSNotFound)
+		return;
+
+	// When the editor shows the end of the document, top-aligning the first
+	// visible line would leave the rendered tail below the preview’s fold —
+	// pin the preview to its bottom instead, so typing at the end stays live.
+	GVLineRecord const lastRecord = [_textView lineRecordForPosition:NSMaxY(textClipView.bounds)];
+	BOOL const atEnd = _attachedBuffer && lastRecord.lineNumber != NSNotFound && lastRecord.lineNumber + 1 >= _attachedBuffer->lines();
+
+	[_webView evaluateJavaScript:[NSString stringWithFormat:@"TMPreview.scrollToLine(%lu, %s);", record.lineNumber + 1, atEnd ? "true" : "false"] completionHandler:nil];
+}
+
+// =========================================
+// = Click to jump (preview → editor, once) =
+// =========================================
+
+- (void)userContentController:(WKUserContentController*)userContentController didReceiveScriptMessage:(WKScriptMessage*)message
+{
+	if(![message.name isEqualToString:@"tmPreview"] || ![message.body isKindOfClass:[NSString class]])
+		return;
+	if(!_textView) // the text view shows a different document — never jump the wrong buffer
+		return;
+
+	NSString* const position = message.body;   // sourcepos start, “line:column”, 1-based
+	NSInteger const line     = [position integerValue] - 1;
+	if(line < 0)
+		return;
+
+	// Deliberate navigation: place the caret at the clicked element’s source
+	// position (selectionString shares the sourcepos format) and hand focus
+	// back to the editor so typing continues there.
+	_textView.selectionString = position;
+	[self jumpEditorToLine:line];
+	[self.window makeFirstResponder:_textView];
+}
+
+// Center the clicked element’s source line in the editor — same math as the
+// minimap’s click-to-jump. Deliberate clicks only; there is no continuous
+// preview → editor scroll sync.
+- (void)jumpEditorToLine:(NSUInteger)line
+{
+	if(!_textView)
+		return;
+
+	GVLineRecord const record = [_textView lineFragmentForLine:line column:0];
+	if(record.lineNumber == NSNotFound)
+		return;
+
+	NSScrollView* scrollView    = [_textView enclosingScrollView];
+	NSClipView* clipView        = scrollView.contentView;
+	CGFloat const visibleHeight = NSHeight(clipView.bounds);
+	CGFloat const maxScroll     = std::max<CGFloat>(0, NSHeight(_textView.frame) - visibleHeight);
+	CGFloat const targetY       = std::clamp<CGFloat>((record.firstY + record.lastY - visibleHeight) / 2, 0, maxScroll);
+
+	[clipView scrollToPoint:NSMakePoint(NSMinX(clipView.bounds), round(targetY))];
+	[scrollView reflectScrolledClipView:clipView];
+}
+
+// =========
+// = Theme =
+// =========
+
+- (void)setThemeBackgroundColor:(NSColor*)aColor
+{
+	_themeBackgroundColor = aColor;
+	[self applyLayerBackground];
+	[self applyHeaderColors];
+	[self applyThemeVariables];
+}
+
+// The header is chrome, not page: it is painted by us, from the same theme
+// colors the page gets as CSS variables.
+- (void)applyHeaderColors
+{
+	NSColor* background = _themeBackgroundColor ?: NSColor.textBackgroundColor;
+	NSColor* foreground = _themeForegroundColor ?: NSColor.textColor;
+
+	_headerView.backgroundColor              = background;
+	_headerView.separatorColor               = BlendedColor(foreground, background, 0.85);
+	_headerView.titleField.textColor         = BlendedColor(foreground, background, 0.25);
+	_headerView.closeButton.contentTintColor = BlendedColor(foreground, background, 0.35);
+}
+
+- (void)applyLayerBackground
+{
+	[CATransaction begin];
+	[CATransaction setDisableActions:YES];
+	self.layer.backgroundColor = (_themeBackgroundColor ?: NSColor.textBackgroundColor).CGColor;
+	[CATransaction commit];
+}
+
+- (void)setThemeForegroundColor:(NSColor*)aColor
+{
+	_themeForegroundColor = aColor;
+	[self applyHeaderColors];
+	[self applyThemeVariables];
+}
+
+- (NSString*)themeVariablesJS
+{
+	NSMutableString* js = [NSMutableString string];
+	if(NSString* background = CSSColorString(_themeBackgroundColor))
+		[js appendFormat:@"document.documentElement.style.setProperty('--tm-bg', '%@');", background];
+	if(NSString* foreground = CSSColorString(_themeForegroundColor))
+		[js appendFormat:@"document.documentElement.style.setProperty('--tm-fg', '%@');", foreground];
+	return js.length ? js : nil;
+}
+
+- (void)applyThemeVariables
+{
+	if(!_shellLoaded)
+		return;
+	if(NSString* js = [self themeVariablesJS])
+		[_webView evaluateJavaScript:js completionHandler:nil];
+}
+
+// ==========================
+// = WKNavigationDelegate   =
+// ==========================
+
+- (void)webView:(WKWebView*)webView didFinishNavigation:(WKNavigation*)navigation
+{
+	_shellLoaded = YES;
+	[self applyThemeVariables];
+
+	if(_pendingContent)
+	{
+		NSString* content = _pendingContent;
+		_pendingContent = nil;
+		[self applyContent:content];
+	}
+	else if(_active && !_attachedBuffer)
+	{
+		[self attachBufferAndRender];
+	}
+	else if(_active)
+	{
+		[self renderNow];
+	}
+	[self scheduleScrollSync];
+}
+
+- (void)webView:(WKWebView*)webView decidePolicyForNavigationAction:(WKNavigationAction*)navigationAction decisionHandler:(void(^)(WKNavigationActionPolicy))decisionHandler
+{
+	// The shell page never navigates; clicked links open in the default
+	// browser so the preview (and its scroll position) stays put.
+	if(navigationAction.navigationType == WKNavigationTypeLinkActivated)
+	{
+		if(NSURL* url = navigationAction.request.URL)
+		{
+			if([url.scheme isEqualToString:@"tm-file"]) // relative link resolved against our baseURL
+				url = [NSURL fileURLWithPath:url.path];
+			[NSWorkspace.sharedWorkspace openURL:url];
+		}
+		return decisionHandler(WKNavigationActionPolicyCancel);
+	}
+	decisionHandler(WKNavigationActionPolicyAllow);
+}
+@end

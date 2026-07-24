@@ -24,6 +24,9 @@
 @property (nonatomic) BOOL                                       terminalVisible;
 @property (nonatomic) NSSize                                     terminalSize;
 
+@property (nonatomic) BOOL                                       markdownPreviewVisible;
+@property (nonatomic) NSSize                                     markdownPreviewSize;
+
 + (BOOL)restoreSession;
 + (void)disableSessionSave;
 + (void)enableSessionSave;
@@ -49,6 +52,7 @@
 - (void)performBundleItem:(bundles::item_ptr)anItem;
 - (IBAction)toggleHTMLOutput:(id)sender;
 - (IBAction)toggleTerminal:(id)sender;
+- (IBAction)toggleMarkdownPreview:(id)sender;
 
 - (IBAction)moveFocus:(id)sender;
 

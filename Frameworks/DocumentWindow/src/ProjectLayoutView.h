@@ -5,6 +5,7 @@
 @property (nonatomic) NSView* fileBrowserView;
 @property (nonatomic) NSView* htmlOutputView;
 @property (nonatomic) NSView* terminalView;
+@property (nonatomic) NSView* markdownPreviewView;
 
 @property (nonatomic) CGFloat fileBrowserWidth;
 @property (nonatomic) BOOL fileBrowserOnRight;
@@ -14,4 +15,7 @@
 
 @property (nonatomic) NSSize terminalSize;
 @property (nonatomic) NSString* terminalPlacement; // left / right / bottom
+
+@property (nonatomic) NSSize markdownPreviewSize;
+@property (nonatomic) NSString* markdownPreviewPlacement; // right / bottom
 @end
