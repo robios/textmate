@@ -27,6 +27,7 @@ extern NSString* const LSPServerStatusDidChangeNotification;
 - (BOOL)serverSupportsRangeFormattingForDocument:(OakDocument*)document;
 - (BOOL)serverSupportsRenameForDocument:(OakDocument*)document;
 - (NSArray<NSDictionary*>*)diagnosticsForDocument:(OakDocument*)document atLine:(NSUInteger)line character:(NSUInteger)character endLine:(NSUInteger)endLine endCharacter:(NSUInteger)endCharacter;
+- (NSDictionary<NSString*, NSArray<NSDictionary*>*>*)allDiagnosticsByURI;
 - (void)requestPrepareRenameForDocument:(OakDocument*)document line:(NSUInteger)line character:(NSUInteger)character completion:(void(^)(NSDictionary*))callback;
 - (void)requestRenameForDocument:(OakDocument*)document line:(NSUInteger)line character:(NSUInteger)character newName:(NSString*)newName completion:(void(^)(NSDictionary*))callback;
 - (BOOL)serverSupportsCodeActionsForDocument:(OakDocument*)document;

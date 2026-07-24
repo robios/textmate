@@ -845,6 +845,13 @@ static std::string detectWorkspaceRoot (std::string const& filePath)
 	return result;
 }
 
+// Read-only access to the diagnostics cache (used by AgentBridge’s getDiagnostics).
+// Main thread only: the cache is filled from handleMessage, which runs on the main queue.
+- (NSDictionary<NSString*, NSArray<NSDictionary*>*>*)allDiagnosticsByURI
+{
+	return [_diagnosticsByURI copy];
+}
+
 #pragma mark - LSPClientDelegate
 
 - (void)lspClient:(LSPClient*)client didReceiveApplyEditRequest:(NSDictionary*)workspaceEdit requestId:(id)requestId

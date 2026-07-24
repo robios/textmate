@@ -5,6 +5,7 @@
 #import "AboutWindowController.h"
 #import "TMPlugInController.h"
 #import "RMateServer.h"
+#import <AgentBridge/AgentBridge.h>
 #import <BundleEditor/BundleEditor.h>
 #import <BundlesManager/BundlesManager.h>
 #import <DocumentWindow/DocumentWindowController.h>
@@ -646,6 +647,7 @@ BOOL HasDocumentWindow (NSArray* windows)
 	[OakCommitWindowServer sharedInstance]; // Setup server
 
 	[LSPBridge setup];
+	[AgentBridge setup];
 
 	self.didFinishLaunching = YES;
 }

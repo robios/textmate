@@ -20,6 +20,7 @@
 #import <FileBrowser/FileBrowserViewController.h>
 #import <Terminal/TerminalPaneController.h>
 #import <Terminal/TerminalGridView.h>
+#import <AgentBridge/AgentBridge.h>
 #import <OakCommand/OakCommand.h>
 #import <HTMLOutputWindow/HTMLOutputWindow.h>
 #import <OakFilterList/FileChooser.h>
@@ -2104,6 +2105,16 @@ static NSArray* const kObservedKeyPaths = @[ @"arrayController.arrangedObjects.p
 		if(path != env.end())
 			path->second += ":" + path::parent(mate->second);
 	}
+
+	// Claude Code IDE integration: a CLI launched inside the terminal pane
+	// auto-connects to the app-global agent bridge server via these
+	// variables (external terminals discover it through the lock file).
+	if(NSUInteger agentBridgePort = [AgentBridge serverPort])
+	{
+		env["CLAUDE_CODE_SSE_PORT"]   = std::to_string(agentBridgePort);
+		env["ENABLE_IDE_INTEGRATION"] = "true";
+	}
+
 	return env;
 }
 
