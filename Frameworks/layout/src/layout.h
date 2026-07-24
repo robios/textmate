@@ -75,6 +75,11 @@ namespace ng
 		CGFloat width () const;
 		CGFloat height () const;
 
+		// Height of an unwrapped line. Public because views drawn beside
+		// the buffer (the diff pane's rows) have to match it exactly, and
+		// deriving it from the font a second time does not reproduce it.
+		CGFloat default_line_height (CGFloat minAscent = 0, CGFloat minDescent = 0, CGFloat minLeading = 0) const;
+
 		void begin_refresh_cycle (ng::ranges_t const& selection, ng::ranges_t const& highlightRanges = ng::ranges_t());
 		std::vector<CGRect> end_refresh_cycle (ng::ranges_t const& selection, CGRect visibleRect, ng::ranges_t const& highlightRanges = ng::ranges_t());
 		void did_update_scopes (size_t from, size_t to);
@@ -141,7 +146,6 @@ namespace ng
 		CGFloat content_height () const        { return ceil(std::max(_rows.aggregated()._height, _viewport_size.height - _margin.top - _margin.bottom)); }
 
 		row_tree_t::iterator row_for_offset (size_t i) const;
-		CGFloat default_line_height (CGFloat minAscent = 0, CGFloat minDescent = 0, CGFloat minLeading = 0) const;
 		CGRect rect_for (row_tree_t::iterator rowIter) const;
 		CGRect full_width (CGRect const& rect) const;
 		CGRect full_height (CGRect const& rect) const;

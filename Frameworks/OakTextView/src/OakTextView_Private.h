@@ -211,6 +211,7 @@ struct document_view_t : ng::buffer_api_t
 	// ==========
 
 	theme_ptr theme () const { return _layout->theme(); }
+	CGFloat line_height () const { return _layout->default_line_height(); }
 	void set_theme (theme_ptr const& theme) { _layout->set_theme(theme); }
 	void set_wrapping (bool softWrap, size_t wrapColumn) { _layout->set_wrapping(softWrap, wrapColumn); }
 	void set_scroll_past_end (bool scrollPastEnd) { _layout->set_scroll_past_end(scrollPastEnd); }
@@ -367,8 +368,6 @@ private:
 
 	links_ptr _links;
 
-	NSTimer* _scmDiffGutterTimer;
-	uint64_t _scmDiffGutterGeneration;
 }
 
 // Core methods used by categories

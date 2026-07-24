@@ -23,9 +23,17 @@ typedef NS_ENUM(NSUInteger, GutterViewRowState) {
 	GutterViewRowStateRollover
 };
 
-@protocol GutterViewColumnDataSource
+@protocol GutterViewColumnDataSource <NSObject> // for -respondsToSelector:, which the optional draw hook below needs
 - (NSImage*)imageForLine:(NSUInteger)aLine inColumnWithIdentifier:(id)columnIdentifier state:(GutterViewRowState)rowState;
 - (CGFloat)widthForColumnWithIdentifier:(id)columnIdentifier;
+@optional
+// Draw the column's cell for this line, instead of the image path;
+// return NO to fall back to -imageForLine:… . Images are centered on the
+// line's cap height and tinted with the gutter's icon color, which suits
+// an icon but not a mark that has to span the row and carry a color of
+// its own. This is called for EVERY fragment of a soft-wrapped line, so
+// such a mark stays continuous down a wrapped line.
+- (BOOL)drawColumnWithIdentifier:(id)columnIdentifier inRect:(NSRect)aRect forLine:(NSUInteger)aLine;
 @end
 
 @protocol GutterViewColumnDelegate

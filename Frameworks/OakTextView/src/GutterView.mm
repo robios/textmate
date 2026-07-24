@@ -344,6 +344,10 @@ static void DrawText (std::string const& text, CGRect const& rect, CGFloat basel
 				NSColor* textColor = selectedRow ? self.selectionForegroundColor : self.foregroundColor;
 				DrawText(record.softlineOffset == 0 ? std::to_string(record.lineNumber + 1) : "·", columnRect, NSMinY(columnRect) + record.baseline, self.lineNumberFont, textColor);
 			}
+			else if([dataSource.datasource respondsToSelector:@selector(drawColumnWithIdentifier:inRect:forLine:)] && [dataSource.datasource drawColumnWithIdentifier:[NSString stringWithCxxString:dataSource.identifier] inRect:columnRect forLine:record.lineNumber])
+			{
+				// Drawn by the data source, for every wrapped fragment.
+			}
 			else if(record.softlineOffset == 0)
 			{
 				BOOL isHoveringRect = NSMouseInRect(mouseHoveringAtPoint, columnRect, [self isFlipped]);
@@ -436,7 +440,10 @@ static void DrawText (std::string const& text, CGRect const& rect, CGFloat basel
 	{
 		for(auto const& dataSource : [self visibleColumnDataSources])
 		{
-			if(dataSource.identifier == [GVLineNumbersColumnIdentifier UTF8String])
+			// Line numbers are not clickable, and neither is a column that
+			// registered no delegate — it is pure indication, so a click on
+			// it belongs to the text view rather than being swallowed here.
+			if(dataSource.identifier == [GVLineNumbersColumnIdentifier UTF8String] || !dataSource.delegate)
 				continue;
 
 			NSRect columnRect = NSMakeRect(dataSource.x0, record.firstY, dataSource.width, record.lastY - record.firstY);

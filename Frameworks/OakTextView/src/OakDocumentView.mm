@@ -4,6 +4,8 @@
 #import "MinimapView.h"
 #import "MarkdownPreviewView.h"
 #import "DiffPaneView.h"
+#import "BufferDiffService.h"
+#import "diff_mark_palette.h"
 #import "OakSwiftUI-Swift.h"
 #import <lsp/LSPClient.h>
 #import <lsp/LSPManager.h>
@@ -33,6 +35,15 @@
 
 static NSString* const kBookmarksColumnIdentifier = @"bookmarks";
 static NSString* const kFoldingsColumnIdentifier  = @"foldings";
+static NSString* const kDiffMarksColumnIdentifier = @"diffMarks";
+
+// The change bars sit between the last icon column and the text, the
+// placement every editor with this feature uses: the mark belongs to the
+// line of code, so it reads as attached to it rather than to the gutter's
+// controls.
+static CGFloat const kDiffMarksColumnWidth = 4;
+static CGFloat const kDiffMarksBarWidth    = 3;
+static CGFloat const kDiffMarksTickHeight  = 2;
 
 // On the editor’s own background the minimap reads as empty margin, so shift
 // it the way the gutter goes — lighter on dark themes, darker on light ones —
@@ -56,6 +67,14 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 	return [NSColor colorWithSRGBRed:tint(srgb.redComponent) green:tint(srgb.greenComponent) blue:tint(srgb.blueComponent) alpha:srgb.alphaComponent];
 }
 
+// The diff marks the buffer-diff service maintains. Drawn as a dedicated
+// column, so they must not ALSO come out of the bookmark column's generic
+// “mark type name is an image name” path.
+static BOOL IsDiffMarkType (NSString* type)
+{
+	return [type hasPrefix:@"diff."];
+}
+
 @interface OakDocumentView () <NSAccessibilityGroup, GutterViewDelegate, GutterViewColumnDataSource, GutterViewColumnDelegate, OTVStatusBarDelegate>
 {
 	NSScrollView* gutterScrollView;
@@ -74,6 +93,11 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 	CGFloat diffPaneWidth;
 	BOOL showDiffPane;
 
+	BufferDiffService* diffService;
+	NSString* lastDiffRepoRoot; // repo root of the most recent snapshot
+	NSString* reviewBaseRef;     // window-level review base; nil = HEAD, reset on branch switch, not persisted
+	NSString* reviewBaseRepoRoot; // the repository it was picked in — a sha means nothing outside it
+
 	NSMutableArray* topAuxiliaryViews;
 	NSMutableArray* bottomAuxiliaryViews;
 
@@ -82,6 +106,12 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 	NSUInteger _cursorLine;
 	BOOL _cursorLineHasActions;
 	NSUInteger _probeGeneration;
+
+	// Change-bar colors, resolved from the theme in -updateStyle so the
+	// column's drawing does no color math per row.
+	NSColor* diffAddedColor;
+	NSColor* diffModifiedColor;
+	NSColor* diffDeletedColor;
 }
 @property (nonatomic, readonly) OTVStatusBar* statusBar;
 @property (nonatomic) SymbolChooser* symbolChooser;
@@ -115,6 +145,7 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 		gutterView.delegate    = self;
 		[gutterView insertColumnWithIdentifier:kBookmarksColumnIdentifier atPosition:0 dataSource:self delegate:self];
 		[gutterView insertColumnWithIdentifier:kFoldingsColumnIdentifier atPosition:2 dataSource:self delegate:self];
+		[gutterView insertColumnWithIdentifier:kDiffMarksColumnIdentifier atPosition:3 dataSource:self delegate:nil]; // no delegate: the bars are indication, not a control
 		if([NSUserDefaults.standardUserDefaults boolForKey:@"DocumentView Disable Line Numbers"])
 			[gutterView setVisibility:NO forColumnWithIdentifier:GVLineNumbersColumnIdentifier];
 		[gutterView setTranslatesAutoresizingMaskIntoConstraints:NO];
@@ -145,6 +176,17 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 		// The diff pane materializes lazily; only its width persists.
 		diffPaneWidth = [NSUserDefaults.standardUserDefaults doubleForKey:@"DocumentView Diff Pane Width"];
 
+		// The buffer-diff service runs regardless of the pane: it also
+		// maintains the diff.* document marks the minimap renders.
+		diffService = [BufferDiffService new];
+		__weak OakDocumentView* weakSelfForDiff = self;
+		diffService.snapshotHandler = ^(BufferDiffSnapshot* snapshot){
+			[weakSelfForDiff takeDiffSnapshot:snapshot];
+		};
+		diffService.headMovedHandler = ^(NSString* oldHead, NSString* newHead, BOOL isDescendant){
+			[weakSelfForDiff repoHeadMovedFrom:oldHead to:newHead isDescendant:isDescendant];
+		};
+
 		_statusBar = [[OTVStatusBar alloc] initWithFrame:NSZeroRect];
 		_statusBar.delegate = self;
 		_statusBar.target = self;
@@ -157,6 +199,9 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 		self.observedKeys = @[ @"selectionString", @"symbol", @"recordingMacro", @"themeUUID" ];
 		for(NSString* keyPath in self.observedKeys)
 			[_textView addObserver:self forKeyPath:keyPath options:NSKeyValueObservingOptionInitial context:NULL];
+
+		[self updateDiffMarksColumnVisibility];
+		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(userDefaultsDidChange:) name:NSUserDefaultsDidChangeNotification object:nil];
 
 		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(lspDiagnosticsDidChange:) name:LSPDiagnosticsDidChangeNotification object:nil];
 		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(lspServerStatusDidChange:) name:LSPServerStatusDidChangeNotification object:nil];
@@ -300,7 +345,9 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 	// The diff pane renders with the editor font, which is baked into the
 	// layout’s theme — every font change (Font panel, ⌘+/⌘−) and every theme
 	// change funnels through here, so this keeps the pane in sync with both.
-	diffPaneView.theme = _textView.theme;
+	diffPaneView.theme            = _textView.theme;
+	diffPaneView.lineNumberFont   = gutterView.lineNumberFont;
+	diffPaneView.editorLineHeight = _textView.lineHeight;
 }
 
 - (IBAction)makeTextLarger:(id)sender
@@ -348,6 +395,8 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 
 		text::selection_t const sel(to_s(str ?: @"1"));
 		minimapView.caretLine = sel.empty() ? NSNotFound : sel.last().to.line;
+		if(showDiffPane)
+			diffPaneView.caretLine = sel.empty() ? 1 : sel.last().to.line + 1; // highlights the card the caret is in
 	}
 	else if([aKeyPath isEqualToString:@"symbol"])
 	{
@@ -417,6 +466,7 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 	[_textView setDocument:self.document];
 	[minimapView setDocument:self.document];
 	[diffPaneView setDocument:self.document]; // the pane follows the active tab
+	[diffService setDocument:self.document];
 	[self updateDiffPaneVisibility];
 	[LSPManager.sharedManager documentDidOpen:aDocument];
 	[[CopilotManager sharedManager] documentDidOpen:aDocument];
@@ -469,6 +519,24 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 
 		gutterDividerView.activeBackgroundColor = [NSColor colorWithCGColor:styles.divider];
 
+		// The change bars are drawn on the gutter's own background, so its
+		// brightness — not the editor's — picks the palette variant.
+		CGFloat gutterBrightness = 0.5;
+		if(NSColor* background = [gutterView.backgroundColor colorUsingColorSpace:NSColorSpace.genericRGBColorSpace])
+			gutterBrightness = background.brightnessComponent;
+		BOOL const isDarkGutter = gutterBrightness <= 0.5;
+
+		auto paletteColor = [](diff_mark_palette::rgb_t rgb){ return [NSColor colorWithSRGBRed:rgb.red green:rgb.green blue:rgb.blue alpha:1]; };
+		diffAddedColor    = paletteColor(diff_mark_palette::added(isDarkGutter));
+		diffModifiedColor = paletteColor(diff_mark_palette::modified(isDarkGutter));
+		diffDeletedColor  = paletteColor(diff_mark_palette::deleted(isDarkGutter));
+
+		// The diff pane draws its own two line-number columns; give it the
+		// gutter's palette so they match the one beside the buffer.
+		diffPaneView.gutterForegroundColor = gutterView.foregroundColor;
+		diffPaneView.gutterBackgroundColor = gutterView.backgroundColor;
+		diffPaneView.gutterDividerColor    = gutterDividerView.activeBackgroundColor;
+
 		minimapView.backgroundColor       = OakTintedMinimapBackground([NSColor colorWithCGColor:theme->background(to_s(self.document.fileType))], theme->is_dark());
 		minimapView.caretColor            = [NSColor colorWithCGColor:theme->styles_for_scope(to_s(self.document.fileType)).caret()];
 		minimapView.theme                 = theme;
@@ -507,11 +575,102 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 // = Diff pane =
 // =============
 
-// The pane host (scroll-view wrapper, divider, persisted width, theme) is
-// kept for the git-native review pane — see AI_COMPANION_GIT_NATIVE_DESIGN.md
-// phase B, which drives DiffPaneView from buffer-vs-review-base instead of
-// the removed agent proposal sessions. Nothing shows the pane yet: the
-// toggle, the menu item and the content source arrive with that phase.
+// The git-native review pane: lists every hunk of the document from the
+// buffer-vs-review-base snapshot the BufferDiffService publishes.
+- (IBAction)toggleDiffPane:(id)sender
+{
+	showDiffPane = !showDiffPane;
+	[self updateDiffPaneVisibility];
+	[self updateDiffMarksColumnVisibility]; // the “only while the pane is open” setting
+}
+
+// The gutter's change bars follow a three-way preference; the minimap and
+// the pane are unaffected, since this is about how loud the indication in
+// the buffer itself should be.
+- (void)updateDiffMarksColumnVisibility
+{
+	NSString* const mode = [NSUserDefaults.standardUserDefaults stringForKey:kUserDefaultsDiffMarksVisibilityKey];
+
+	BOOL visible = YES;
+	if([mode isEqualToString:kDiffMarksVisibilityNever])
+		visible = NO;
+	else if([mode isEqualToString:kDiffMarksVisibilityWithPane])
+		visible = showDiffPane;
+
+	if([gutterView visibilityForColumnWithIdentifier:kDiffMarksColumnIdentifier] == visible)
+		return;
+
+	[gutterView setVisibility:visible forColumnWithIdentifier:kDiffMarksColumnIdentifier];
+	[gutterView setNeedsDisplay:YES]; // -setVisibility: resizes but does not redraw
+}
+
+- (void)userDefaultsDidChange:(NSNotification*)aNotification
+{
+	[self updateDiffMarksColumnVisibility];
+}
+
+- (void)takeDiffSnapshot:(BufferDiffSnapshot*)snapshot
+{
+	if(snapshot.repoRoot.length)
+		lastDiffRepoRoot = snapshot.repoRoot;
+
+	// Drop the review base once the window is actually looking at a
+	// different repository — the service has already fallen back to HEAD
+	// for it, and leaving the old ref behind would revive it the moment a
+	// tab from the original repository came back, with the selector still
+	// showing HEAD.
+	//
+	// Keyed on the repository, not on the fallback having happened:
+	// closing a tab or glancing at an untitled scratch buffer also
+	// delivers a HEAD snapshot, and those must not throw away a base the
+	// user picked for a repository they are still in.
+	if(reviewBaseRef && snapshot.repoRoot.length && ![snapshot.repoRoot isEqualToString:reviewBaseRepoRoot])
+	{
+		reviewBaseRef      = nil;
+		reviewBaseRepoRoot = nil;
+		[diffService setBaseRef:nil forRepoRoot:nil];
+	}
+
+	[diffPaneView takeSnapshot:snapshot];
+}
+
+- (void)repoHeadMovedFrom:(NSString*)oldHead to:(NSString*)newHead isDescendant:(BOOL)isDescendant
+{
+	if(isDescendant)
+	{
+		// A commit landed on top of the old HEAD (the agent or the user
+		// committed): offer to review what just landed. Never changes the
+		// review base on its own.
+		if(diffPaneView && showDiffPane)
+		{
+			__weak OakDocumentView* weakSelf = self;
+			NSString* message = [NSString stringWithFormat:@"HEAD moved — review %@…%@", [oldHead substringToIndex:MIN((NSUInteger)10, oldHead.length)], [newHead substringToIndex:MIN((NSUInteger)10, newHead.length)]];
+			[diffPaneView showBannerWithMessage:message actionTitle:@"Review" handler:^{
+				[weakSelf takeReviewBaseFrom:oldHead];
+			}];
+		}
+	}
+	else
+	{
+		// Branch switch, reset or rebase: cross-branch diffs are noise —
+		// reset the review base to HEAD and at most note it passively.
+		BOOL const hadOlderBase = reviewBaseRef != nil;
+		[self takeReviewBaseFrom:nil];
+		if(diffPaneView && showDiffPane && hadOlderBase)
+			[diffPaneView showBannerWithMessage:@"HEAD changed branches — review base reset to HEAD" actionTitle:nil handler:nil];
+	}
+}
+
+- (void)takeReviewBaseFrom:(NSString*)ref
+{
+	reviewBaseRef     = [ref copy];
+	reviewBaseRepoRoot = ref ? [lastDiffRepoRoot copy] : nil;
+	[diffService setBaseRef:reviewBaseRef forRepoRoot:reviewBaseRepoRoot];
+}
+
+- (IBAction)selectNextDiffHunk:(id)sender     { [diffPaneView selectNextHunk]; }
+- (IBAction)selectPreviousDiffHunk:(id)sender { [diffPaneView selectPreviousHunk]; }
+
 - (void)updateDiffPaneVisibility
 {
 	BOOL const show = showDiffPane;
@@ -527,6 +686,12 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 		__weak OakDocumentView* weakSelf = self;
 		diffPaneView.closeHandler = ^{
 			[weakSelf hideDiffPane];
+		};
+		diffPaneView.moveCaretHandler = ^(NSUInteger line){
+			[weakSelf moveCaretToLine:line];
+		};
+		diffPaneView.selectBaseRefHandler = ^(NSString* ref){
+			[weakSelf takeReviewBaseFrom:ref];
 		};
 
 		// Scroller-less scroll view wrapper, mirroring the gutter and minimap:
@@ -559,6 +724,25 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 		[self setNeedsUpdateConstraints:YES];
 	}
 	diffPaneView.active = show;
+
+	if(show)
+	{
+		[self pushCaretLineToDiffPane];
+		[diffService updateNow]; // the pane needs a snapshot right away
+	}
+}
+
+- (void)moveCaretToLine:(NSUInteger)line
+{
+	_textView.selectionString = [NSString stringWithFormat:@"%lu", (unsigned long)line];
+	[_textView centerSelectionInVisibleArea:self];
+}
+
+- (void)pushCaretLineToDiffPane
+{
+	NSString* str = _textView.selectionString;
+	text::selection_t const sel(to_s(str ?: @"1"));
+	diffPaneView.caretLine = sel.empty() ? 1 : sel.last().to.line + 1;
 }
 
 - (void)hideDiffPane
@@ -581,6 +765,12 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 		[aMenuItem setTitle:[gutterView visibilityForColumnWithIdentifier:GVLineNumbersColumnIdentifier] ? @"Hide Line Numbers" : @"Show Line Numbers"];
 	else if([aMenuItem action] == @selector(toggleMinimap:))
 		[aMenuItem setTitle:minimapScrollView.hidden ? @"Show Minimap" : @"Hide Minimap"];
+	else if([aMenuItem action] == @selector(toggleDiffPane:))
+		[aMenuItem setTitle:showDiffPane ? @"Hide Diff" : @"Show Diff"];
+	else if([aMenuItem action] == @selector(selectNextDiffHunk:))
+		return showDiffPane && diffPaneView.canSelectNextHunk;
+	else if([aMenuItem action] == @selector(selectPreviousDiffHunk:))
+		return showDiffPane && diffPaneView.canSelectPreviousHunk;
 	else if([aMenuItem action] == @selector(takeTabSizeFrom:))
 		[aMenuItem setState:_textView.tabSize == [aMenuItem tag] ? NSControlStateValueOn : NSControlStateValueOff];
 	else if([aMenuItem action] == @selector(showTabSizeSelectorPanel:))
@@ -926,7 +1116,68 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 
 - (CGFloat)widthForColumnWithIdentifier:(id)columnIdentifier
 {
+	if([columnIdentifier isEqualToString:kDiffMarksColumnIdentifier])
+		return kDiffMarksColumnWidth; // a bar, not an icon — independent of the line height
 	return floor((self.lineHeight-1) / 2) * 2 + 1;
+}
+
+// The buffer-vs-HEAD change bars. Drawn rather than imaged: the bar spans
+// the row edge to edge and carries its own color, neither of which the
+// image path (centered on the cap height, tinted with the gutter's icon
+// color) can express.
+//
+// A deletion has no line of its own — the mark sits on the line PRECEDING
+// the deletion site — so it draws as a tick on that line's lower boundary
+// instead of a bar, and only on a soft-wrapped line's last fragment,
+// where the boundary actually is.
+- (BOOL)drawColumnWithIdentifier:(id)columnIdentifier inRect:(NSRect)aRect forLine:(NSUInteger)aLine
+{
+	if(![columnIdentifier isEqualToString:kDiffMarksColumnIdentifier])
+		return NO;
+
+	__block NSColor* color = nil;
+	__block BOOL isDeletion = NO;
+	[self.document enumerateBookmarksAtLine:aLine block:^(text::pos_t const& pos, NSString* type, NSString* payload){
+		if([type isEqualToString:@"diff.added"])
+			color = diffAddedColor;
+		else if([type isEqualToString:@"diff.modified"])
+			color = diffModifiedColor;
+		else if([type isEqualToString:@"diff.deleted"])
+			color = diffDeletedColor, isDeletion = YES;
+	}];
+
+	if(!color)
+		return YES; // ours to draw, and there is nothing on this line
+
+	if(isDeletion)
+	{
+		// The tick belongs on the line's lower boundary, so on a wrapped
+		// line it draws only on the last fragment. We are also the gutter's
+		// delegate, so we can ask what sits just past this fragment's bottom
+		// edge: another fragment of the same line means this is not the last
+		// one.
+		//
+		// Comparing the line number alone is not enough at end of document.
+		// index_at_point clamps a y at or beyond the final row back to that
+		// row, so on the buffer's LAST line the lookup past the bottom edge
+		// returns this same line — and the tick, which lands on the last
+		// line whenever trailing lines are deleted, would be skipped forever.
+		// The softline offset tells the two apart: a real next fragment has
+		// a larger one, while the clamp returns this fragment's own.
+		GVLineRecord const here = [self lineRecordForPosition:NSMinY(aRect)];
+		GVLineRecord const below = [self lineRecordForPosition:NSMaxY(aRect)];
+		if(below.lineNumber == aLine && below.softlineOffset > here.softlineOffset)
+			return YES;
+
+		[color set];
+		NSRectFill(NSMakeRect(NSMinX(aRect), NSMaxY(aRect) - kDiffMarksTickHeight, NSWidth(aRect), kDiffMarksTickHeight));
+	}
+	else
+	{
+		[color set];
+		NSRectFill(NSMakeRect(NSMaxX(aRect) - kDiffMarksBarWidth, NSMinY(aRect), kDiffMarksBarWidth, NSHeight(aRect)));
+	}
+	return YES;
 }
 
 - (NSImage*)imageForLine:(NSUInteger)lineNumber inColumnWithIdentifier:(id)columnIdentifier state:(GutterViewRowState)rowState
@@ -952,8 +1203,8 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 				gutterImageName.emplace(0, type);
 			else if([type isEqualToString:OakDocumentBookmarkIdentifier])
 				gutterImageName.emplace(1, rowState != GutterViewRowStateRegular ? @"Bookmark Hover Remove Template" : @"Bookmark Template");
-			else if(rowState == GutterViewRowStateRegular)
-				gutterImageName.emplace(2, type);
+			else if(rowState == GutterViewRowStateRegular && !IsDiffMarkType(type))
+				gutterImageName.emplace(2, type); // a mark type doubling as an image name
 		}];
 
 		if(rowState != GutterViewRowStateRegular)
@@ -1081,7 +1332,6 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 {
 	[LSPManager.sharedManager documentDidSave:notification.object];
 	[[CopilotManager sharedManager] documentDidSave:notification.object];
-	[diffPaneView documentDidSave]; // disk baseline changed
 }
 
 - (void)documentWillClose:(NSNotification*)notification
@@ -1090,6 +1340,7 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 	[[CopilotManager sharedManager] documentWillClose:notification.object];
 	[minimapView setDocument:nil]; // detach buffer callback before the document deletes its buffer
 	[diffPaneView setDocument:nil];
+	[diffService setDocument:nil];
 }
 
 // =======================

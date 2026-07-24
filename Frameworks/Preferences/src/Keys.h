@@ -74,6 +74,18 @@ extern NSString* const kUserDefaultsLineNumbersKey;
 extern NSString* const kUserDefaultsLineNumberScaleFactorKey;
 extern NSString* const kUserDefaultsLineNumberFontNameKey;
 
+// ==========
+// = Review =
+// ==========
+
+// How the gutter shows buffer-vs-HEAD change bars. One of the three
+// values below; anything else (or nothing) reads as “always”.
+extern NSString* const kUserDefaultsDiffMarksVisibilityKey;
+
+extern NSString* const kDiffMarksVisibilityAlways;
+extern NSString* const kDiffMarksVisibilityWithPane; // only while the diff pane is open
+extern NSString* const kDiffMarksVisibilityNever;
+
 // ==============
 // = Formatters =
 // ==============

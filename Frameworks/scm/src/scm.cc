@@ -223,6 +223,13 @@ namespace scm
 				{
 					info->_pending_update  = false;
 					info->_no_check_before = dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC);
+
+					// A .git change that arrived while this update was in
+					// flight only set the flag: schedule_update() saw an
+					// update already pending and returned. Nothing else
+					// will come along to deliver it, so run again.
+					if(info->_force_update)
+						info->schedule_update();
 				}
 			});
 			CFRunLoopWakeUp(currentRunLoop);

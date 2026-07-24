@@ -9,6 +9,9 @@
 @property (nonatomic) BOOL hideStatusBar;
 - (IBAction)toggleLineNumbers:(id)sender;
 - (IBAction)toggleMinimap:(id)sender;
+- (IBAction)toggleDiffPane:(id)sender;
+- (IBAction)selectNextDiffHunk:(id)sender;
+- (IBAction)selectPreviousDiffHunk:(id)sender;
 
 - (void)addAuxiliaryView:(NSView*)aView atEdge:(NSRectEdge)anEdge;
 - (void)removeAuxiliaryView:(NSView*)aView;

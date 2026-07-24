@@ -251,6 +251,7 @@ BOOL HasDocumentWindow (NSArray* windows)
 				{ @"Show Line Numbers",      @selector(toggleLineNumbers:),    @"l", .modifierFlags = NSEventModifierFlagCommand|NSEventModifierFlagOption },
 				{ @"Show Minimap",           @selector(toggleMinimap:)                },
 				{ @"Show Markdown Preview",  @selector(toggleMarkdownPreview:)        },
+				{ @"Show Diff",              @selector(toggleDiffPane:),       @"g", .modifierFlags = NSEventModifierFlagCommand|NSEventModifierFlagOption|NSEventModifierFlagControl },
 				{ /* -------- */ },
 				{ @"Show Invisibles",        @selector(toggleShowInvisibles:), @"i", .modifierFlags = NSEventModifierFlagCommand|NSEventModifierFlagOption },
 				{ /* -------- */ },
@@ -322,6 +323,9 @@ BOOL HasDocumentWindow (NSArray* windows)
 				{ /* -------- */ },
 				{ @"Jump to Next Mark",          @selector(jumpToNextMark:),               .modifierFlags = 0,                        .key = NSF3FunctionKey },
 				{ @"Jump to Previous Mark",      @selector(jumpToPreviousMark:),           .modifierFlags = NSEventModifierFlagShift, .key = NSF3FunctionKey },
+				{ /* -------- */ },
+				{ @"Jump to Next Change",        @selector(selectNextDiffHunk:),           .modifierFlags = 0,                        .key = NSF4FunctionKey },
+				{ @"Jump to Previous Change",    @selector(selectPreviousDiffHunk:),       .modifierFlags = NSEventModifierFlagShift, .key = NSF4FunctionKey },
 				{ /* -------- */ },
 				{ @"Scroll",
 					.submenu = {
@@ -1196,7 +1200,7 @@ static KVDB* commandPaletteFrecencyDB ()
 		// Toggle selectors that qualify as "settings"
 		NSSet<NSString*>* settingSelectors = [NSSet setWithArray:@[
 			@"toggleSoftWrap:", @"toggleShowInvisibles:", @"toggleLineNumbers:",
-			@"toggleMinimap:", @"toggleMarkdownPreview:", @"toggleShowWrapColumn:", @"toggleShowIndentGuides:",
+			@"toggleMinimap:", @"toggleMarkdownPreview:", @"toggleDiffPane:", @"toggleShowWrapColumn:", @"toggleShowIndentGuides:",
 			@"toggleContinuousSpellChecking:", @"toggleScrollPastEnd:",
 		]];
 

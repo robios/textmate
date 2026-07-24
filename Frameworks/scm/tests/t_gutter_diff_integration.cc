@@ -4,37 +4,22 @@
 #include <text/format.h>
 #include <test/jail.h>
 
-#include <CoreFoundation/CoreFoundation.h>
-
+using scm::gutter_diff::blob_for_ref;
 using scm::gutter_diff::change;
-using scm::gutter_diff::compute;
+using scm::gutter_diff::diff_bytes;
 using scm::gutter_diff::invalidate_repo;
 using scm::gutter_diff::result_t;
 
 namespace
 {
-	// Spin a sub-runloop until `compute`'s completion fires. The
-	// component dispatches its result onto the main queue, so the
-	// test thread (which is the main thread under --no-parallel for
-	// .cc tests as well, since cxx-test main is single-threaded by
-	// default) needs to pump or we deadlock.
-	result_t await_compute (std::string const& root, std::string const& rel,
-	                        std::string const& current)
+	// What the diff service does on its compute queue: fetch the blob
+	// the ref names — a real `git show <ref>:<path>` against a real
+	// repository, which is what these tests are here to exercise — and
+	// diff the buffer against it.
+	result_t marks_against_head (std::string const& root, std::string const& rel,
+	                             std::string const& current)
 	{
-		__block bool done = false;
-		__block result_t out;
-		CFRunLoopRef runLoop = CFRunLoopGetCurrent();
-
-		compute(root, rel, current, ^(result_t r){
-			out  = r;
-			done = true;
-			CFRunLoopStop(runLoop);
-		});
-
-		while(!done)
-			CFRunLoopRun();
-
-		return out;
+		return diff_bytes(blob_for_ref(root, "HEAD", rel), current);
 	}
 
 	void bootstrap_repo (test::jail_t const& jail, std::string const& git,
@@ -65,7 +50,7 @@ void test_gutter_diff_integration_modified_buffer ()
 	bootstrap_repo(jail, git, "file.txt", "a\nb\nc\n");
 	invalidate_repo(jail.path());
 
-	result_t r = await_compute(jail.path(), "file.txt", "a\nB\nc\n");
+	result_t r = marks_against_head(jail.path(), "file.txt", "a\nB\nc\n");
 	OAK_ASSERT_EQ(r.size(), 1);
 	OAK_ASSERT_EQ(r[2], change::modified);
 }
@@ -82,7 +67,7 @@ void test_gutter_diff_integration_untracked_file_all_added ()
 
 	// new.txt was never committed; HEAD blob fetch fails → empty
 	// blob → diff against the buffer text shows everything as added.
-	result_t r = await_compute(jail.path(), "new.txt", "alpha\nbeta\n");
+	result_t r = marks_against_head(jail.path(), "new.txt", "alpha\nbeta\n");
 	OAK_ASSERT_EQ(r.size(), 2);
 	OAK_ASSERT_EQ(r[1], change::added);
 	OAK_ASSERT_EQ(r[2], change::added);
@@ -98,6 +83,6 @@ void test_gutter_diff_integration_clean_buffer_no_marks ()
 	bootstrap_repo(jail, git, "file.txt", "a\nb\nc\n");
 	invalidate_repo(jail.path());
 
-	result_t r = await_compute(jail.path(), "file.txt", "a\nb\nc\n");
+	result_t r = marks_against_head(jail.path(), "file.txt", "a\nb\nc\n");
 	OAK_ASSERT(r.empty());
 }

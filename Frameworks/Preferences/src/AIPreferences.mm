@@ -24,7 +24,8 @@
 	NSButton*    _copilotEnabledCheckBox;
 	NSButton*    _ghostTextOnlyCheckBox;
 	NSButton*    _lspEnabledCheckBox;
-	NSTextField* _bridgeStatusText;
+	NSTextField*   _bridgeStatusText;
+	NSPopUpButton* _diffMarksPopUp;
 }
 @end
 
@@ -107,6 +108,22 @@
 
 	NSButton* bridgeEnabledCheckBox = OakCreateCheckBox(@"Enable Agent Bridge");
 
+	// ==================
+	// = Review section =
+	// ==================
+
+	// Written straight to user defaults rather than bound: the value is a
+	// string with three cases, and every open editor picks it up from the
+	// change notification.
+	_diffMarksPopUp = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+	for(NSArray* pair in @[ @[ @"Always", kDiffMarksVisibilityAlways ], @[ @"While the diff pane is visible", kDiffMarksVisibilityWithPane ], @[ @"Never", kDiffMarksVisibilityNever ] ])
+	{
+		[_diffMarksPopUp addItemWithTitle:pair[0]];
+		_diffMarksPopUp.lastItem.representedObject = pair[1];
+	}
+	_diffMarksPopUp.target = self;
+	_diffMarksPopUp.action = @selector(takeDiffMarksVisibilityFrom:);
+
 	NSGridView* gridView = [NSGridView gridViewWithViews:@[
 		// Copilot — rows 0-8
 		@[ OakCreateLabel(@"Copilot:"),      _copilotStatusText ],                                                              // 0
@@ -131,9 +148,15 @@
 		@[ OakCreateLabel(@"Agent Bridge:"), _bridgeStatusText ],                                                               // 13
 		@[ NSGridCell.emptyContentView,      bridgeEnabledCheckBox ],                                                           // 14
 		@[ NSGridCell.emptyContentView,      makeHint(@"Lets Claude Code connect to TextMate as its IDE (WebSocket server on 127.0.0.1)") ], // 15
+
+		@[ ], // 16 — separator
+
+		// Review — rows 17-18
+		@[ OakCreateLabel(@"Change marks:"), _diffMarksPopUp ],                                                                 // 17
+		@[ NSGridCell.emptyContentView,      makeHint(@"Colored bars in the gutter marking lines that differ from the last commit; untracked files show none") ], // 18
 	]];
 
-	self.view = OakSetupGridViewWithSeparators(gridView, { 9, 12 });
+	self.view = OakSetupGridViewWithSeparators(gridView, { 9, 12, 16 });
 
 	[serverPathField bind:NSValueBinding toObject:self withKeyPath:@"copilotCommand" options:@{ NSNullPlaceholderBindingOption: @"Auto-detect" }];
 	[bridgeEnabledCheckBox bind:NSValueBinding toObject:self withKeyPath:@"agentBridgeEnabled" options:nil];
@@ -146,8 +169,21 @@
 	_ghostTextOnlyCheckBox.state = settings_for_path().get("copilotGhostTextOnly", false) ? NSControlStateValueOn : NSControlStateValueOff;
 	_lspEnabledCheckBox.state    = settings_for_path().get("lspEnabled", true)            ? NSControlStateValueOn : NSControlStateValueOff;
 
+	NSString* const diffMarks = [NSUserDefaults.standardUserDefaults stringForKey:kUserDefaultsDiffMarksVisibilityKey];
+	NSInteger const diffMarksIndex = [_diffMarksPopUp indexOfItemWithRepresentedObject:diffMarks];
+	[_diffMarksPopUp selectItemAtIndex:diffMarksIndex != -1 ? diffMarksIndex : 0]; // an unknown value reads as “always”
+
 	[self updateCopilotStatus];
 	[self updateAgentBridgeStatus];
+}
+
+// ==========
+// = Review =
+// ==========
+
+- (void)takeDiffMarksVisibilityFrom:(NSPopUpButton*)sender
+{
+	[NSUserDefaults.standardUserDefaults setObject:sender.selectedItem.representedObject forKey:kUserDefaultsDiffMarksVisibilityKey];
 }
 
 // ===========

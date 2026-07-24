@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <map>
 #include <string>
+#include <vector>
 
 namespace scm { namespace gutter_diff {
 
@@ -18,31 +19,51 @@ namespace scm { namespace gutter_diff {
 	// SCM Diff Gutter Ruby bundle's contract).
 	using result_t = std::map<size_t, change>;
 
-	// Pure: produce gutter marks from two byte buffers. Uses xdiff's
-	// histogram algorithm, the same one git's own `diff` defaults to.
-	// No I/O. Used by both the async path below and by unit tests.
-	//
-	// The walk over xdiff's line-level output mirrors the existing
-	// Ruby bundle's parser (Update Gutter on Save.tmCommand:39-66):
-	//   ' ' resets a deletion counter
-	//   '-' increments it
-	//   '+' becomes `modified` if deleted > 0 (consumes one), else `added`
-	// At hunk end, any unpaired `-` lines emit one `deleted` mark on
-	// the line preceding the deletion site.
+	// One contiguous change between the base text and the current text.
+	// Line numbers are 1-indexed; a count of zero marks the pure
+	// insertion/deletion cases, where the corresponding start line is
+	// the line BEFORE the change site (unified-diff convention, so it
+	// can be 0 for a change at the top of the file).
+	struct hunk_t
+	{
+		size_t buffer_from = 0, buffer_to = 0; // byte range [from, to) in current_text
+		std::string base_text;                 // base-side bytes the range replaces
+		size_t base_line = 0, base_lines = 0;  // base-side line span
+		size_t new_line = 0, new_lines = 0;    // new-side line span
+	};
+	using hunks_t = std::vector<hunk_t>;
+
+	// Pure: extract hunks from two byte buffers in one xdiff pass
+	// (histogram algorithm, the same one git's own `diff` defaults to).
+	// Byte ranges refer to the unmodified inputs; a trailing-newline-only
+	// difference yields no hunks (mirrors diff_bytes).
+	hunks_t hunks (std::string const& base_blob, std::string const& current_text);
+
+	// Derive per-line gutter marks from a hunk list. Within a hunk the
+	// first min(deleted, added) new-side lines pair up as `modified`,
+	// surplus additions are `added`, and surplus deletions collapse to
+	// one `deleted` mark on the line preceding the deletion site
+	// (bumped one line when that spot already holds `modified`).
+	result_t marks_for_hunks (hunks_t const& hunks);
+
+	// Pure: produce gutter marks from two byte buffers, derived from the
+	// same hunk walk so marks and hunks cannot drift apart. The one
+	// deliberate exception is a hunk whose sides differ only by the
+	// trailing newline: git counts it as a change and hunks() reports it,
+	// but the gutter has always declined to mark it.
 	result_t diff_bytes (std::string const& head_blob,
 	                     std::string const& current_text);
 
-	// Async: look up (or fetch + cache) the HEAD blob for repo_root /
-	// rel_path via `git show HEAD:<rel_path>`, diff against
-	// current_text, and deliver the result on the main queue.
-	// Untracked files synthesise an empty HEAD blob so additions show
-	// as additions.
-	void compute (std::string repo_root,
-	              std::string rel_path,
-	              std::string current_text,
-	              void (^completion)(result_t));
+	// Synchronously look up (or fetch + cache) `git show <ref>:<rel_path>`
+	// for the repo at repo_root. Untracked / unknown paths yield an empty
+	// blob with *trackedOut = false. Runs a subprocess on a cache miss, so
+	// call from a background queue.
+	std::string blob_for_ref (std::string const& repo_root,
+	                          std::string const& ref,
+	                          std::string const& rel_path,
+	                          bool* trackedOut = nullptr);
 
-	// Drop a single (repo_root, rel_path) cache entry. Caller invokes
+	// Drop the cache entries for rel_path (every ref). Caller invokes
 	// this on rename / save-as.
 	void invalidate_blob (std::string const& repo_root,
 	                      std::string const& rel_path);

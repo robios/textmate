@@ -33,6 +33,7 @@ static NSDictionary* default_settings ()
 		kUserDefaultsRMateServerPortKey:         @"52698",
 		kUserDefaultsLicenseOwnerKey:            NSFullUserName(),
 		kUserDefaultsLineNumbersKey:             @YES,
+		kUserDefaultsDiffMarksVisibilityKey:     kDiffMarksVisibilityAlways,
 		kUserDefaultsFontSmoothingKey:            @(3),
 		kUserDefaultsLineNumberScaleFactorKey:    @(0.8),
 		kUserDefaultsTabItemMinWidthKey:          @(120),
@@ -123,6 +124,16 @@ NSString* const kUserDefaultsDisableAntiAliasKey        = @"disableAntiAlias";
 NSString* const kUserDefaultsLineNumbersKey             = @"lineNumbers";
 NSString* const kUserDefaultsLineNumberScaleFactorKey   = @"lineNumberScaleFactor";
 NSString* const kUserDefaultsLineNumberFontNameKey      = @"lineNumberFontName";
+
+// ==========
+// = Review =
+// ==========
+
+NSString* const kUserDefaultsDiffMarksVisibilityKey = @"diffMarksVisibility";
+
+NSString* const kDiffMarksVisibilityAlways   = @"always";
+NSString* const kDiffMarksVisibilityWithPane = @"withDiffPane";
+NSString* const kDiffMarksVisibilityNever    = @"never";
 
 // ==============
 // = Formatters =

@@ -1,5 +1,6 @@
 #import "MinimapView.h"
 #import "OakTextView.h"
+#import "diff_mark_palette.h"
 #import <document/OakDocument.h>
 #import <document/OakDocument Private.h>
 #import <buffer/buffer.h>
@@ -524,11 +525,13 @@ namespace
 		backgroundBrightness = background.brightnessComponent;
 	BOOL const isDarkBackground = backgroundBrightness <= 0.5;
 
-	// Brighter variants on dark themes, VS Code-like darker ones on light.
-	struct { std::vector<CGRect> const& rects; CGFloat red, green, blue; } const diffPasses[] = {
-		{ addedRects,    isDarkBackground ? 0.45 : 0.28, isDarkBackground ? 0.80 : 0.49, isDarkBackground ? 0.15 : 0.01 }, // #73CC26 / #487E02
-		{ modifiedRects, isDarkBackground ? 0.20 : 0.11, isDarkBackground ? 0.67 : 0.51, isDarkBackground ? 0.86 : 0.66 }, // #33ABDB / #1B81A8
-		{ deletedRects,  isDarkBackground ? 1.00 : 0.95, isDarkBackground ? 0.36 : 0.30, isDarkBackground ? 0.36 : 0.30 }, // #FF5C5C / #F14C4C
+	// Shared with the gutter's change bars, so a change is the same colour
+	// in both places.
+	struct pass_t { std::vector<CGRect> const& rects; diff_mark_palette::rgb_t color; };
+	pass_t const diffPasses[] = {
+		{ addedRects,    diff_mark_palette::added(isDarkBackground)    },
+		{ modifiedRects, diff_mark_palette::modified(isDarkBackground) },
+		{ deletedRects,  diff_mark_palette::deleted(isDarkBackground)  },
 	};
 
 	CGContextRef context = NSGraphicsContext.currentContext.CGContext;
@@ -540,7 +543,7 @@ namespace
 		tintRects.reserve(pass.rects.size());
 		for(CGRect const& rect : pass.rects)
 			tintRects.push_back(CGRectMake(0, rect.origin.y, maxX, rect.size.height));
-		CGContextSetFillColorWithColor(context, [NSColor colorWithSRGBRed:pass.red green:pass.green blue:pass.blue alpha:0.25].CGColor);
+		CGContextSetFillColorWithColor(context, [NSColor colorWithSRGBRed:pass.color.red green:pass.color.green blue:pass.color.blue alpha:0.25].CGColor);
 		CGContextFillRects(context, tintRects.data(), tintRects.size());
 	}
 
@@ -575,7 +578,7 @@ namespace
 	{
 		if(pass.rects.empty())
 			continue;
-		CGContextSetFillColorWithColor(context, [NSColor colorWithSRGBRed:pass.red green:pass.green blue:pass.blue alpha:1].CGColor);
+		CGContextSetFillColorWithColor(context, [NSColor colorWithSRGBRed:pass.color.red green:pass.color.green blue:pass.color.blue alpha:1].CGColor);
 		CGContextFillRects(context, pass.rects.data(), pass.rects.size());
 	}
 

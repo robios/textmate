@@ -35,7 +35,6 @@
 #import <file/type.h>
 #import <io/path.h>
 #import <ns/spellcheck.h>
-#import <scm/gutter_diff.h>
 #import <scm/scm.h>
 #import <text/case.h>
 #import <text/classification.h>
@@ -551,7 +550,6 @@ static std::string shell_quote (std::vector<std::string> paths)
 		[self setNeedsDisplay:YES];
 		_links.reset();
 		NSAccessibilityPostNotification(self, NSAccessibilityValueChangedNotification);
-		[self scheduleScmDiffGutterUpdate];
 
 		if(hasFocus)
 			[NSFontManager.sharedFontManager setSelectedFont:self.font isMultiple:NO];
@@ -591,91 +589,10 @@ static std::string shell_quote (std::vector<std::string> paths)
 		[self performSelector:@selector(runDidChangeSCMStatusCallbacks:) withObject:self afterDelay:0];
 }
 
-static oak::uuid_t const kSCMDiffGutterCommandUUID("081613BD-FBAF-4339-87AC-ED8FE942C525");
-static size_t const kSCMDiffGutterMaxBytes = 2 * 1024 * 1024;
-
 - (void)runDidChangeSCMStatusCallbacks:(id)sender
 {
-	[self scheduleScmDiffGutterUpdate];
-
 	for(auto const& item : bundles::query(bundles::kFieldSemanticClass, "callback.document.did-change-scm-status", [self scopeContext], bundles::kItemTypeMost, oak::uuid_t(), false))
-	{
-		if(item->uuid() == kSCMDiffGutterCommandUUID)
-			continue;
 		[self performBundleItem:item];
-	}
-}
-
-- (void)scheduleScmDiffGutterUpdate
-{
-	[_scmDiffGutterTimer invalidate];
-	_scmDiffGutterTimer = [NSTimer scheduledTimerWithTimeInterval:0.15 target:self selector:@selector(updateScmDiffGutter:) userInfo:nil repeats:NO];
-}
-
-- (void)clearScmDiffGutterMarks
-{
-	[self.document removeAllMarksOfType:@"diff.added"];
-	[self.document removeAllMarksOfType:@"diff.modified"];
-	[self.document removeAllMarksOfType:@"diff.deleted"];
-}
-
-- (void)updateScmDiffGutter:(id)sender
-{
-	_scmDiffGutterTimer = nil;
-
-	OakDocument* doc = self.document;
-	NSString* documentPath = doc.path;
-	if(!documentPath.length)
-	{
-		[self clearScmDiffGutterMarks];
-		return;
-	}
-
-	NSString* content = doc.content ?: @"";
-	if([content lengthOfBytesUsingEncoding:NSUTF8StringEncoding] > kSCMDiffGutterMaxBytes)
-	{
-		[self clearScmDiffGutterMarks];
-		return;
-	}
-
-	std::string const path = to_s(documentPath);
-	std::string const repoRoot = scm::root_for_path(path);
-	if(repoRoot == NULL_STR)
-	{
-		[self clearScmDiffGutterMarks];
-		return;
-	}
-
-	std::string const relPath = path::relative_to(path, repoRoot);
-	if(relPath.empty())
-	{
-		[self clearScmDiffGutterMarks];
-		return;
-	}
-
-	uint64_t const generation = ++_scmDiffGutterGeneration;
-	std::string buffer = to_s(content);
-	scm::gutter_diff::compute(repoRoot, relPath, std::move(buffer), ^(scm::gutter_diff::result_t result){
-		if(generation != _scmDiffGutterGeneration || doc != self.document)
-			return;
-
-		[doc removeAllMarksOfType:@"diff.added"];
-		[doc removeAllMarksOfType:@"diff.modified"];
-		[doc removeAllMarksOfType:@"diff.deleted"];
-
-		for(auto const& pair : result)
-		{
-			NSString* type = nil;
-			switch(pair.second)
-			{
-				case scm::gutter_diff::change::added:    type = @"diff.added";    break;
-				case scm::gutter_diff::change::modified: type = @"diff.modified"; break;
-				case scm::gutter_diff::change::deleted:  type = @"diff.deleted";  break; // no gutter image yet — shown in the minimap
-			}
-			if(type)
-				[doc setMarkOfType:type atPosition:text::pos_t(pair.first - 1, 0) content:nil];
-		}
-	});
 }
 
 - (void)setNilValueForKey:(NSString*)key
@@ -688,7 +605,6 @@ static size_t const kSCMDiffGutterMaxBytes = 2 * 1024 * 1024;
 - (void)dealloc
 {
 	[NSNotificationCenter.defaultCenter removeObserver:self];
-	[_scmDiffGutterTimer invalidate];
 	[self unbind:@"scmStatus"];
 	[self dismissLSPHoverPanel];
 	[self setDocument:nil];
@@ -705,14 +621,8 @@ static size_t const kSCMDiffGutterMaxBytes = 2 * 1024 * 1024;
 
 - (void)documentDidSave:(NSNotification*)aNotification
 {
-	[self scheduleScmDiffGutterUpdate];
-
 	for(auto const& item : bundles::query(bundles::kFieldSemanticClass, "callback.document.did-save", [self scopeContext], bundles::kItemTypeMost, oak::uuid_t(), false))
-	{
-		if(item->uuid() == kSCMDiffGutterCommandUUID)
-			continue;
 		[self performBundleItem:item];
-	}
 }
 
 - (void)documentWillReload:(NSNotification*)aNotification
@@ -3067,6 +2977,7 @@ static char const* kOakMenuItemTitle = "OakMenuItemTitle";
 // ==============
 
 - (theme_ptr)theme            { return documentView ? documentView->theme() : theme_ptr(); }
+- (CGFloat)lineHeight         { return documentView ? documentView->line_height() : 0; }
 - (NSFont*)font               { return documentView ? documentView->font() : [NSFont userFixedPitchFontOfSize:0]; }
 - (CGFloat)fontScaleFactor    { return documentView ? documentView->font_scale_factor() : 1; }
 - (size_t)tabSize             { return documentView ? documentView->tab_size() : 2; }

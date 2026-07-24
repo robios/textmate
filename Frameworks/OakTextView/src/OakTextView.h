@@ -34,6 +34,11 @@ enum OTVFontSmoothing : NSUInteger
 
 @property (nonatomic, weak) id <OakTextViewDelegate>        delegate;
 @property (nonatomic) theme_ptr                             theme;
+// Height of one (unwrapped) line as the layout computes it — CoreText
+// metrics plus the ascent/leading deltas, not what TextKit would derive
+// from the same font. Auxiliary views that put a row beside each buffer
+// line need this exact value to stay aligned. 0 without a document.
+@property (nonatomic, readonly) CGFloat                     lineHeight;
 @property (nonatomic) NSCursor*                             ibeamCursor;
 @property (nonatomic) NSFont*                               font;
 @property (nonatomic) CGFloat                               fontScaleFactor;

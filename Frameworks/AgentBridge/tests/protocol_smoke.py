@@ -16,9 +16,8 @@ abruptly killed half-open connection does not take the server down.
 
 The bridge PROVIDES CONTEXT ONLY — it advertises no write or approval tools.
 Agent edits land in the working tree and are reviewed after the fact against
-git (see AI_COMPANION_GIT_NATIVE_DESIGN.md); openDiff/close_tab/
-closeAllDiffTabs and the review-session machinery they drove are gone, and
-Claude falls back to its own terminal approval UI.
+git; openDiff/close_tab/closeAllDiffTabs and the review-session machinery
+they drove are gone, and Claude falls back to its own terminal approval UI.
 
 NOTE: the openFile scenario opens a scratch document tab in the running
 TextMate instance and brings it frontmost — that is the tool's documented
@@ -324,7 +323,10 @@ def main():
     assert dirty["success"] is True and dirty["isDirty"] is False, dirty
 
     save = tool_text(ws.call_tool("saveDocument", {"filePath": scratch}))
+    # success only reports that the RPC was handled; saved is the actual
+    # write result, so a broken save path would slip past a success-only check
     assert save["success"] is True, save
+    assert save["saved"] is True, save
     with open(scratch) as f:
         assert f.read() == baseline, "saveDocument must not alter an unedited document's contents"
     passed.append("openFile → getOpenEditors → checkDocumentDirty → saveDocument round trip")
