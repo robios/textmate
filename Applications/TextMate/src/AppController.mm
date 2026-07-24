@@ -244,6 +244,7 @@ BOOL HasDocumentWindow (NSArray* windows)
 				{ @"Show File Browser",      @selector(toggleFileBrowser:),    @"d", .modifierFlags = NSEventModifierFlagCommand|NSEventModifierFlagOption|NSEventModifierFlagControl },
 				{ @"Show HTML Output",       @selector(toggleHTMLOutput:),     @"h", .modifierFlags = NSEventModifierFlagCommand|NSEventModifierFlagOption|NSEventModifierFlagControl },
 				{ @"Show Line Numbers",      @selector(toggleLineNumbers:),    @"l", .modifierFlags = NSEventModifierFlagCommand|NSEventModifierFlagOption },
+				{ @"Show Minimap",           @selector(toggleMinimap:)                },
 				{ /* -------- */ },
 				{ @"Show Invisibles",        @selector(toggleShowInvisibles:), @"i", .modifierFlags = NSEventModifierFlagCommand|NSEventModifierFlagOption },
 				{ /* -------- */ },
@@ -1178,7 +1179,7 @@ static KVDB* commandPaletteFrecencyDB ()
 		// Toggle selectors that qualify as "settings"
 		NSSet<NSString*>* settingSelectors = [NSSet setWithArray:@[
 			@"toggleSoftWrap:", @"toggleShowInvisibles:", @"toggleLineNumbers:",
-			@"toggleShowWrapColumn:", @"toggleShowIndentGuides:",
+			@"toggleMinimap:", @"toggleShowWrapColumn:", @"toggleShowIndentGuides:",
 			@"toggleContinuousSpellChecking:", @"toggleScrollPastEnd:",
 		]];
 

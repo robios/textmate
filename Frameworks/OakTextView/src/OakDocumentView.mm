@@ -1,6 +1,7 @@
 #import "OakDocumentView.h"
 #import "OakTextView_Private.h"
 #import "GutterView.h"
+#import "MinimapView.h"
 #import "OakSwiftUI-Swift.h"
 #import <lsp/LSPClient.h>
 #import <lsp/LSPManager.h>
@@ -10,6 +11,7 @@
 #import <file/type.h>
 #import <text/ctype.h>
 #import <text/parse.h>
+#import <text/types.h>
 #import <ns/ns.h>
 #import <oak/debug.h>
 #import <bundles/bundles.h>
@@ -29,6 +31,28 @@
 static NSString* const kBookmarksColumnIdentifier = @"bookmarks";
 static NSString* const kFoldingsColumnIdentifier  = @"foldings";
 
+// On the editor’s own background the minimap reads as empty margin, so shift
+// it the way the gutter goes — lighter on dark themes, darker on light ones —
+// but far more gently than the gutter does, enough to separate the strip
+// without asking for attention. The gutter’s own step is a shade under 0.09,
+// which puts this at about half of it.
+static CGFloat const kMinimapBackgroundTint = 0.05;
+
+// Blended by hand in sRGB: -blendedColorWithFraction:ofColor: works in the
+// calibrated space, where the same fraction lands twice as hard on the dark
+// themes as it does on the light ones.
+static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
+{
+	NSColor* srgb = [background colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+	if(!srgb)
+		return background;
+
+	CGFloat const target = isDark ? 1 : 0;
+	auto tint = [&target](CGFloat component){ return component + kMinimapBackgroundTint * (target - component); };
+
+	return [NSColor colorWithSRGBRed:tint(srgb.redComponent) green:tint(srgb.greenComponent) blue:tint(srgb.blueComponent) alpha:srgb.alphaComponent];
+}
+
 @interface OakDocumentView () <NSAccessibilityGroup, GutterViewDelegate, GutterViewColumnDataSource, GutterViewColumnDelegate, OTVStatusBarDelegate>
 {
 	NSScrollView* gutterScrollView;
@@ -38,6 +62,8 @@ static NSString* const kFoldingsColumnIdentifier  = @"foldings";
 	OakBackgroundFillView* gutterDividerView;
 
 	NSScrollView* textScrollView;
+	NSScrollView* minimapScrollView;
+	MinimapView* minimapView;
 
 	NSMutableArray* topAuxiliaryViews;
 	NSMutableArray* bottomAuxiliaryViews;
@@ -95,11 +121,23 @@ static NSString* const kFoldingsColumnIdentifier  = @"foldings";
 
 		gutterDividerView = OakCreateVerticalLine(OakBackgroundFillViewStyleNone);
 
+		minimapView = [[MinimapView alloc] initWithFrame:NSZeroRect];
+		minimapView.textView = _textView;
+
+		minimapScrollView = [[NSScrollView alloc] initWithFrame:NSZeroRect];
+		minimapScrollView.accessibilityElement   = NO;
+		minimapScrollView.borderType             = NSNoBorder;
+		minimapScrollView.hasVerticalScroller    = NO;
+		minimapScrollView.hasHorizontalScroller  = NO;
+		minimapScrollView.verticalScrollElasticity = NSScrollElasticityNone;
+		minimapScrollView.documentView           = minimapView;
+		minimapScrollView.hidden = ![NSUserDefaults.standardUserDefaults boolForKey:@"DocumentView Show Minimap"];
+
 		_statusBar = [[OTVStatusBar alloc] initWithFrame:NSZeroRect];
 		_statusBar.delegate = self;
 		_statusBar.target = self;
 
-		OakAddAutoLayoutViewsToSuperview(@[ gutterScrollView, gutterDividerView, textScrollView, _statusBar ], self);
+		OakAddAutoLayoutViewsToSuperview(@[ gutterScrollView, gutterDividerView, textScrollView, minimapScrollView, _statusBar ], self);
 		OakSetupKeyViewLoop(@[ self, _textView, _statusBar ]);
 
 		self.document = [OakDocument documentWithString:@"" fileType:@"text.plain" customName:@"placeholder"];
@@ -132,7 +170,7 @@ static NSString* const kFoldingsColumnIdentifier  = @"foldings";
 		[self addConstraints:[NSLayoutConstraint constraintsWithVisualFormat:@"H:|[_statusBar]|" options:0 metrics:nil views:NSDictionaryOfVariableBindings(_statusBar)]];
 	}
 
-	[self addConstraints:[NSLayoutConstraint constraintsWithVisualFormat:@"H:|[gutterScrollView(==gutterView)][gutterDividerView][textScrollView(>=100)]|" options:NSLayoutFormatAlignAllTop|NSLayoutFormatAlignAllBottom metrics:nil views:NSDictionaryOfVariableBindings(gutterScrollView, gutterView, gutterDividerView, textScrollView)]];
+	[self addConstraints:[NSLayoutConstraint constraintsWithVisualFormat:@"H:|[gutterScrollView(==gutterView)][gutterDividerView][textScrollView(>=100)][minimapScrollView(==minimapWidth)]|" options:NSLayoutFormatAlignAllTop|NSLayoutFormatAlignAllBottom metrics:@{ @"minimapWidth": @(minimapScrollView.hidden ? 0 : 110) } views:NSDictionaryOfVariableBindings(gutterScrollView, gutterView, gutterDividerView, textScrollView, minimapScrollView)]];
 	[self addConstraints:[NSLayoutConstraint constraintsWithVisualFormat:@"V:|[topView]" options:0 metrics:nil views:@{ @"topView": stackedViews[0] }]];
 	[self addConstraints:[NSLayoutConstraint constraintsWithVisualFormat:@"V:[bottomView]|" options:0 metrics:nil views:@{ @"bottomView": [stackedViews lastObject] }]];
 
@@ -267,6 +305,9 @@ static NSString* const kFoldingsColumnIdentifier  = @"foldings";
 		[gutterView setHighlightedRange:to_s(str ?: @"1")];
 		[_statusBar setSelectionString:str];
 		_symbolChooser.selectionString = str;
+
+		text::selection_t const sel(to_s(str ?: @"1"));
+		minimapView.caretLine = sel.empty() ? NSNotFound : sel.last().to.line;
 	}
 	else if([aKeyPath isEqualToString:@"symbol"])
 	{
@@ -283,6 +324,7 @@ static NSString* const kFoldingsColumnIdentifier  = @"foldings";
 	else if([aKeyPath isEqualToString:@"tabSize"])
 	{
 		_statusBar.tabSize = self.document.tabSize;
+		[minimapView reloadMetrics]; // tab expansion affects all cached line metrics
 	}
 	else if([aKeyPath isEqualToString:@"softTabs"])
 	{
@@ -333,6 +375,7 @@ static NSString* const kFoldingsColumnIdentifier  = @"foldings";
 	}
 
 	[_textView setDocument:self.document];
+	[minimapView setDocument:self.document];
 	[LSPManager.sharedManager documentDidOpen:aDocument];
 	[[CopilotManager sharedManager] documentDidOpen:aDocument];
 	[[CopilotManager sharedManager] documentDidFocus:aDocument];
@@ -384,6 +427,11 @@ static NSString* const kFoldingsColumnIdentifier  = @"foldings";
 
 		gutterDividerView.activeBackgroundColor = [NSColor colorWithCGColor:styles.divider];
 
+		minimapView.backgroundColor       = OakTintedMinimapBackground([NSColor colorWithCGColor:theme->background(to_s(self.document.fileType))], theme->is_dark());
+		minimapView.caretColor            = [NSColor colorWithCGColor:theme->styles_for_scope(to_s(self.document.fileType)).caret()];
+		minimapView.theme                 = theme;
+		minimapScrollView.backgroundColor = minimapView.backgroundColor;
+
 		[gutterView setNeedsDisplay:YES];
 	}
 }
@@ -397,10 +445,22 @@ static NSString* const kFoldingsColumnIdentifier  = @"foldings";
 	else	[NSUserDefaults.standardUserDefaults setObject:@YES forKey:@"DocumentView Disable Line Numbers"];
 }
 
+- (IBAction)toggleMinimap:(id)sender
+{
+	BOOL showFlag = minimapScrollView.hidden;
+	minimapScrollView.hidden = !showFlag;
+	if(showFlag)
+			[NSUserDefaults.standardUserDefaults setObject:@YES forKey:@"DocumentView Show Minimap"];
+	else	[NSUserDefaults.standardUserDefaults removeObjectForKey:@"DocumentView Show Minimap"];
+	[self setNeedsUpdateConstraints:YES];
+}
+
 - (BOOL)validateMenuItem:(NSMenuItem*)aMenuItem
 {
 	if([aMenuItem action] == @selector(toggleLineNumbers:))
 		[aMenuItem setTitle:[gutterView visibilityForColumnWithIdentifier:GVLineNumbersColumnIdentifier] ? @"Hide Line Numbers" : @"Show Line Numbers"];
+	else if([aMenuItem action] == @selector(toggleMinimap:))
+		[aMenuItem setTitle:minimapScrollView.hidden ? @"Show Minimap" : @"Hide Minimap"];
 	else if([aMenuItem action] == @selector(takeTabSizeFrom:))
 		[aMenuItem setState:_textView.tabSize == [aMenuItem tag] ? NSControlStateValueOn : NSControlStateValueOff];
 	else if([aMenuItem action] == @selector(showTabSizeSelectorPanel:))
@@ -887,12 +947,14 @@ static NSString* const kFoldingsColumnIdentifier  = @"foldings";
 - (void)documentMarksDidChange:(NSNotification*)aNotification
 {
 	[NSNotificationCenter.defaultCenter postNotificationName:GVColumnDataSourceDidChange object:self];
+	[minimapView documentMarksDidChange];
 }
 
 - (void)documentContentDidChange:(NSNotification*)notification
 {
 	[LSPManager.sharedManager documentDidChange:notification.object];
 	[[CopilotManager sharedManager] documentDidChange:notification.object];
+	[minimapView documentContentDidChange];
 }
 
 - (void)documentDidSave:(NSNotification*)notification
@@ -905,6 +967,7 @@ static NSString* const kFoldingsColumnIdentifier  = @"foldings";
 {
 	[LSPManager.sharedManager documentWillClose:notification.object];
 	[[CopilotManager sharedManager] documentWillClose:notification.object];
+	[minimapView setDocument:nil]; // detach buffer callback before the document deletes its buffer
 }
 
 // =======================

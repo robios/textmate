@@ -616,6 +616,7 @@ static size_t const kSCMDiffGutterMaxBytes = 2 * 1024 * 1024;
 {
 	[self.document removeAllMarksOfType:@"diff.added"];
 	[self.document removeAllMarksOfType:@"diff.modified"];
+	[self.document removeAllMarksOfType:@"diff.deleted"];
 }
 
 - (void)updateScmDiffGutter:(id)sender
@@ -660,6 +661,7 @@ static size_t const kSCMDiffGutterMaxBytes = 2 * 1024 * 1024;
 
 		[doc removeAllMarksOfType:@"diff.added"];
 		[doc removeAllMarksOfType:@"diff.modified"];
+		[doc removeAllMarksOfType:@"diff.deleted"];
 
 		for(auto const& pair : result)
 		{
@@ -668,7 +670,7 @@ static size_t const kSCMDiffGutterMaxBytes = 2 * 1024 * 1024;
 			{
 				case scm::gutter_diff::change::added:    type = @"diff.added";    break;
 				case scm::gutter_diff::change::modified: type = @"diff.modified"; break;
-				case scm::gutter_diff::change::deleted:  break;
+				case scm::gutter_diff::change::deleted:  type = @"diff.deleted";  break; // no gutter image yet — shown in the minimap
 			}
 			if(type)
 				[doc setMarkOfType:type atPosition:text::pos_t(pair.first - 1, 0) content:nil];

@@ -139,6 +139,7 @@ NSString* const kUserDefaultsFolderSearchFollowLinksKey = @"folderSearchFollowLi
 NSString* const kUserDefaultsDisableTypingPairsKey            = @"disableTypingPairs";
 NSString* const kUserDefaultsFontSmoothingKey                 = @"fontSmoothing";
 NSString* const kUserDefaultsHideStatusBarKey                 = @"hideStatusBar";
+NSString* const kUserDefaultsDisableMinimapColorsKey          = @"disableMinimapColors";
 NSString* const kUserDefaultsTabItemMinWidthKey               = @"tabItemMinWidth";
 NSString* const kUserDefaultsTabItemMaxWidthKey               = @"tabItemMaxWidth";
 NSString* const kUserDefaultsKeepSearchResultsOnDoubleClick   = @"keepSearchResultsOnDoubleClick";

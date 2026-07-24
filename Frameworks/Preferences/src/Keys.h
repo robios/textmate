@@ -92,6 +92,7 @@ extern NSString* const kUserDefaultsFolderSearchFollowLinksKey;
 extern NSString* const kUserDefaultsDisableTypingPairsKey;
 extern NSString* const kUserDefaultsFontSmoothingKey;
 extern NSString* const kUserDefaultsHideStatusBarKey;
+extern NSString* const kUserDefaultsDisableMinimapColorsKey;
 
 // Tabs
 extern NSString* const kUserDefaultsTabItemMinWidthKey;
