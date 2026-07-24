@@ -2,6 +2,7 @@
 #define DIFF_PANE_MODEL_H_C4K2REVB
 
 #include <scm/gutter_diff.h>
+#include <scm/git_query.h>
 
 #include <map>
 
@@ -120,6 +121,29 @@ namespace diff_pane
 	};
 
 	empty_state classify_empty_state (bool inRepository, bool tooLarge, bool tracked, bool hasHunks, bool documentEdited, bool hasStagedChanges, bool baseIsHead);
+
+	// The reader's choice of review base, mirrored from OakReviewBaseKind
+	// so this rule stays free of AppKit. The view maps between them; a
+	// switch there with no default keeps the two in step.
+	enum class review_base_kind : uint8_t
+	{
+		head,     // whatever HEAD is now
+		commit,   // one pinned commit
+		relative, // a spec re-resolved as HEAD moves (HEAD~1)
+	};
+
+	// When HEAD moves, does the review base have to reset to HEAD?
+	//
+	// A switch — to another branch, or into/out of a detached HEAD —
+	// resets every kind: the commits an older base was picked against may
+	// not be reachable from where HEAD landed. A rewrite (amend, reset,
+	// rebase on the same branch) resets a pinned base for the same reason,
+	// but NOT a relative one: following rewrites is what "relative" means,
+	// so an amend-per-turn agent leaves `HEAD~1` pointing at the amended
+	// commit's parent rather than knocking the base back to HEAD. A commit
+	// landing resets nothing (a pinned base offers a banner instead; a
+	// relative base simply follows). See design §3.2 (rev 12).
+	bool head_move_resets_base (review_base_kind kind, scm::git_query::head_change change);
 
 	// =========================
 	// = Revert (buffer edits) =

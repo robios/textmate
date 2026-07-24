@@ -60,6 +60,12 @@ static size_t const kBufferDiffMaxBytes = 2 * 1024 * 1024;
 	scm::info_ptr _scmInfo;
 	std::string   _scmInfoDirectory; // what _scmInfo was registered for
 
+	// Bumped whenever this service starts speaking for a different
+	// place. Document identity alone cannot carry that: a Save As
+	// moves the SAME document into another repository, and anything
+	// queued about the old one stops being true the moment it does.
+	uint64_t _attachment;
+
 	// Compute-queue-only state: the cached git-subprocess results and
 	// the HEAD tracking used for the HEAD-moved banner. Buffer edits
 	// never touch these — only scm events, saves and document switches
@@ -68,6 +74,7 @@ static size_t const kBufferDiffMaxBytes = 2 * 1024 * 1024;
 	std::string _cachedStateRel;
 	bool        _cachedStaged;
 	std::string _cachedHead;          // NULL_STR before first refresh / unborn HEAD
+	std::string _cachedBranch;        // symbolic HEAD, NULL_STR when detached
 	std::string _previousHead;        // pre-move HEAD once a move was seen
 	std::vector<scm::git_query::commit_t> _cachedRecentCommits;
 	size_t      _cachedCommitLimit;   // what _cachedRecentCommits was asked for
@@ -90,7 +97,9 @@ static size_t const kBufferDiffMaxBytes = 2 * 1024 * 1024;
 	if(self = [super init])
 	{
 		_queue = dispatch_queue_create("com.macromates.buffer-diff", DISPATCH_QUEUE_SERIAL);
+		_attachment = 0;
 		_cachedHead = NULL_STR;
+		_cachedBranch = NULL_STR;
 		_previousHead = NULL_STR;
 		_cachedRelativeSha = NULL_STR;
 	}
@@ -151,11 +160,30 @@ static size_t const kBufferDiffMaxBytes = 2 * 1024 * 1024;
 	[self updateNow];
 }
 
+// Whether an observation made about a repository is still about where
+// this service is. Both halves are needed and neither implies the other:
+// a tab switch changes the document while a Save As keeps it and changes
+// the repository under it.
+//
+// Deliberately NOT the snapshot generation, which guards a different
+// thing. A snapshot is a result, made stale by anything that changes its
+// inputs; a HEAD move is an observation about a repository, which an
+// edit, a save or a review-base change leave true even as they bump the
+// generation. Dropping on generation would lose the notice for good,
+// since the move is recorded into the cached HEAD before the callback is
+// queued and no later recompute finds it again.
+- (BOOL)isStillObserving:(OakDocument*)aDocument attachment:(uint64_t)anAttachment
+{
+	return aDocument == _document && anAttachment == _attachment;
+}
+
 - (void)registerSCMObserver
 {
 	NSString* path = _document.path;
 	if(!path.length)
 	{
+		if(_scmInfo || !_scmInfoDirectory.empty())
+			++_attachment; // there was a repository and now there is not
 		_scmInfo.reset();
 		_scmInfoDirectory.clear();
 		return;
@@ -165,6 +193,7 @@ static size_t const kBufferDiffMaxBytes = 2 * 1024 * 1024;
 	if(_scmInfo && directory == _scmInfoDirectory)
 		return; // already watching the right place
 
+	++_attachment; // past here this service speaks for a different place
 	_scmInfoDirectory = directory;
 	if(_scmInfo = scm::info(directory))
 	{
@@ -272,6 +301,7 @@ static size_t const kBufferDiffMaxBytes = 2 * 1024 * 1024;
 	std::string const wantSpec = _baseSpec.length ? to_s(_baseSpec) : NULL_STR;
 	std::string const wantRoot = _baseRepoRoot.length ? to_s(_baseRepoRoot) : NULL_STR;
 	BOOL const documentEdited = doc.isDocumentEdited;
+	uint64_t const attachment = _attachment;
 
 	// Read here rather than on the compute queue: settings lookups walk
 	// the .tm_properties chain, and everything else the block needs is
@@ -354,20 +384,32 @@ static size_t const kBufferDiffMaxBytes = 2 * 1024 * 1024;
 			// debounce (buffer edits cannot change index or HEAD).
 			if(refreshRepoState || root != serviceForState->_cachedStateRoot || rel != serviceForState->_cachedStateRel || commitLimit != serviceForState->_cachedCommitLimit)
 			{
-				std::string const head = scm::git_query::head_commit(root);
+				std::string const head   = scm::git_query::head_commit(root);
+				std::string const branch = scm::git_query::symbolic_head(root);
 
-				if(root == serviceForState->_cachedStateRoot && serviceForState->_cachedHead != NULL_STR && head != NULL_STR && head != serviceForState->_cachedHead)
+				// Ancestry only decides between a commit on this branch and a
+				// rewrite of it, so a switch need not pay for the query.
+				bool const sameRepo     = root == serviceForState->_cachedStateRoot;
+				bool const sameBranch   = branch == serviceForState->_cachedBranch;
+				bool const movedOnBranch = sameRepo && sameBranch && head != serviceForState->_cachedHead && serviceForState->_cachedHead != NULL_STR && head != NULL_STR;
+				bool const isDescendant  = movedOnBranch && scm::git_query::is_ancestor(root, serviceForState->_cachedHead, head);
+				auto const change = sameRepo ? scm::git_query::classify_head_change(serviceForState->_cachedBranch, serviceForState->_cachedHead, branch, head, isDescendant) : scm::git_query::head_change::none;
+
+				if(change != scm::git_query::head_change::none)
 				{
 					std::string const oldHead = serviceForState->_cachedHead;
-					bool const isDescendant = scm::git_query::is_ancestor(root, oldHead, head);
 					serviceForState->_previousHead = oldHead;
 
 					NSString* oldHeadNS = to_ns(oldHead);
 					NSString* newHeadNS = to_ns(head);
 					dispatch_async(dispatch_get_main_queue(), ^{
 						BufferDiffService* strongSelf = weakSelf;
-						if(strongSelf && strongSelf.headMovedHandler)
-							strongSelf.headMovedHandler(oldHeadNS, newHeadNS, isDescendant);
+						// A released service answers NO here, which is the
+						// right answer: there is nothing left to notify.
+						if(![strongSelf isStillObserving:doc attachment:attachment])
+							return;
+						if(strongSelf.headMovedHandler)
+							strongSelf.headMovedHandler(oldHeadNS, newHeadNS, change);
 					});
 				}
 				else if(root != serviceForState->_cachedStateRoot)
@@ -376,6 +418,7 @@ static size_t const kBufferDiffMaxBytes = 2 * 1024 * 1024;
 				}
 
 				serviceForState->_cachedHead          = head;
+				serviceForState->_cachedBranch        = branch;
 				serviceForState->_cachedStaged        = scm::git_query::has_staged_changes(root, rel);
 				serviceForState->_cachedRecentCommits = commitLimit ? scm::git_query::recent_commits(root, commitLimit) : std::vector<scm::git_query::commit_t>();
 				serviceForState->_cachedStateRoot     = root;

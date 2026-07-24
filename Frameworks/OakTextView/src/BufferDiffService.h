@@ -72,9 +72,12 @@ typedef NS_ENUM(NSInteger, BufferDiffRepoState) {
 @property (nonatomic, copy) void (^snapshotHandler)(BufferDiffSnapshot* snapshot);
 
 // Called on the main queue when the repo's HEAD is observed to move
-// while attached. isDescendant is `git merge-base --is-ancestor old new`
-// — a commit landed on top of the old HEAD (vs branch switch / reset).
-@property (nonatomic, copy) void (^headMovedHandler)(NSString* oldHead, NSString* newHead, BOOL isDescendant);
+// while attached, with what the move was: a commit on this branch, a
+// switch to another one, or a rewrite of this one. The commit alone
+// cannot tell these apart — two branches can share a commit, and a
+// branch can be switched to a descendant of where you were — so the
+// branch is compared as well.
+@property (nonatomic, copy) void (^headMovedHandler)(NSString* oldHead, NSString* newHead, scm::git_query::head_change change);
 
 - (void)scheduleUpdate; // debounced buffer-edit path
 - (void)updateNow;      // immediate recompute, refreshing cached git state

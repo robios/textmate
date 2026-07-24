@@ -321,6 +321,37 @@ void test_classify_empty_state_untracked_empty_is_not_clean ()
 	OAK_ASSERT_EQ(classify_empty_state(true, false, false, false, true, false, true), empty_state::untracked_empty);
 }
 
+// The full base-kind × head-change reset table (review B, finding B3).
+// The three the finding names explicitly are marked.
+void test_head_move_resets_base_table ()
+{
+	using scm::git_query::head_change;
+	using diff_pane::head_move_resets_base;
+	auto const head = review_base_kind::head, commit = review_base_kind::commit, relative = review_base_kind::relative;
+
+	// A commit landing resets nothing — a pinned base offers a banner, a
+	// relative base follows, and HEAD is already HEAD.
+	OAK_ASSERT(!head_move_resets_base(head,     head_change::committed));
+	OAK_ASSERT(!head_move_resets_base(commit,   head_change::committed));
+	OAK_ASSERT(!head_move_resets_base(relative, head_change::committed));
+
+	// A switch resets every kind — including relative (B3: relative + switched → reset).
+	OAK_ASSERT(head_move_resets_base(head,     head_change::switched));
+	OAK_ASSERT(head_move_resets_base(commit,   head_change::switched));
+	OAK_ASSERT(head_move_resets_base(relative, head_change::switched));
+
+	// A rewrite resets a pinned base (B3: pinned + rewritten → reset)…
+	OAK_ASSERT(head_move_resets_base(head,   head_change::rewritten));
+	OAK_ASSERT(head_move_resets_base(commit, head_change::rewritten));
+	// …but spares a relative one (B3: relative + rewritten → no reset).
+	OAK_ASSERT(!head_move_resets_base(relative, head_change::rewritten));
+
+	// `none` never resets anything.
+	OAK_ASSERT(!head_move_resets_base(head,     head_change::none));
+	OAK_ASSERT(!head_move_resets_base(commit,   head_change::none));
+	OAK_ASSERT(!head_move_resets_base(relative, head_change::none));
+}
+
 // ==========
 // = Revert =
 // ==========

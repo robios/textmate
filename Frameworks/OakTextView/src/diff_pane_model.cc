@@ -205,6 +205,19 @@ namespace diff_pane
 		return empty_state::clean;
 	}
 
+	bool head_move_resets_base (review_base_kind kind, scm::git_query::head_change change)
+	{
+		using scm::git_query::head_change;
+		switch(change)
+		{
+			case head_change::none:      return false; // nothing moved
+			case head_change::committed: return false; // pinned offers a banner, relative follows
+			case head_change::switched:  return true;  // every kind — the base's commits may be unreachable
+			case head_change::rewritten: return kind != review_base_kind::relative; // relative follows the rewrite
+		}
+		return false;
+	}
+
 	std::string to_s (empty_state state)
 	{
 		switch(state)

@@ -61,6 +61,15 @@ namespace scm
 		bool _pending_update = false;
 		dispatch_time_t _no_check_before = DISPATCH_TIME_NOW;
 		std::shared_ptr<watcher_t> _watcher;
+		// A linked worktree (or a submodule) keeps HEAD, the index and
+		// its refs outside the worktree, so watching the worktree alone
+		// never sees a commit or a `git add`. Empty for an ordinary
+		// repository, where the metadata is already below the root.
+		std::string _git_meta_dir = NULL_STR;
+		// The same directory as FSEvents names it, which is what the
+		// events must be measured against.
+		std::string _git_meta_event_dir = NULL_STR;
+		std::shared_ptr<watcher_t> _git_meta_watcher;
 		std::set<info_t*> _clients;
 	};
 
@@ -150,6 +159,11 @@ namespace scm
 	shared_info_t::shared_info_t (std::string const& rootPath, scm::driver_t const* driver) : _root_path(rootPath), _driver(driver)
 	{
 		_queue = dispatch_queue_create("org.textmate.scm.status", DISPATCH_QUEUE_SERIAL);
+		if(_driver && _driver->name() == "git")
+		{
+			_git_meta_dir       = git_metadata_dir(_root_path);
+			_git_meta_event_dir = _git_meta_dir != NULL_STR ? fs_event_path(_git_meta_dir) : NULL_STR;
+		}
 	}
 
 	shared_info_t::~shared_info_t ()
@@ -163,6 +177,13 @@ namespace scm
 		if(_clients.size() == 1)
 		{
 			_watcher = std::make_shared<scm::watcher_t>(_root_path, std::bind(&shared_info_t::fs_did_change, this, std::placeholders::_1));
+
+			// Only when the metadata is somewhere the first watcher cannot
+			// reach — an ordinary repository keeps it below the root, and a
+			// second stream over the same tree would just double the events.
+			if(_git_meta_dir != NULL_STR && path::relative_to(_git_meta_dir, _root_path).compare(0, 2, "..") == 0)
+				_git_meta_watcher = std::make_shared<scm::watcher_t>(_git_meta_dir, std::bind(&shared_info_t::fs_did_change, this, std::placeholders::_1));
+
 			schedule_update();
 		}
 		else
@@ -174,7 +195,10 @@ namespace scm
 	void shared_info_t::remove_client (info_t* client)
 	{
 		if(_clients.size() == 1)
+		{
 			_watcher.reset();
+			_git_meta_watcher.reset();
+		}
 		_clients.erase(client);
 	}
 
@@ -262,27 +286,9 @@ namespace scm
 
 	void shared_info_t::fs_did_change (std::set<std::string> const& changedPaths)
 	{
-		auto const is_repo_meta_change = [](std::string const& path) -> bool {
-			auto const pos = path.find("/.git");
-			if(pos == std::string::npos)
-				return false;
-
-			auto const rel_pos = pos + 5;
-			if(path.size() == rel_pos)
-				return true;
-			if(path[rel_pos] != '/')
-				return false;
-
-			std::string const rel = path.substr(rel_pos + 1);
-			return rel == "HEAD"
-			    || rel == "index"
-			    || rel == "packed-refs"
-			    || rel.compare(0, 11, "refs/heads/") == 0;
-		};
-
 		for(auto const& path : changedPaths)
 		{
-			if(is_repo_meta_change(path))
+			if(is_repo_meta_path(_git_meta_event_dir, path))
 			{
 				gutter_diff::invalidate_repo(_root_path);
 				_force_update = true;

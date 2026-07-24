@@ -66,6 +66,30 @@ namespace scm { namespace git_query {
 		return run_git(repo_root, { "merge-base", "--is-ancestor", ancestor, descendant }) != NULL_STR;
 	}
 
+	std::string symbolic_head (std::string const& repo_root)
+	{
+		// Fails — and so reports NULL_STR — exactly when HEAD is detached.
+		std::string out = run_git(repo_root, { "symbolic-ref", "--quiet", "HEAD" });
+		return out == NULL_STR ? NULL_STR : chomp(out);
+	}
+
+	head_change classify_head_change (std::string const& old_branch, std::string const& old_sha, std::string const& new_branch, std::string const& new_sha, bool is_descendant)
+	{
+		if(old_sha == NULL_STR || new_sha == NULL_STR)
+			return head_change::none; // nothing observed yet, or an unborn HEAD
+
+		bool const branch_changed = old_branch != new_branch;
+		if(!branch_changed && old_sha == new_sha)
+			return head_change::none;
+
+		// A switch is a switch even when the commit is unchanged, and even
+		// when the new tip happens to descend from the old one.
+		if(branch_changed)
+			return head_change::switched;
+
+		return is_descendant ? head_change::committed : head_change::rewritten;
+	}
+
 	bool has_staged_changes (std::string const& repo_root, std::string const& rel_path)
 	{
 		std::string out = run_git(repo_root, { "diff", "--cached", "--name-only", "--", rel_path });

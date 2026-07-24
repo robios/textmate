@@ -23,6 +23,26 @@ namespace scm { namespace git_query {
 	// True when `ancestor` is an ancestor of (or equal to) `descendant`.
 	bool is_ancestor (std::string const& repo_root, std::string const& ancestor, std::string const& descendant);
 
+	// The branch HEAD points at (`refs/heads/…`), or NULL_STR when HEAD is
+	// detached. Needed because the commit alone cannot tell a branch switch
+	// from a commit: two branches can point at the same commit, and a branch
+	// can be switched to one whose tip is a descendant of where you were.
+	std::string symbolic_head (std::string const& repo_root);
+
+	// What a HEAD observation means, given what was seen last time.
+	enum class head_change
+	{
+		none,      // nothing moved
+		committed, // same branch, HEAD advanced onto a descendant
+		switched,  // a different branch, or into or out of detached HEAD
+		rewritten, // same branch, but HEAD is no longer a descendant: reset, rebase, amend
+	};
+
+	// Pure classification of the above. `is_descendant` is only consulted
+	// when the branch is unchanged, so callers need not run the ancestry
+	// query for a switch at all.
+	head_change classify_head_change (std::string const& old_branch, std::string const& old_sha, std::string const& new_branch, std::string const& new_sha, bool is_descendant);
+
 	// Does the index differ from HEAD for this path?
 	bool has_staged_changes (std::string const& repo_root, std::string const& rel_path);
 
