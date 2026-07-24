@@ -1,4 +1,4 @@
-# rave: require document lsp selection text io ns
+# rave: require document lsp scm selection text io ns
 add_library(AgentBridge STATIC)
 file(GLOB _src src/*.cc src/*.mm)
 target_sources(AgentBridge PRIVATE ${_src})

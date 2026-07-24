@@ -18,6 +18,14 @@
 - (OakDocument*)selectedDocument;
 @end
 
+// Additional DocumentWindowController selectors used opportunistically
+// (guarded by respondsToSelector:) — same one-directional dependency rule.
+@protocol AgentBridgeHostWindowExtras <NSObject>
+@optional
+- (void)makeTextViewFirstResponder:(id)sender;
+- (void)closeTabsAtIndexes:(NSIndexSet*)anIndexSet askToSaveChanges:(BOOL)askToSaveFlag createDocumentIfEmpty:(BOOL)createIfEmptyFlag activate:(BOOL)activateFlag;
+@end
+
 static id <AgentBridgeHostWindow> HostControllerForWindow (NSWindow* window)
 {
 	id delegate = window.delegate;
@@ -27,18 +35,27 @@ static id <AgentBridgeHostWindow> HostControllerForWindow (NSWindow* window)
 }
 
 // Front-to-back list of document window controllers. [NSApp orderedWindows]
-// provides the ordering but excludes miniaturized windows, so sweep
-// NSApp.windows afterwards — a minimized project must not drop out of the
-// lock file or getOpenEditors.
+// provides the ordering but excludes miniaturized windows, so sweep the
+// miniaturized ones afterwards — a minimized project must not drop out of
+// the lock file or getOpenEditors.
 static NSArray<id <AgentBridgeHostWindow>>* HostControllers ()
 {
 	NSMutableArray* res = [NSMutableArray array];
-	for(NSArray<NSWindow*>* windows in @[ [NSApp orderedWindows], NSApp.windows ])
+	for(NSWindow* window in [NSApp orderedWindows])
 	{
-		for(NSWindow* window in windows)
+		if(id <AgentBridgeHostWindow> controller = HostControllerForWindow(window))
 		{
-			id <AgentBridgeHostWindow> controller = HostControllerForWindow(window);
-			if(controller && [res indexOfObjectIdenticalTo:controller] == NSNotFound)
+			if([res indexOfObjectIdenticalTo:controller] == NSNotFound)
+				[res addObject:controller];
+		}
+	}
+	for(NSWindow* window in NSApp.windows)
+	{
+		if(!window.miniaturized)
+			continue;
+		if(id <AgentBridgeHostWindow> controller = HostControllerForWindow(window))
+		{
+			if([res indexOfObjectIdenticalTo:controller] == NSNotFound)
 				[res addObject:controller];
 		}
 	}
@@ -420,6 +437,48 @@ static void* kAgentBridgeSelectionObserverContext = &kAgentBridgeSelectionObserv
 	[document saveModalForWindow:nil completionHandler:^(OakDocumentIOResult result, NSString* errorMessage, oak::uuid_t const& filterUUID){
 		handler(result == OakDocumentIOResultSuccess, errorMessage);
 	}];
+}
+
+- (id <AgentBridgeHostWindow>)controllerForDocument:(OakDocument*)document
+{
+	if(!document)
+		return nil;
+	for(id <AgentBridgeHostWindow> controller in HostControllers())
+	{
+		if([controller.documents indexOfObjectIdenticalTo:document] != NSNotFound)
+			return controller;
+	}
+	return nil;
+}
+
+- (NSUUID*)projectIdentifierForDocument:(OakDocument*)document
+{
+	NSObject* controller = (NSObject*)[self controllerForDocument:document];
+	if([controller respondsToSelector:@selector(identifier)])
+	{
+		id identifier = [controller valueForKey:@"identifier"];
+		if([identifier isKindOfClass:[NSUUID class]])
+			return identifier;
+	}
+	return nil;
+}
+
+- (void)focusTextViewForDocument:(OakDocument*)document
+{
+	id <AgentBridgeHostWindowExtras> controller = (id)[self controllerForDocument:document];
+	if([controller respondsToSelector:@selector(makeTextViewFirstResponder:)])
+		[controller makeTextViewFirstResponder:nil];
+}
+
+- (BOOL)closeTabForDocument:(OakDocument*)document
+{
+	id <AgentBridgeHostWindow> controller = [self controllerForDocument:document];
+	NSUInteger index = [controller.documents indexOfObjectIdenticalTo:document];
+	if(index == NSNotFound || ![(id)controller respondsToSelector:@selector(closeTabsAtIndexes:askToSaveChanges:createDocumentIfEmpty:activate:)])
+		return NO;
+
+	[(id <AgentBridgeHostWindowExtras>)controller closeTabsAtIndexes:[NSIndexSet indexSetWithIndex:index] askToSaveChanges:NO createDocumentIfEmpty:YES activate:YES];
+	return YES;
 }
 
 // ===============

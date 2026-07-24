@@ -223,10 +223,6 @@ static BOOL ParseLineArgument (NSString* value, NSInteger* line)
 	[_lockFile remove];
 	_lockFile = nil;
 
-	// Deterministically resolve pending review sessions: the cancelled
-	// connections’ own orphaning may never run once we drop the server.
-	[_server orphanAllSessions];
-
 	[_server stop];
 	_server = nil;
 

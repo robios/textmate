@@ -2,7 +2,6 @@
 
 using scm::text_diff::replacements;
 using scm::text_diff::replacements_t;
-using scm::text_diff::seal_edits;
 using scm::text_diff::unified;
 
 static std::string apply_edits (replacements_t const& edits, std::string const& oldText)
@@ -23,9 +22,6 @@ static std::string apply_edits (replacements_t const& edits, std::string const& 
 static void round_trip (std::string const& oldText, std::string const& newText)
 {
 	replacements_t edits = replacements(oldText, newText);
-	OAK_ASSERT_EQ(apply_edits(edits, oldText), newText);
-
-	seal_edits(edits, oldText);
 	OAK_ASSERT_EQ(apply_edits(edits, oldText), newText);
 }
 
@@ -51,6 +47,10 @@ void test_round_trips ()
 	round_trip("x", "y");                          // single unterminated line
 	round_trip("a\nb\nc\nd\ne\n", "a\nB\nc\nD\ne");// multiple hunks + newline change
 	round_trip("line1\nline2\nline3\n", "intro\nline1\nline3\nline4\n");
+	round_trip("aaa\n\n\n\nbbb\n\n\n\nccc\n", "aaa\nX\n\n\n\nbbb\n\n\n\nY\nccc\n");
+	round_trip("a\nb\n", "a\nX\nY\nb\n");
+	round_trip("\n\n\n", "\n\n\n\n");              // all-whitespace file
+	round_trip(" \t \t", "\t \t ");
 }
 
 void test_minimal_edits_leave_context_untouched ()
@@ -61,36 +61,6 @@ void test_minimal_edits_leave_context_untouched ()
 	OAK_ASSERT_EQ(edits.begin()->first.first, 6);
 	OAK_ASSERT_EQ(edits.begin()->first.second, 13);
 	OAK_ASSERT_EQ(edits.begin()->second, "SECOND\n");
-}
-
-void test_seal_widens_pure_insertion ()
-{
-	// A pure insertion record could merge with adjacent user typing in
-	// ng::undo_manager_t::should_merge; sealing must turn it into a replace.
-	replacements_t edits = replacements("a\nb\n", "a\nNEW\nb\n");
-	OAK_ASSERT_EQ(edits.size(), 1);
-	OAK_ASSERT(edits.begin()->first.first == edits.begin()->first.second); // pure insert
-
-	seal_edits(edits, "a\nb\n");
-	OAK_ASSERT(edits.begin()->first.first < edits.begin()->first.second); // now a replace
-	OAK_ASSERT(!edits.begin()->second.empty());
-	OAK_ASSERT_EQ(apply_edits(edits, "a\nb\n"), "a\nNEW\nb\n");
-}
-
-void test_seal_widens_pure_erasure ()
-{
-	replacements_t edits = replacements("a\nGONE\nb\n", "a\nb\n");
-	seal_edits(edits, "a\nGONE\nb\n");
-	for(auto const& edit : edits)
-		OAK_ASSERT(!(edit.first.first < edit.first.second && edit.second.empty())); // no pure-erase records at the edges
-	OAK_ASSERT_EQ(apply_edits(edits, "a\nGONE\nb\n"), "a\nb\n");
-}
-
-void test_seal_insertion_into_empty ()
-{
-	replacements_t edits = replacements("", "hello\n");
-	seal_edits(edits, ""); // nothing to widen into — must stay correct
-	OAK_ASSERT_EQ(apply_edits(edits, ""), "hello\n");
 }
 
 void test_unified_output ()

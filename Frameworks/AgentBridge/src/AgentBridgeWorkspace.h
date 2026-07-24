@@ -18,8 +18,9 @@
 
 // Protocol-agnostic access to the app's windows, documents, selection and
 // diagnostics. This layer knows nothing about WebSockets or JSON-RPC — the
-// server (adapter) translates between it and the wire protocol, and WP2's
-// ProposalSession will sit on this side of the boundary.
+// server (adapter) translates between it and the wire protocol. It is the
+// one shared context source: the WebSocket MCP frontend (Claude) and, later,
+// the stdio MCP shim for other providers both answer out of here.
 @interface AgentBridgeWorkspace : NSObject
 @property (nonatomic, copy) void(^selectionDidChangeHandler)(AgentBridgeSelection* selection);
 @property (nonatomic, copy) void(^workspaceFoldersDidChangeHandler)(NSArray<NSString*>* folders);
@@ -35,6 +36,9 @@
 - (OakDocument*)openDocumentAtPath:(NSString*)path;
 - (void)openFileAtPath:(NSString*)path selectFromText:(NSString*)startText toText:(NSString*)endText selectToEndOfLine:(BOOL)selectToEndOfLine makeFrontmost:(BOOL)makeFrontmost completionHandler:(void(^)(OakDocument* document, NSUInteger lineCount))handler;
 - (void)saveDocument:(OakDocument*)document completionHandler:(void(^)(BOOL saved, NSString* message))handler;
+- (void)focusTextViewForDocument:(OakDocument*)document; // make the document's window's text view first responder
+- (BOOL)closeTabForDocument:(OakDocument*)document;      // close the document's tab without a save prompt
+- (NSUUID*)projectIdentifierForDocument:(OakDocument*)document; // identifier of the window (project) showing the document
 
 - (NSDictionary<NSString*, NSArray<NSDictionary*>*>*)diagnosticsByURI; // raw LSP diagnostic entries per file URI
 @end

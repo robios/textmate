@@ -2,6 +2,8 @@
 #import "OakTextView_Private.h"
 #import "GutterView.h"
 #import "MinimapView.h"
+#import "MarkdownPreviewView.h"
+#import "DiffPaneView.h"
 #import "OakSwiftUI-Swift.h"
 #import <lsp/LSPClient.h>
 #import <lsp/LSPManager.h>
@@ -65,6 +67,12 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 	NSScrollView* textScrollView;
 	NSScrollView* minimapScrollView;
 	MinimapView* minimapView;
+
+	MarkdownPreviewDividerView* diffPaneDividerView;
+	NSScrollView* diffPaneScrollView;
+	DiffPaneView* diffPaneView;
+	CGFloat diffPaneWidth;
+	BOOL showDiffPane;
 
 	NSMutableArray* topAuxiliaryViews;
 	NSMutableArray* bottomAuxiliaryViews;
@@ -134,6 +142,9 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 		minimapScrollView.documentView           = minimapView;
 		minimapScrollView.hidden = ![NSUserDefaults.standardUserDefaults boolForKey:@"DocumentView Show Minimap"];
 
+		// The diff pane materializes lazily; only its width persists.
+		diffPaneWidth = [NSUserDefaults.standardUserDefaults doubleForKey:@"DocumentView Diff Pane Width"];
+
 		_statusBar = [[OTVStatusBar alloc] initWithFrame:NSZeroRect];
 		_statusBar.delegate = self;
 		_statusBar.target = self;
@@ -171,7 +182,30 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 		[self addConstraints:[NSLayoutConstraint constraintsWithVisualFormat:@"H:|[_statusBar]|" options:0 metrics:nil views:NSDictionaryOfVariableBindings(_statusBar)]];
 	}
 
-	[self addConstraints:[NSLayoutConstraint constraintsWithVisualFormat:@"H:|[gutterScrollView(==gutterView)][gutterDividerView][textScrollView(>=100)][minimapScrollView(==minimapWidth)]|" options:NSLayoutFormatAlignAllTop|NSLayoutFormatAlignAllBottom metrics:@{ @"minimapWidth": @(minimapScrollView.hidden ? 0 : 110) } views:NSDictionaryOfVariableBindings(gutterScrollView, gutterView, gutterDividerView, textScrollView, minimapScrollView)]];
+	{
+		NSMutableDictionary* views = [NSDictionaryOfVariableBindings(gutterScrollView, gutterView, gutterDividerView, textScrollView, minimapScrollView) mutableCopy];
+		NSMutableString* format = [@"H:|[gutterScrollView(==gutterView)][gutterDividerView][textScrollView(>=100)][minimapScrollView(==minimapWidth)]" mutableCopy];
+
+		// Diff pane width wins over stretching the text view but yields (@490)
+		// to the text view’s required minimum when the window gets too narrow.
+		BOOL const diffPaneVisible = diffPaneScrollView && !diffPaneScrollView.hidden;
+		CGFloat const maxDiffWidth = NSWidth(self.bounds) - NSWidth(gutterScrollView.frame) - (minimapScrollView.hidden ? 0 : 110) - 150;
+		NSDictionary* metrics = @{
+			@"minimapWidth": @(minimapScrollView.hidden ? 0 : 110),
+			@"diffDividerWidth": @(diffPaneVisible ? 5 : 0),
+			@"diffWidth": @(diffPaneVisible ? std::clamp<CGFloat>(diffPaneWidth, 150, std::max<CGFloat>(150, maxDiffWidth)) : 0),
+		};
+
+		if(diffPaneScrollView)
+		{
+			[format appendString:@"[diffPaneDividerView(==diffDividerWidth)][diffPaneScrollView(==diffWidth@490)]"];
+			views[@"diffPaneDividerView"] = diffPaneDividerView;
+			views[@"diffPaneScrollView"]  = diffPaneScrollView;
+		}
+		[format appendString:@"|"];
+
+		[self addConstraints:[NSLayoutConstraint constraintsWithVisualFormat:format options:NSLayoutFormatAlignAllTop|NSLayoutFormatAlignAllBottom metrics:metrics views:views]];
+	}
 	[self addConstraints:[NSLayoutConstraint constraintsWithVisualFormat:@"V:|[topView]" options:0 metrics:nil views:@{ @"topView": stackedViews[0] }]];
 	[self addConstraints:[NSLayoutConstraint constraintsWithVisualFormat:@"V:[bottomView]|" options:0 metrics:nil views:@{ @"bottomView": [stackedViews lastObject] }]];
 
@@ -262,6 +296,11 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 	gutterImages = nil; // force image sizes to be recalculated
 	gutterView.lineNumberFont = [NSFont fontWithName:lineNumberFontName size:round(scaleFactor * [_textView.font pointSize] * _textView.fontScaleFactor)];
 	[gutterView reloadData:self];
+
+	// The diff pane renders with the editor font, which is baked into the
+	// layout’s theme — every font change (Font panel, ⌘+/⌘−) and every theme
+	// change funnels through here, so this keeps the pane in sync with both.
+	diffPaneView.theme = _textView.theme;
 }
 
 - (IBAction)makeTextLarger:(id)sender
@@ -377,6 +416,8 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 
 	[_textView setDocument:self.document];
 	[minimapView setDocument:self.document];
+	[diffPaneView setDocument:self.document]; // the pane follows the active tab
+	[self updateDiffPaneVisibility];
 	[LSPManager.sharedManager documentDidOpen:aDocument];
 	[[CopilotManager sharedManager] documentDidOpen:aDocument];
 	[[CopilotManager sharedManager] documentDidFocus:aDocument];
@@ -433,6 +474,12 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 		minimapView.theme                 = theme;
 		minimapScrollView.backgroundColor = minimapView.backgroundColor;
 
+		diffPaneView.themeBackgroundColor   = [NSColor colorWithCGColor:theme->background(to_s(self.document.fileType))];
+		diffPaneView.themeForegroundColor   = [NSColor colorWithCGColor:theme->styles_for_scope(to_s(self.document.fileType)).foreground()];
+		diffPaneDividerView.backgroundColor = diffPaneView.themeBackgroundColor;
+		diffPaneDividerView.lineColor       = [NSColor colorWithCGColor:styles.divider];
+		diffPaneScrollView.backgroundColor  = diffPaneView.themeBackgroundColor;
+
 		[gutterView setNeedsDisplay:YES];
 	}
 }
@@ -454,6 +501,78 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 			[NSUserDefaults.standardUserDefaults setObject:@YES forKey:@"DocumentView Show Minimap"];
 	else	[NSUserDefaults.standardUserDefaults removeObjectForKey:@"DocumentView Show Minimap"];
 	[self setNeedsUpdateConstraints:YES];
+}
+
+// =============
+// = Diff pane =
+// =============
+
+// The pane host (scroll-view wrapper, divider, persisted width, theme) is
+// kept for the git-native review pane — see AI_COMPANION_GIT_NATIVE_DESIGN.md
+// phase B, which drives DiffPaneView from buffer-vs-review-base instead of
+// the removed agent proposal sessions. Nothing shows the pane yet: the
+// toggle, the menu item and the content source arrive with that phase.
+- (void)updateDiffPaneVisibility
+{
+	BOOL const show = showDiffPane;
+
+	if(show && !diffPaneView)
+	{
+		if(diffPaneWidth <= 0)
+			diffPaneWidth = std::max<CGFloat>(150, round(NSWidth(textScrollView.frame) / 2));
+
+		diffPaneView = [[DiffPaneView alloc] initWithFrame:NSZeroRect];
+		diffPaneView.document = self.document;
+
+		__weak OakDocumentView* weakSelf = self;
+		diffPaneView.closeHandler = ^{
+			[weakSelf hideDiffPane];
+		};
+
+		// Scroller-less scroll view wrapper, mirroring the gutter and minimap:
+		// a plain sibling that redraws next to OakTextView leaves the text
+		// view’s giant tiled backing layer blank.
+		diffPaneScrollView = [[NSScrollView alloc] initWithFrame:NSZeroRect];
+		diffPaneScrollView.borderType               = NSNoBorder;
+		diffPaneScrollView.hasVerticalScroller      = NO;
+		diffPaneScrollView.hasHorizontalScroller    = NO;
+		diffPaneScrollView.verticalScrollElasticity = NSScrollElasticityNone;
+		diffPaneScrollView.documentView             = diffPaneView;
+
+		diffPaneDividerView = [[MarkdownPreviewDividerView alloc] initWithFrame:NSZeroRect];
+		diffPaneDividerView.resizedView = diffPaneScrollView;
+		diffPaneDividerView.widthChangeHandler = ^(CGFloat newWidth){
+			[weakSelf takeDiffPaneWidthFrom:newWidth];
+		};
+
+		diffPaneScrollView.hidden  = YES; // flipped below, so the constraint pass always runs
+		diffPaneDividerView.hidden = YES;
+
+		OakAddAutoLayoutViewsToSuperview(@[ diffPaneDividerView, diffPaneScrollView ], self);
+		[self updateStyle]; // seed the pane’s theme colors
+	}
+
+	if(diffPaneScrollView && diffPaneScrollView.hidden == show)
+	{
+		diffPaneScrollView.hidden  = !show;
+		diffPaneDividerView.hidden = !show;
+		[self setNeedsUpdateConstraints:YES];
+	}
+	diffPaneView.active = show;
+}
+
+- (void)hideDiffPane
+{
+	showDiffPane = NO;
+	[self updateDiffPaneVisibility];
+}
+
+- (void)takeDiffPaneWidthFrom:(CGFloat)newWidth
+{
+	diffPaneWidth = newWidth;
+	[NSUserDefaults.standardUserDefaults setDouble:newWidth forKey:@"DocumentView Diff Pane Width"];
+	[self setNeedsUpdateConstraints:YES];
+	[self layoutSubtreeIfNeeded]; // live resize while the divider is dragged
 }
 
 - (BOOL)validateMenuItem:(NSMenuItem*)aMenuItem
@@ -962,6 +1081,7 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 {
 	[LSPManager.sharedManager documentDidSave:notification.object];
 	[[CopilotManager sharedManager] documentDidSave:notification.object];
+	[diffPaneView documentDidSave]; // disk baseline changed
 }
 
 - (void)documentWillClose:(NSNotification*)notification
@@ -969,6 +1089,7 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 	[LSPManager.sharedManager documentWillClose:notification.object];
 	[[CopilotManager sharedManager] documentWillClose:notification.object];
 	[minimapView setDocument:nil]; // detach buffer callback before the document deletes its buffer
+	[diffPaneView setDocument:nil];
 }
 
 // =======================

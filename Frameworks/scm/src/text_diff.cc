@@ -195,44 +195,6 @@ namespace scm { namespace text_diff {
 		return res;
 	}
 
-	void seal_edits (replacements_t& edits, std::string const& oldText)
-	{
-		if(edits.empty())
-			return;
-
-		auto widen = [&edits, &oldText](replacements_t::iterator it){
-			size_t from = it->first.first, to = it->first.second;
-			std::string str = it->second;
-
-			bool pureInsert = from == to && !str.empty();
-			bool pureErase  = from < to  &&  str.empty();
-			if(!pureInsert && !pureErase)
-				return;
-
-			if(from > 0)
-			{
-				str.insert(0, 1, oldText[from-1]);
-				--from;
-			}
-			else if(to < oldText.size())
-			{
-				str.push_back(oldText[to]);
-				++to;
-			}
-			else
-			{
-				return; // spans all of oldText — nothing to widen into
-			}
-
-			edits.erase(it);
-			edits.emplace(std::make_pair(from, to), str);
-		};
-
-		widen(edits.begin());
-		if(edits.size() > 1)
-			widen(std::prev(edits.end()));
-	}
-
 	std::string unified (std::string const& oldText, std::string const& newText, size_t context)
 	{
 		if(oldText == newText)

@@ -14,6 +14,7 @@
 - (void)setLspEnabled:(BOOL)enabled status:(NSString*)status serverName:(NSString*)serverName errors:(NSUInteger)errors warnings:(NSUInteger)warnings info:(NSUInteger)info;
 - (void)flashLspError;
 - (void)setCopilotStatus:(NSInteger)status;
+@property (nonatomic) NSString* agentStatusText; // discreet agent-related note; nil/empty hides it
 @property (nonatomic) NSString* selectionString;
 @property (nonatomic) NSString* grammarName;
 @property (nonatomic) NSString* symbolName;

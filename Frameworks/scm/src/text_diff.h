@@ -16,16 +16,6 @@ namespace scm { namespace text_diff {
 	using replacements_t = std::multimap<std::pair<size_t, size_t>, std::string>;
 	replacements_t replacements (std::string const& oldText, std::string const& newText);
 
-	// Widen the batch's first and last edit into replace records (one byte
-	// of adjacent context) when they are pure insertions or pure erasures.
-	// ng::undo_manager_t::should_merge (undo.cc:39) can fold an adjacent
-	// pure-insert or pure-erase user record into a matching record at the
-	// group boundary during undo; a replace record (before ≠ "" and
-	// after ≠ "") never merges, so this seals the batch's undo group at
-	// both ends. No-op for edits that cannot be widened (they span all of
-	// oldText).
-	void seal_edits (replacements_t& edits, std::string const& oldText);
-
 	// Classic unified diff of the two texts (hunks only, no ---/+++ file
 	// header), with `context` lines of context. Empty when the texts match.
 	std::string unified (std::string const& oldText, std::string const& newText, size_t context = 3);

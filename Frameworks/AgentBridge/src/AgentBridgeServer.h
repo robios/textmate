@@ -8,7 +8,9 @@
 
 // WebSocket (Network.framework) + JSON-RPC 2.0 / MCP adapter for the Claude
 // Code IDE protocol. All protocol knowledge lives in this class; editor
-// state is reached exclusively through AgentBridgeWorkspace.
+// state is reached exclusively through AgentBridgeWorkspace. The bridge only
+// PROVIDES context (open editors, selection, diagnostics) — writes are the
+// agent’s own business and are reviewed after the fact against git.
 @interface AgentBridgeServer : NSObject
 - (instancetype)initWithAuthToken:(NSString*)authToken workspace:(AgentBridgeWorkspace*)workspace;
 
@@ -26,11 +28,10 @@
 - (void)sendSelectionChanged:(AgentBridgeSelection*)selection;
 - (void)sendAtMentionedWithFilePath:(NSString*)filePath lineStart:(NSInteger)lineStart lineEnd:(NSInteger)lineEnd;
 
-// Orphan every pending review session (main queue). Must be called before a
-// deliberate -stop: the per-connection orphaning normally done by the
-// connection-cancelled handlers only holds a weak server reference, so once
-// the owner releases the stopped server those handlers may never run.
-- (void)orphanAllSessions;
+// Block (bounded) until every already-queued outgoing frame has been handed
+// to the socket (main queue). Call before -stop at application termination
+// so a quit-time tool reply is not dropped by the connection cancel.
+- (void)drainPendingSendsWithTimeout:(NSTimeInterval)timeout;
 @end
 
 #endif /* AGENT_BRIDGE_SERVER_H_WN31TQ8C */
