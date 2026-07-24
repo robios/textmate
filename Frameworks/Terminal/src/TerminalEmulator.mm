@@ -700,6 +700,164 @@ static GhosttyString xtversion_callback (GhosttyTerminal terminal, void* userdat
 	return ghostty_terminal_get(_terminal, GHOSTTY_TERMINAL_DATA_SELECTION, &selection) == GHOSTTY_SUCCESS;
 }
 
+// ================
+// = Logical line =
+// ================
+
+static void append_codepoint (std::string& str, uint32_t cp)
+{
+	if(cp == 0)
+	{
+		str += ' ';
+	}
+	else if(cp < 0x80)
+	{
+		str += (char)cp;
+	}
+	else if(cp < 0x800)
+	{
+		str += (char)(0xC0 | (cp >> 6));
+		str += (char)(0x80 | (cp & 0x3F));
+	}
+	else if(cp < 0x10000)
+	{
+		str += (char)(0xE0 | (cp >> 12));
+		str += (char)(0x80 | ((cp >> 6) & 0x3F));
+		str += (char)(0x80 | (cp & 0x3F));
+	}
+	else
+	{
+		str += (char)(0xF0 | (cp >> 18));
+		str += (char)(0x80 | ((cp >> 12) & 0x3F));
+		str += (char)(0x80 | ((cp >> 6) & 0x3F));
+		str += (char)(0x80 | (cp & 0x3F));
+	}
+}
+
+- (BOOL)logicalLineAtColumn:(NSUInteger)column row:(NSUInteger)row text:(std::string*)outText hoverOffset:(size_t*)outHoverOffset cells:(std::vector<terminal_link_cell_t>*)outCells
+{
+	std::lock_guard<std::mutex> lock(_terminalMutex);
+
+	GhosttyGridRef hoverRef;
+	if(![self gridRefForColumn:column row:row outRef:&hoverRef])
+		return NO;
+
+	GhosttyPointCoordinate screenCoord;
+	if(ghostty_terminal_point_from_grid_ref(_terminal, &hoverRef, GHOSTTY_POINT_TAG_SCREEN, &screenCoord) != GHOSTTY_SUCCESS)
+		return NO;
+	uint32_t const hoverScreenY = screenCoord.y;
+
+	GhosttyTerminal terminal = _terminal;
+	auto refForScreenRow = [&terminal](uint32_t y, GhosttyGridRef* outRef) -> bool {
+		GhosttyPoint point = { .tag = GHOSTTY_POINT_TAG_SCREEN };
+		point.value.coordinate = (GhosttyPointCoordinate){ 0, y };
+		*outRef = GHOSTTY_INIT_SIZED(GhosttyGridRef);
+		return ghostty_terminal_grid_ref(terminal, point, outRef) == GHOSTTY_SUCCESS;
+	};
+
+	// Sanity bound for pathological wrapped lines (e.g. minified output).
+	// Residual risk of truncating at the cap: a token cut mid-path could
+	// match a *different* existing file — the on-disk existence check in the
+	// grid view is the only barrier against opening it. At 100 rows × typical
+	// widths that is thousands of columns, so accepted for v1.
+	NSUInteger const kMaxLogicalRows = 100;
+
+	// Walk up while the row is a wrap continuation to find the line’s first row
+	uint32_t startY = hoverScreenY;
+	for(NSUInteger guard = 0; guard < kMaxLogicalRows && startY > 0; ++guard)
+	{
+		GhosttyGridRef ref;
+		GhosttyRow rowHandle = 0;
+		bool continuation = false;
+		if(!refForScreenRow(startY, &ref) || ghostty_grid_ref_row(&ref, &rowHandle) != GHOSTTY_SUCCESS)
+			break;
+		ghostty_row_get(rowHandle, GHOSTTY_ROW_DATA_WRAP_CONTINUATION, &continuation);
+		if(!continuation)
+			break;
+		--startY;
+	}
+
+	// Collect rows downward while each row soft-wraps onto the next
+	std::string text;
+	std::vector<terminal_link_cell_t> cells;
+	size_t hoverOffset = std::string::npos;
+	NSUInteger const cols = _gridColumns;
+
+	uint32_t y = startY;
+	for(NSUInteger guard = 0; guard < kMaxLogicalRows; ++guard, ++y)
+	{
+		GhosttyGridRef rowRef;
+		if(!refForScreenRow(y, &rowRef))
+			break;
+
+		GhosttyRow rowHandle = 0;
+		bool wrapped = false;
+		if(ghostty_grid_ref_row(&rowRef, &rowHandle) == GHOSTTY_SUCCESS)
+			ghostty_row_get(rowHandle, GHOSTTY_ROW_DATA_WRAP, &wrapped);
+
+		NSInteger const viewportRow = (NSInteger)row + ((NSInteger)y - (NSInteger)hoverScreenY);
+
+		size_t prevBegin = text.size(), prevEnd = text.size();
+		for(NSUInteger x = 0; x < cols; ++x)
+		{
+			GhosttyGridRef cellRef = rowRef; // same row node, vary the column
+			cellRef.x = (uint16_t)x;
+
+			GhosttyCell cellValue = 0;
+			GhosttyCellWide wide = GHOSTTY_CELL_WIDE_NARROW;
+			if(ghostty_grid_ref_cell(&cellRef, &cellValue) == GHOSTTY_SUCCESS)
+				ghostty_cell_get(cellValue, GHOSTTY_CELL_DATA_WIDE, &wide);
+
+			size_t begin = text.size(), end;
+			if(wide == GHOSTTY_CELL_WIDE_SPACER_TAIL)
+			{
+				begin = prevBegin; // covered by the wide character before it
+				end   = prevEnd;
+			}
+			else if(wide == GHOSTTY_CELL_WIDE_SPACER_HEAD)
+			{
+				end = begin; // zero-width filler before a soft-wrapped wide character
+			}
+			else
+			{
+				uint32_t buffer[16];
+				size_t len = 0;
+				if(ghostty_grid_ref_graphemes(&cellRef, buffer, sizeof(buffer)/sizeof(buffer[0]), &len) == GHOSTTY_SUCCESS && len > 0)
+				{
+					for(size_t i = 0; i < len; ++i)
+						append_codepoint(text, buffer[i]);
+				}
+				else
+				{
+					text += ' '; // empty cell (or oversized cluster) keeps column alignment
+				}
+				end = text.size();
+				prevBegin = begin;
+				prevEnd   = end;
+			}
+
+			if(y == hoverScreenY && x == column)
+				hoverOffset = begin;
+
+			cells.push_back({ viewportRow, x, begin, end });
+		}
+
+		if(!wrapped)
+			break;
+	}
+
+	while(!text.empty() && text.back() == ' ')
+		text.pop_back();
+
+	if(hoverOffset == std::string::npos || hoverOffset >= text.size())
+		return NO;
+
+	*outText        = std::move(text);
+	*outHoverOffset = hoverOffset;
+	*outCells       = std::move(cells);
+	return YES;
+}
+
 - (NSString*)selectedString
 {
 	std::lock_guard<std::mutex> lock(_terminalMutex);

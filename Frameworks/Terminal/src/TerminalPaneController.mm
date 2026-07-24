@@ -81,6 +81,13 @@
 - (std::map<std::string, std::string>)environment                         { return _environment; }
 - (void)setEnvironment:(std::map<std::string, std::string>)newEnvironment { _environment = newEnvironment; }
 
+- (void)setOpenFileHandler:(void(^)(NSString*, NSUInteger, NSUInteger))handler
+{
+	_openFileHandler = [handler copy];
+	for(TerminalSession* session in _sessions)
+		session.openFileHandler = _openFileHandler;
+}
+
 // Placement is app-layout state owned by the window controller; the pane
 // just forwards it to the status bar’s switcher (and clicks back out).
 - (NSString*)placement                    { return _statusBar.placement; }
@@ -169,6 +176,7 @@
 	TerminalSession* session = [[TerminalSession alloc] init];
 	session.workingDirectory = self.workingDirectory;
 	session.environment      = _environment;
+	session.openFileHandler  = _openFileHandler;
 	[session applyDarkPalette:[self prefersDarkPalette]];
 	session.allowsProcessPolling = _view.window ? YES : NO;
 

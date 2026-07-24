@@ -2189,6 +2189,10 @@ static NSArray* const kObservedKeyPaths = @[ @"arrayController.arrangedObjects.p
 				self.terminalPane.shellExitedHandler = ^{
 					weakSelf.terminalVisible = NO;
 				};
+				self.terminalPane.openFileHandler = ^(NSString* path, NSUInteger line, NSUInteger column){
+					[weakSelf openTerminalFileLink:path line:line column:column];
+				};
+
 				// The status bar’s placement switcher: writing the default takes
 				// the same route as the Preferences popup — ProjectLayoutView
 				// observes the key and relocates the pane live, and every window’s
@@ -2217,6 +2221,19 @@ static NSArray* const kObservedKeyPaths = @[ @"arrayController.arrangedObjects.p
 		}
 	}
 	[[self class] scheduleSessionBackup:self];
+}
+
+// ⌘-clicked file reference in the terminal: open the file in this project
+// window and land in the editor at the referenced position — the same
+// open-and-select path used by txmt: URLs (showDocument:andSelect: →
+// ng::convert; pos_t columns are byte offsets, matching compiler output).
+- (void)openTerminalFileLink:(NSString*)path line:(NSUInteger)line column:(NSUInteger)column
+{
+	OakDocument* document = [OakDocumentController.sharedInstance documentWithPath:path];
+	if(!document)
+		return;
+	text::range_t range = line ? text::range_t(text::pos_t(line-1, column ? column-1 : 0)) : text::range_t::undefined;
+	[OakDocumentController.sharedInstance showDocument:document andSelect:range inProject:self.identifier bringToFront:YES];
 }
 
 - (void)updateTerminalPaneTheme

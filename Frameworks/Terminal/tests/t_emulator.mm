@@ -225,3 +225,59 @@ void test_pty_resize_reaches_child ()
 
 	[pty shutdown];
 }
+
+// Logical-line reconstruction: soft-wrapped rows are joined via ghostty’s
+// per-row wrap/continuation flags, and the hovered cell maps to its byte
+// offset within the joined line.
+void test_logical_line_reconstruction ()
+{
+	TerminalEmulator* emulator = [[TerminalEmulator alloc] initWithColumns:20 rows:5 maxScrollback:100];
+	OAK_ASSERT(emulator);
+
+	// 30 characters — soft-wraps onto a second row at 20 columns
+	char const* input = "Frameworks/buffer/src/foo.cc:9";
+	[emulator feedBytes:input length:strlen(input)];
+	[emulator synchronizeRenderState];
+
+	std::string text;
+	size_t hoverOffset = 0;
+	std::vector<terminal_link_cell_t> cells;
+
+	// Hover on the first row (column 3 → the ‘m’ of Frameworks)
+	OAK_ASSERT([emulator logicalLineAtColumn:3 row:0 text:&text hoverOffset:&hoverOffset cells:&cells]);
+	OAK_ASSERT_EQ(text, "Frameworks/buffer/src/foo.cc:9");
+	OAK_ASSERT_EQ(hoverOffset, 3u);
+
+	// Hover on the wrapped continuation row (row 1, column 4 → offset 24)
+	OAK_ASSERT([emulator logicalLineAtColumn:4 row:1 text:&text hoverOffset:&hoverOffset cells:&cells]);
+	OAK_ASSERT_EQ(text, "Frameworks/buffer/src/foo.cc:9");
+	OAK_ASSERT_EQ(hoverOffset, 24u);
+
+	// The cell map covers both viewport rows and round-trips offsets
+	bool sawRow0 = false, sawRow1 = false;
+	for(auto const& cell : cells)
+	{
+		if(cell.byteBegin < cell.byteEnd && cell.byteBegin < text.size())
+		{
+			if(cell.viewportRow == 0) sawRow0 = true;
+			if(cell.viewportRow == 1) sawRow1 = true;
+			if(cell.viewportRow == 0)
+				OAK_ASSERT_EQ(cell.byteBegin, (size_t)cell.column);
+			if(cell.viewportRow == 1)
+				OAK_ASSERT_EQ(cell.byteBegin, (size_t)(20 + cell.column));
+		}
+	}
+	OAK_ASSERT(sawRow0);
+	OAK_ASSERT(sawRow1);
+
+	// A hard newline ends the logical line
+	char const* more = "\r\nsecond";
+	[emulator feedBytes:more length:strlen(more)];
+	[emulator synchronizeRenderState];
+	OAK_ASSERT([emulator logicalLineAtColumn:2 row:2 text:&text hoverOffset:&hoverOffset cells:&cells]);
+	OAK_ASSERT_EQ(text, "second");
+	OAK_ASSERT_EQ(hoverOffset, 2u);
+
+	// Blank rows are not links
+	OAK_ASSERT(![emulator logicalLineAtColumn:0 row:4 text:&text hoverOffset:&hoverOffset cells:&cells]);
+}

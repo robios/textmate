@@ -41,6 +41,11 @@
 // sets it while the pane is in a window) and a process is being shown.
 @property (nonatomic) BOOL allowsProcessPolling;
 
+// ⌘-clicked file reference in this session’s output. Paths are absolute
+// (relative references were resolved against this session’s live cwd);
+// line/column are 1-based, 0 = unspecified.
+@property (nonatomic, copy) void(^openFileHandler)(NSString* path, NSUInteger line, NSUInteger column);
+
 // All handlers are invoked on the main queue.
 @property (nonatomic, copy) void(^exitedHandler)(void);                       // shell exited; remove the session
 @property (nonatomic, copy) void(^stateChangedHandler)(void);                 // title, pwd, or process info changed

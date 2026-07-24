@@ -26,6 +26,13 @@
 // startShellIfNeeded starts a fresh session.
 @property (nonatomic, copy) void(^shellExitedHandler)(void);
 
+// ⌘-clicked file reference in any session’s output (injected by the owning
+// window controller, like environment/theme). Paths are absolute — relative
+// references were resolved against the originating session’s live cwd;
+// line/column are 1-based, 0 = unspecified. Without a handler the terminal
+// does no link detection at all.
+@property (nonatomic, copy) void(^openFileHandler)(NSString* path, NSUInteger line, NSUInteger column);
+
 // The status bar’s placement switcher (left/bottom/right, see
 // TerminalStatusBar). The pane is preference-free: the owning window
 // controller keeps `placement` in sync with the placement user default and

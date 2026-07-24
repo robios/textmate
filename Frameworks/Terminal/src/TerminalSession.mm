@@ -67,6 +67,10 @@ static NSString* const kUserDefaultsTerminalScrollbackLinesKey = @"terminalScrol
 			TerminalSession* strongSelf = weakSelf;
 			[strongSelf->_ptyController writeData:data];
 		};
+		_gridView.workingDirectoryProvider = ^NSString*{
+			TerminalSession* strongSelf = weakSelf;
+			return strongSelf.currentDirectory ?: strongSelf.workingDirectory; // live OSC 7 value, falling back to the spawn cwd
+		};
 		_gridView.gridSizeChangedHandler = ^(NSUInteger columns, NSUInteger rows, NSUInteger pixelWidth, NSUInteger pixelHeight){
 			TerminalSession* strongSelf = weakSelf;
 			if(!strongSelf)
@@ -135,6 +139,12 @@ static NSString* const kUserDefaultsTerminalScrollbackLinesKey = @"terminalScrol
 
 - (std::map<std::string, std::string>)environment                         { return _environment; }
 - (void)setEnvironment:(std::map<std::string, std::string>)newEnvironment { _environment = newEnvironment; }
+
+- (void)setOpenFileHandler:(void(^)(NSString*, NSUInteger, NSUInteger))handler
+{
+	_openFileHandler = [handler copy];
+	_gridView.openFileHandler = _openFileHandler;
+}
 
 - (BOOL)hasRunningProcess        { return _ptyController.hasForegroundProcess; }
 - (NSString*)runningProcessName  { return _ptyController.foregroundProcessName; }

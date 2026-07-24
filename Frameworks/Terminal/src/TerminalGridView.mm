@@ -1,6 +1,9 @@
 #import "TerminalGridView.h"
+#import "link_detect.h"
 #import <Carbon/Carbon.h> // kVK_* virtual key codes only, nothing is linked
 #include <atomic>
+#include <map>
+#include <string>
 #include <vector>
 
 static CGFloat const kTerminalViewPadding = 6;
@@ -170,6 +173,12 @@ struct cell_style_key_t
 	bool strikethrough;
 };
 
+struct link_span_t // one viewport row’s stretch of a ⌘-hovered file link
+{
+	NSUInteger row;
+	NSUInteger colBegin, colEnd; // colEnd exclusive
+};
+
 @implementation TerminalGridView
 {
 	std::vector<terminal_cell_t> _grid;
@@ -192,6 +201,18 @@ struct cell_style_key_t
 	NSRange _markedSelection;
 
 	id _windowKeyObserver, _windowUnkeyObserver;
+
+	// ⌘-click file links — populated only by ⌘-hover/-click detection
+	std::vector<link_span_t> _linkSpans;
+	NSString* _linkPath;
+	NSUInteger _linkLine, _linkColumn;
+	BOOL _linkActive;
+	BOOL _linkCursorSet;
+	BOOL _linkLookupValid;   // detection already ran for _linkLookup{Column,Row} (result may be “no link”)
+	NSUInteger _linkLookupColumn, _linkLookupRow;
+	BOOL _linkClickPending;  // swallow the mouseUp of a handled ⌘-click
+	id _flagsChangedMonitor;
+	NSTrackingArea* _linkTrackingArea;
 }
 
 - (instancetype)initWithEmulator:(TerminalEmulator*)emulator
@@ -274,6 +295,13 @@ struct cell_style_key_t
 		[center removeObserver:_windowUnkeyObserver];
 	_windowKeyObserver = _windowUnkeyObserver = nil;
 
+	[self clearLinkIndication];
+	if(_flagsChangedMonitor)
+	{
+		[NSEvent removeMonitor:_flagsChangedMonitor];
+		_flagsChangedMonitor = nil;
+	}
+
 	if(newWindow)
 	{
 		__weak TerminalGridView* weakSelf = self;
@@ -282,6 +310,12 @@ struct cell_style_key_t
 		}];
 		_windowUnkeyObserver = [center addObserverForName:NSWindowDidResignKeyNotification object:newWindow queue:nil usingBlock:^(NSNotification* notification){
 			[weakSelf windowKeyStateDidChange:NO];
+		}];
+		// ⌘ press/release must update link indication even while another view
+		// is first responder, so a plain -flagsChanged: override is not enough.
+		_flagsChangedMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskFlagsChanged handler:^NSEvent*(NSEvent* event){
+			[weakSelf updateLinkIndicationForModifierFlags:event.modifierFlags];
+			return event;
 		}];
 	}
 }
@@ -294,6 +328,8 @@ struct cell_style_key_t
 		[center removeObserver:_windowKeyObserver];
 	if(_windowUnkeyObserver)
 		[center removeObserver:_windowUnkeyObserver];
+	if(_flagsChangedMonitor)
+		[NSEvent removeMonitor:_flagsChangedMonitor];
 }
 
 - (void)windowKeyStateDidChange:(BOOL)isKey
@@ -434,6 +470,8 @@ struct cell_style_key_t
 
 	if(dirtyState != GHOSTTY_RENDER_STATE_DIRTY_FALSE || fullRedraw)
 	{
+		[self clearLinkIndication]; // content moved under the mouse; ⌘-hover recomputes
+
 		std::vector<terminal_cell_t>& grid = _grid;
 		[_emulator enumerateRowsClearingDirty:YES usingBlock:^(NSUInteger row, BOOL dirty, terminal_cell_t const* cells, NSUInteger cellCount){
 			if(row >= rows)
@@ -660,6 +698,19 @@ struct cell_style_key_t
 
 			if(isWide)
 				col = runStart + 2;
+		}
+	}
+
+	// ⌘-hover link underline
+	if(!_linkSpans.empty())
+	{
+		CGContextSetRGBFillColor(context, _colors.foreground.r/255.0, _colors.foreground.g/255.0, _colors.foreground.b/255.0, 1);
+		for(auto const& span : _linkSpans)
+		{
+			if((NSInteger)span.row < firstRow || (NSInteger)span.row > lastRow)
+				continue;
+			CGFloat rowY = kTerminalViewPadding + span.row * _cellHeight;
+			CGContextFillRect(context, CGRectMake(kTerminalViewPadding + span.colBegin * _cellWidth, rowY + _cellHeight - 2, (span.colEnd - span.colBegin) * _cellWidth, 1));
 		}
 	}
 
@@ -983,6 +1034,149 @@ static BOOL EventMatchesTerminalMenuItem (NSEvent* event, NSMenu* menu)
 	return [self.window convertRectToScreen:rect];
 }
 
+// =====================
+// = ⌘-click file links =
+// =====================
+
+- (void)updateTrackingAreas
+{
+	[super updateTrackingAreas];
+	if(_linkTrackingArea)
+		[self removeTrackingArea:_linkTrackingArea];
+	_linkTrackingArea = [[NSTrackingArea alloc] initWithRect:NSZeroRect options:NSTrackingMouseEnteredAndExited|NSTrackingMouseMoved|NSTrackingActiveInActiveApp|NSTrackingInVisibleRect owner:self userInfo:nil];
+	[self addTrackingArea:_linkTrackingArea];
+}
+
+- (void)mouseMoved:(NSEvent*)event
+{
+	[self updateLinkIndicationForModifierFlags:event.modifierFlags location:event.locationInWindow];
+}
+
+- (void)mouseExited:(NSEvent*)event
+{
+	[self clearLinkIndication];
+}
+
+// The flags-changed monitor has no mouse position of its own
+- (void)updateLinkIndicationForModifierFlags:(NSEventModifierFlags)flags
+{
+	if(self.window)
+		[self updateLinkIndicationForModifierFlags:flags location:self.window.mouseLocationOutsideOfEventStream];
+}
+
+- (void)updateLinkIndicationForModifierFlags:(NSEventModifierFlags)flags location:(NSPoint)windowLocation
+{
+	if(!(flags & NSEventModifierFlagCommand) || !_openFileHandler || !self.window)
+		return [self clearLinkIndication];
+
+	NSPoint point = [self convertPoint:windowLocation fromView:nil];
+	if(!NSMouseInRect(point, self.bounds, self.isFlipped))
+		return [self clearLinkIndication];
+
+	NSUInteger column, row;
+	[self pointToCell:point column:&column row:&row];
+	if(_linkLookupValid && column == _linkLookupColumn && row == _linkLookupRow)
+		return; // detection already ran for this cell
+
+	[self detectLinkAtColumn:column row:row];
+}
+
+- (void)detectLinkAtColumn:(NSUInteger)column row:(NSUInteger)row
+{
+	[self clearLinkIndication];
+	_linkLookupValid  = YES;
+	_linkLookupColumn = column;
+	_linkLookupRow    = row;
+
+	std::string text;
+	size_t hoverOffset = 0;
+	std::vector<terminal_link_cell_t> cells;
+	if(![_emulator logicalLineAtColumn:column row:row text:&text hoverOffset:&hoverOffset cells:&cells])
+		return;
+
+	terminal::file_link_t link;
+	if(!terminal::link_at_offset(text, hoverOffset, link))
+		return;
+
+	NSString* resolvedPath = [self resolveLinkPath:link.path];
+	if(!resolvedPath && !link.alt_path.empty())
+		resolvedPath = [self resolveLinkPath:link.alt_path];
+	if(!resolvedPath)
+		return;
+
+	// Merge the visible cells covering the reference into per-row spans
+	std::map<NSUInteger, std::pair<NSUInteger, NSUInteger>> rowSpans; // row → [min, max] column
+	for(auto const& cell : cells)
+	{
+		if(cell.byteEnd <= link.first || cell.byteBegin >= link.last)
+			continue;
+		if(cell.viewportRow < 0 || cell.viewportRow >= (NSInteger)_cachedRows)
+			continue;
+		auto it = rowSpans.find(cell.viewportRow);
+		if(it == rowSpans.end())
+				rowSpans.emplace((NSUInteger)cell.viewportRow, std::make_pair(cell.column, cell.column));
+		else	it->second = std::make_pair(std::min(it->second.first, cell.column), std::max(it->second.second, cell.column));
+	}
+
+	for(auto const& pair : rowSpans)
+	{
+		_linkSpans.push_back({ pair.first, pair.second.first, pair.second.second + 1 });
+		[self setNeedsDisplayInRect:[self rectForRow:pair.first]];
+	}
+
+	_linkActive = YES;
+	_linkPath   = resolvedPath;
+	_linkLine   = link.line;
+	_linkColumn = link.column;
+
+	[NSCursor.pointingHandCursor set];
+	_linkCursorSet = YES;
+}
+
+// Expands ‘~’, resolves relative paths against the session’s live working
+// directory, and requires an existing regular file — a candidate that does
+// not exist on disk is not a link.
+- (NSString*)resolveLinkPath:(std::string const&)path
+{
+	NSString* candidate = [NSString stringWithUTF8String:path.c_str()];
+	if(!candidate.length)
+		return nil;
+	if([candidate hasPrefix:@"~"])
+		candidate = candidate.stringByExpandingTildeInPath;
+	if(!candidate.absolutePath)
+	{
+		NSString* base = _workingDirectoryProvider ? _workingDirectoryProvider() : nil;
+		if(!base.length)
+			return nil;
+		candidate = [base stringByAppendingPathComponent:candidate];
+	}
+	candidate = candidate.stringByStandardizingPath;
+
+	BOOL isDirectory = NO;
+	if([NSFileManager.defaultManager fileExistsAtPath:candidate isDirectory:&isDirectory] && !isDirectory)
+		return candidate;
+	return nil;
+}
+
+- (void)clearLinkIndication
+{
+	_linkLookupValid = NO;
+	if(_linkCursorSet)
+	{
+		[NSCursor.arrowCursor set];
+		_linkCursorSet = NO;
+	}
+	if(!_linkActive)
+		return;
+	for(auto const& span : _linkSpans)
+		[self setNeedsDisplayInRect:[self rectForRow:span.row]];
+	_linkSpans.clear();
+	_linkActive = NO;
+	_linkPath   = nil;
+	_linkLine   = 0;
+	_linkColumn = 0;
+}
+
 // =========
 // = Mouse =
 // =========
@@ -996,6 +1190,23 @@ static BOOL EventMatchesTerminalMenuItem (NSEvent* event, NSMenu* menu)
 
 - (void)mouseDown:(NSEvent*)event
 {
+	if((event.modifierFlags & NSEventModifierFlagCommand) && _openFileHandler)
+	{
+		NSUInteger column, row;
+		[self pointToCell:[self convertPoint:event.locationInWindow fromView:nil] column:&column row:&row];
+		[self detectLinkAtColumn:column row:row]; // recompute at the click point (hover state may be stale)
+		if(_linkActive)
+		{
+			void(^handler)(NSString*, NSUInteger, NSUInteger) = _openFileHandler;
+			NSString* path = _linkPath;
+			NSUInteger line = _linkLine, linkColumn = _linkColumn;
+			[self clearLinkIndication];
+			_linkClickPending = YES; // swallow the matching mouseUp
+			handler(path, line, linkColumn);
+			return; // never starts a selection or reaches mouse reporting
+		}
+	}
+
 	[self.window makeFirstResponder:self];
 
 	NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
@@ -1016,6 +1227,9 @@ static BOOL EventMatchesTerminalMenuItem (NSEvent* event, NSMenu* menu)
 
 - (void)mouseDragged:(NSEvent*)event
 {
+	if(_linkClickPending)
+		return; // the ⌘-click was handled as a link; no selection drag to feed
+
 	NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
 	if(_mouseReporting)
 	{
@@ -1038,6 +1252,12 @@ static BOOL EventMatchesTerminalMenuItem (NSEvent* event, NSMenu* menu)
 
 - (void)mouseUp:(NSEvent*)event
 {
+	if(_linkClickPending)
+	{
+		_linkClickPending = NO;
+		return; // the ⌘-click was handled as a link; no selection to end
+	}
+
 	NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
 	if(_mouseReporting)
 	{
@@ -1107,6 +1327,7 @@ static BOOL EventMatchesTerminalMenuItem (NSEvent* event, NSMenu* menu)
 	else
 	{
 		[_emulator scrollViewportBy:-lines];
+		[self clearLinkIndication]; // link cells shifted; ⌘-hover recomputes
 		[self refreshFromEmulator];
 		self.needsDisplay = YES;
 	}

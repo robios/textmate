@@ -3,6 +3,8 @@
 
 #import <Cocoa/Cocoa.h>
 #include <ghostty/vt.h>
+#include <string>
+#include <vector>
 
 // A snapshot of one terminal cell, resolved for drawing. Text is the
 // UTF-8 grapheme cluster (not NUL-terminated). width is 0 for spacer
@@ -35,6 +37,16 @@ struct terminal_colors_t
 struct terminal_scrollbar_t
 {
 	uint64_t total, offset, length;
+};
+
+// One grid cell of a reconstructed logical line: where its text landed in
+// the line’s UTF-8 string and where the cell sits in the viewport (the row
+// is signed — parts of the line may be scrolled out of view).
+struct terminal_link_cell_t
+{
+	NSInteger viewportRow;
+	NSUInteger column;
+	size_t byteBegin, byteEnd;
 };
 
 // Wraps a libghostty-vt terminal + render state behind a single lock.
@@ -97,6 +109,13 @@ struct terminal_scrollbar_t
 - (void)clearSelection;
 - (BOOL)hasSelection;
 - (NSString*)selectedString;
+
+// == Logical line (main thread; on-demand only — not for the render path) ==
+// Reconstructs the logical line under the given viewport cell by joining
+// soft-wrapped rows (ghostty’s per-row wrap/continuation flags), including
+// rows scrolled out of the viewport. outHoverOffset is the byte offset of
+// the given cell’s text within outText. Returns NO for blank positions.
+- (BOOL)logicalLineAtColumn:(NSUInteger)column row:(NSUInteger)row text:(std::string*)outText hoverOffset:(size_t*)outHoverOffset cells:(std::vector<struct terminal_link_cell_t>*)outCells;
 
 - (void)reset;
 @end
