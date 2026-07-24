@@ -8,6 +8,7 @@
 #include <io/io.h>
 #include <ns/ns.h>
 #include <OakAppKit/IOAlertPanel.h>
+#include <AgentBridge/AgentBridge.h>
 
 /*
 	open
@@ -396,7 +397,9 @@ struct socket_observer_t
 			parse();
 			if(state == done)
 			{
-				if(records.empty() || records.begin()->command == "open") // we treat no command as ‘open’ to bring our application to front
+				if(!records.empty() && records.front().command.compare(0, 6, "agent-") == 0)
+					handle_agent(socket);
+				else if(records.empty() || records.begin()->command == "open") // we treat no command as ‘open’ to bring our application to front
 					open_documents(socket);
 				else
 					handle_marks(socket);
@@ -585,6 +588,40 @@ struct socket_observer_t
 		if(documents.count)
 				[OakDocumentController.sharedInstance showDocuments:documents];
 		else	[NSApp activateIgnoringOtherApps:YES];
+	}
+
+	// Requests from the tm_agent CLI (‘agent-status’, ‘agent-mention’). The
+	// socket’s dispatch source runs on the main queue, so AgentBridge is
+	// reached on the main thread; the reply is written synchronously and the
+	// caller closes the connection.
+	void handle_agent (socket_t const& socket)
+	{
+		record_t const& record = records.front();
+
+		NSMutableDictionary<NSString*, NSString*>* arguments = [NSMutableDictionary dictionary];
+		for(auto const& pair : record.arguments)
+			arguments[to_ns(pair.first)] = to_ns(pair.second);
+
+		NSDictionary<NSString*, NSString*>* response = [AgentBridge handleCLIRequest:to_ns(record.command) arguments:arguments];
+
+		std::string reply;
+		for(NSString* key in [response.allKeys sortedArrayUsingSelector:@selector(compare:)])
+		{
+			reply += to_s(key) + ": ";
+			for(char const ch : to_s(response[key]))
+			{
+				if(ch == '\\')
+					reply += "\\\\";
+				else if(ch == '\n')
+					reply += "\\n";
+				else
+					reply += ch;
+			}
+			reply += "\r\n";
+		}
+
+		if(write(socket, reply.data(), reply.size()) != (ssize_t)reply.size())
+			os_log_error(OS_LOG_DEFAULT, "tm_agent: failed to write response");
 	}
 
 	void handle_marks (socket_t const& socket)

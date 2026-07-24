@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>name</key>
+	<string>Claude Code</string>
+	<key>description</key>
+	<string>Drive the agent bridge from the editor: push file and selection references into a Claude Code CLI connected to the running TextMate. See the README.md inside this bundle.</string>
+	<key>mainMenu</key>
+	<dict>
+		<key>items</key>
+		<array>
+			<string>34E61B05-412D-447A-BED6-D73419001F89</string>
+			<string>3D1121A5-DDE7-4ECB-BC0A-04B3018B67F6</string>
+			<string>------------------------------------</string>
+			<string>FB0DCC5B-F07B-4A68-9A72-724E699D1D5E</string>
+		</array>
+	</dict>
+	<key>requiredCommands</key>
+	<array>
+		<dict>
+			<key>command</key>
+			<string>tm_agent</string>
+			<key>variable</key>
+			<string>TM_AGENT</string>
+			<key>locations</key>
+			<array>
+				<string>${HOME}/Library/Application Support/TextMate/bin/tm_agent</string>
+			</array>
+		</dict>
+	</array>
+	<key>uuid</key>
+	<string>8173843E-0F51-4BD9-AD0B-B3BD78554199</string>
+</dict>
+</plist>

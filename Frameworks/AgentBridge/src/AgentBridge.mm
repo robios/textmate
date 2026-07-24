@@ -30,6 +30,15 @@ static void UpdateCLISymlink ()
 	if([[NSFileManager.defaultManager destinationOfSymbolicLinkAtPath:link error:nil] isEqualToString:target])
 		return;
 
+	// Only ever replace a symlink (stale or dangling): if the user parked a
+	// real file at this path — say a wrapper script — leave it alone.
+	NSString* existingType = [NSFileManager.defaultManager attributesOfItemAtPath:link error:nil].fileType;
+	if(existingType && ![existingType isEqualToString:NSFileTypeSymbolicLink])
+	{
+		NSLog(@"[AgentBridge] not touching %@: existing %@ is not a symlink", link, existingType);
+		return;
+	}
+
 	NSError* error;
 	[NSFileManager.defaultManager createDirectoryAtPath:link.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
 	[NSFileManager.defaultManager removeItemAtPath:link error:nil];

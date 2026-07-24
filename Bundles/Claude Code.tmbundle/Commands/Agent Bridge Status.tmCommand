@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>beforeRunningCommand</key>
+	<string>nop</string>
+	<key>command</key>
+	<string>#!/bin/sh
+# Show the agent bridge state as a tool tip. tm_agent exits 0 when the
+# bridge is running, 2 when it is stopped; other codes mean the app or the
+# bridge could not be reached.
+
+out=$("$TM_AGENT" status 2&gt;&amp;1)
+rc=$?
+
+if [ $rc -eq 0 ]; then
+	clients=$(printf '%s\n' "$out" | sed -n 's/^clients: //p')
+	port=$(printf '%s\n' "$out" | sed -n 's/^port: //p')
+	if [ "${clients:-0}" -gt 0 ]; then
+		echo "Agent bridge running on port ${port:-?} — $clients client(s) connected."
+	else
+		echo "Agent bridge running on port ${port:-?} — no client connected."
+		echo "Run ‘claude’ in the terminal (⌃\`) to connect."
+	fi
+elif [ $rc -eq 2 ]; then
+	echo "Agent bridge is stopped."
+else
+	echo "${out:-agent bridge unavailable}"
+fi
+exit 206
+</string>
+	<key>input</key>
+	<string>none</string>
+	<key>inputFormat</key>
+	<string>text</string>
+	<key>name</key>
+	<string>Agent Bridge Status</string>
+	<key>outputFormat</key>
+	<string>text</string>
+	<key>outputLocation</key>
+	<string>toolTip</string>
+	<key>semanticClass</key>
+	<string>action.agent.status</string>
+	<key>uuid</key>
+	<string>FB0DCC5B-F07B-4A68-9A72-724E699D1D5E</string>
+	<key>version</key>
+	<integer>2</integer>
+</dict>
+</plist>

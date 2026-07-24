@@ -1,0 +1,5 @@
+add_executable(tm_agent)
+file(GLOB _src src/*.cc)
+target_sources(tm_agent PRIVATE ${_src})
+target_link_libraries(tm_agent PRIVATE ${TEXTMATE_DEBUG_LIBS})
+target_compile_definitions(tm_agent PRIVATE "TEXTMATE_VERSION_STRING=\"${TEXTMATE_VERSION}\"")

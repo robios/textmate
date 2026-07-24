@@ -141,6 +141,7 @@ set_source_files_properties(${_about_js} PROPERTIES
 # Embedded CLI tools
 textmate_embed(TextMate mate "MacOS")
 textmate_embed(TextMate tm_query "MacOS")
+textmate_embed(TextMate tm_agent "MacOS")
 textmate_embed(TextMate PrivilegedTool "Resources")
 
 # Embedded plugins (.tmplugin bundles from submodules)
@@ -150,11 +151,23 @@ textmate_embed(TextMate Dialog2 "PlugIns" DIRECTORY)
 # Embedded QuickLook plugin
 textmate_embed(TextMate TextMateQL "Library/QuickLook" DIRECTORY)
 
+# In-repo bundles → SharedSupport/Bundles (a bundle discovery location, see
+# Frameworks/bundles/src/locations.cc). rsync --delete keeps dev iteration
+# clean; must run before code signing since Contents is sealed.
+add_custom_command(TARGET TextMate POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E make_directory
+    "$<TARGET_BUNDLE_DIR:TextMate>/Contents/SharedSupport/Bundles"
+  COMMAND rsync -a --delete
+    "${CMAKE_SOURCE_DIR}/Bundles/Claude Code.tmbundle"
+    "$<TARGET_BUNDLE_DIR:TextMate>/Contents/SharedSupport/Bundles/")
+
 # Sign embedded binaries (inner-to-outer, before app signature)
 textmate_codesign_file(TextMate "${CS_IDENTITY}"
   "$<TARGET_BUNDLE_DIR:TextMate>/Contents/MacOS/mate")
 textmate_codesign_file(TextMate "${CS_IDENTITY}"
   "$<TARGET_BUNDLE_DIR:TextMate>/Contents/MacOS/tm_query")
+textmate_codesign_file(TextMate "${CS_IDENTITY}"
+  "$<TARGET_BUNDLE_DIR:TextMate>/Contents/MacOS/tm_agent")
 textmate_codesign_file(TextMate "${CS_IDENTITY}"
   "$<TARGET_BUNDLE_DIR:TextMate>/Contents/Resources/PrivilegedTool")
 if(OakSwiftUI_LIB)

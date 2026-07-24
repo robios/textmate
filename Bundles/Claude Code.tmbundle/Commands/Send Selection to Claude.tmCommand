@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>beforeRunningCommand</key>
+	<string>saveActiveFile</string>
+	<key>command</key>
+	<string>#!/bin/sh
+# Push the selected line range into the agent CLI connected to TextMate as an
+# at_mentioned reference. Input is the selection (falling back to the whole
+# document) and is only used to measure the referenced line range, which
+# tm_agent expects 0-based.
+# Exit codes: 200 = discard output, 206 = show tool tip (see runner.mm).
+
+if [ -z "$TM_FILEPATH" ]; then
+	echo "Save the document to disk first — the agent needs a file path."
+	exit 206
+fi
+
+lines=$(grep -c '')
+[ "${lines:-0}" -gt 0 ] || lines=1
+
+start=$(( ${TM_INPUT_START_LINE:-1} - 1 ))
+end=$(( start + lines - 1 ))
+
+if err=$("$TM_AGENT" mention --file "$TM_FILEPATH" --line-start "$start" --line-end "$end" 2&gt;&amp;1); then
+	exit 200
+fi
+
+echo "${err:-tm_agent failed}"
+case "$err" in
+*"no agent client"*)
+	echo
+	echo "Run ‘claude’ in the terminal (⌃\`) so it connects to TextMate, then try again."
+	;;
+esac
+exit 206
+</string>
+	<key>input</key>
+	<string>selection</string>
+	<key>fallbackInput</key>
+	<string>document</string>
+	<key>inputFormat</key>
+	<string>text</string>
+	<key>keyEquivalent</key>
+	<string>~@k</string>
+	<key>name</key>
+	<string>Send Selection to Claude</string>
+	<key>outputFormat</key>
+	<string>text</string>
+	<key>outputLocation</key>
+	<string>toolTip</string>
+	<key>requiredCommands</key>
+	<array>
+		<dict>
+			<key>command</key>
+			<string>claude</string>
+			<key>moreInfoURL</key>
+			<string>https://docs.anthropic.com/en/docs/claude-code/setup</string>
+			<key>locations</key>
+			<array>
+				<string>${HOME}/.claude/local/claude</string>
+				<string>${HOME}/.local/bin/claude</string>
+				<string>/opt/homebrew/bin/claude</string>
+				<string>/usr/local/bin/claude</string>
+			</array>
+		</dict>
+	</array>
+	<key>semanticClass</key>
+	<string>action.agent.send-selection</string>
+	<key>uuid</key>
+	<string>34E61B05-412D-447A-BED6-D73419001F89</string>
+	<key>version</key>
+	<integer>2</integer>
+</dict>
+</plist>
