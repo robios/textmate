@@ -2998,7 +2998,7 @@ static char const* kOakMenuItemTitle = "OakMenuItemTitle";
 			return NO;
 
 		auto const settings = settings_for_path(doc.virtualPath ? to_s(doc.virtualPath) : to_s(doc.path), to_s(doc.fileType), to_s(doc.directory ?: @""));
-		bool enabled = settings.get("lspCodeActions", true);
+		bool enabled = settings.get(kSettingsLSPCodeActionsKey, true);
 		return enabled && [[LSPManager sharedManager] serverSupportsCodeActionsForDocument:doc];
 	}
 	else if([aMenuItem action] == @selector(lspGoToDefinition:) || [aMenuItem action] == @selector(lspShowHoverInfo:) || [aMenuItem action] == @selector(lspFindReferences:) || [aMenuItem action] == @selector(lspComplete:))

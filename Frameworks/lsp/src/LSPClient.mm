@@ -1837,7 +1837,7 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 {
 	std::string filePath = to_s(_workingDirectory);
 	settings_t settings = settings_for_path(filePath, "", filePath);
-	std::string excludeSetting = settings.get("lspFileWatchExclude", "");
+	std::string excludeSetting = settings.get(kSettingsLSPFileWatchExcludeKey, "");
 
 	if(excludeSetting.empty())
 		return @[];

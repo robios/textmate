@@ -30,6 +30,13 @@ std::string const kSettingsAtomicSaveKey                  = "atomicSave";
 std::string const kSettingsFormatCommandKey               = "formatCommand";
 std::string const kSettingsFormatOnSaveKey                = "formatOnSave";
 std::string const kSettingsLSPDefinitionExcludePatternKey = "lspDefinitionExcludePattern";
+std::string const kSettingsLSPCommandKey                  = "lspCommand";
+std::string const kSettingsLSPEnabledKey                  = "lspEnabled";
+std::string const kSettingsLSPRootPathKey                 = "lspRootPath";
+std::string const kSettingsLSPInitOptionsKey              = "lspInitOptions";
+std::string const kSettingsLSPCodeActionsKey              = "lspCodeActions";
+std::string const kSettingsLSPFormatOnSaveKey             = "lspFormatOnSave";
+std::string const kSettingsLSPFileWatchExcludeKey         = "lspFileWatchExclude";
 
 std::string const kSettingsBinaryKey                      = "binary";
 std::string const kSettingsEncodingKey                    = "encoding";

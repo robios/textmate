@@ -31,6 +31,13 @@ extern std::string const kSettingsAtomicSaveKey;
 extern std::string const kSettingsFormatCommandKey;
 extern std::string const kSettingsFormatOnSaveKey;
 extern std::string const kSettingsLSPDefinitionExcludePatternKey;
+extern std::string const kSettingsLSPCommandKey;
+extern std::string const kSettingsLSPEnabledKey;
+extern std::string const kSettingsLSPRootPathKey;
+extern std::string const kSettingsLSPInitOptionsKey;
+extern std::string const kSettingsLSPCodeActionsKey;
+extern std::string const kSettingsLSPFormatOnSaveKey;
+extern std::string const kSettingsLSPFileWatchExcludeKey;
 
 extern std::string const kSettingsBinaryKey;
 extern std::string const kSettingsEncodingKey;

@@ -1,5 +1,6 @@
 #import "LSPManager.h"
 #import "LSPClient.h"
+#import "LSPBundleSettings.h"
 #import <settings/settings.h>
 #import <text/types.h>
 #import <io/path.h>
@@ -160,17 +161,20 @@ static std::string detectWorkspaceRoot (std::string const& filePath)
 	std::string directory = to_s(document.directory ?: [document.path stringByDeletingLastPathComponent]);
 
 	settings_t settings = settings_for_path(filePath, fileType, directory);
+	scope::context_t const scopeContext = scope::scope_t(fileType);
 
-	std::string lspCommand = settings.get("lspCommand", "");
+	// Settings from .tm_properties take precedence; language bundles may
+	// provide defaults via scoped Preferences items (see LSP_BUNDLE_CONFIG.md).
+	std::string lspCommand = lsp::setting_with_bundle_fallback(kSettingsLSPCommandKey, settings, scopeContext);
 	if(lspCommand.empty())
 		return nil;
 
-	bool lspEnabled = settings.get("lspEnabled", true);
+	bool lspEnabled = lsp::setting_with_bundle_fallback(kSettingsLSPEnabledKey, settings, scopeContext, true);
 	if(!lspEnabled)
 		return nil;
 
 	// Determine workspace root
-	std::string rootPath = settings.get("lspRootPath", "");
+	std::string rootPath = lsp::setting_with_bundle_fallback(kSettingsLSPRootPathKey, settings, scopeContext);
 	if(rootPath.empty())
 		rootPath = detectWorkspaceRoot(filePath);
 
@@ -189,7 +193,7 @@ static std::string detectWorkspaceRoot (std::string const& filePath)
 	for(size_t i = 1; i < parts.size(); ++i)
 		[args addObject:to_ns(parts[i])];
 
-	std::string initOpts = settings.get("lspInitOptions", "");
+	std::string initOpts = lsp::setting_with_bundle_fallback(kSettingsLSPInitOptionsKey, settings, scopeContext);
 	NSString* initOptsJSON = initOpts.empty() ? nil : to_ns(initOpts);
 
 	if([_clearCacheRoots containsObject:root])
@@ -730,7 +734,7 @@ static std::string detectWorkspaceRoot (std::string const& filePath)
 	std::string directory = to_s(document.directory ?: [path stringByDeletingLastPathComponent]);
 
 	settings_t settings = settings_for_path(filePath, fileType, directory);
-	std::string lspCommand = settings.get("lspCommand", "");
+	std::string lspCommand = lsp::setting_with_bundle_fallback(kSettingsLSPCommandKey, settings, scope::scope_t(fileType));
 	if(lspCommand.empty())
 		return nil;
 

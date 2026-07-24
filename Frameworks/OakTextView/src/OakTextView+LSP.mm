@@ -707,7 +707,7 @@ static NSDictionary<NSString*, NSArray<NSDictionary*>*>* editsFromWorkspaceEdit 
 		return;
 
 	auto const settings = settings_for_path(doc.virtualPath ? to_s(doc.virtualPath) : to_s(doc.path), to_s(doc.fileType), to_s(doc.directory ?: @""));
-	if(!settings.get("lspCodeActions", true))
+	if(!settings.get(kSettingsLSPCodeActionsKey, true))
 		return;
 
 	LSPManager* lsp = [LSPManager sharedManager];

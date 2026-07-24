@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>name</key>
+	<string>Language Server</string>
+	<key>scope</key>
+	<string>source.go</string>
+	<key>settings</key>
+	<dict>
+		<key>lspCommand</key>
+		<string>gopls</string>
+		<key>lspInitOptions</key>
+		<string>{ "usePlaceholders": true }</string>
+	</dict>
+	<key>uuid</key>
+	<string>2E9D4C4A-6C0F-4B29-9E71-8D2A64B10C5D</string>
+</dict>
+</plist>

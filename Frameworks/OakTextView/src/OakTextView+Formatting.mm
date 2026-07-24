@@ -138,7 +138,7 @@ static NSString* runCustomFormatter (std::string const& command, NSString* input
 	std::string directory = to_s(doc.directory ?: [doc.path stringByDeletingLastPathComponent] ?: @"");
 
 	settings_t const settings = settings_for_path(filePath, fileType, directory);
-	bool lspFormatOnSave = settings.get("lspFormatOnSave", false);
+	bool lspFormatOnSave = settings.get(kSettingsLSPFormatOnSaveKey, false);
 
 	std::string formatCommand = settings.get(kSettingsFormatCommandKey, "");
 	if(formatCommand.empty())
