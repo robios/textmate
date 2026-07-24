@@ -52,6 +52,10 @@
 - (void)performBundleItem:(bundles::item_ptr)anItem;
 - (IBAction)toggleHTMLOutput:(id)sender;
 - (IBAction)toggleTerminal:(id)sender;
+- (IBAction)newTerminal:(id)sender;
+- (IBAction)nextTerminal:(id)sender;
+- (IBAction)previousTerminal:(id)sender;
+- (IBAction)closeTerminal:(id)sender;
 - (IBAction)toggleMarkdownPreview:(id)sender;
 
 - (IBAction)moveFocus:(id)sender;

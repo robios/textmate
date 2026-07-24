@@ -224,16 +224,16 @@ static bool uninstall_mate (std::string const& path)
 	[self updateTerminalFontLabel];
 
 	NSGridView* gridView = [NSGridView gridViewWithViews:@[
-		@[ ],
 		@[ OakCreateLabel(@"Show terminal on:"), placementPopUp        ],
 		@[ OakCreateLabel(@"Scrollback:"),       scrollbackStackView   ],
 		@[ OakCreateLabel(@"Font:"),             fontStackView         ],
+		@[ ],
 	]];
 
 	[placementPopUp.widthAnchor constraintEqualToConstant:160].active = YES;
 	[scrollbackTextField.widthAnchor constraintEqualToConstant:80].active = YES;
 
-	NSView* res = OakSetupGridViewWithSeparators(gridView, { 0 });
+	NSView* res = OakSetupGridViewWithSeparators(gridView, { 3 });
 
 	[placementPopUp bind:NSSelectedTagBinding toObject:self withKeyPath:@"terminalPlacement" options:@{ NSValueTransformerNameBindingOption: @"OakTerminalPlacementSettingsTransformer" }];
 	[scrollbackTextField bind:NSValueBinding toObject:self withKeyPath:@"terminalScrollback" options:nil];
@@ -345,14 +345,14 @@ static bool uninstall_mate (std::string const& path)
 	CreateHyperLink(rmateSummaryText, @"rmate", @"https://github.com/textmate/rmate/");
 	LSSetDefaultHandlerForURLScheme(CFSTR("txmt"), CFBundleGetIdentifier(CFBundleGetMainBundle()));
 
-	// Append the terminal-pane settings below the nib content
+	// Prepend the terminal-pane settings above the nib content
 	NSView* nibView = self.view;
 	NSView* sectionView = [self terminalPaneSectionView];
 
 	CGFloat width = std::max(NSWidth(nibView.frame), NSWidth(sectionView.frame));
 	NSView* containerView = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, width, NSHeight(nibView.frame) + NSHeight(sectionView.frame))];
-	sectionView.frame = NSMakeRect(0, 0, width, NSHeight(sectionView.frame));
-	nibView.frame = NSMakeRect(0, NSHeight(sectionView.frame), NSWidth(nibView.frame), NSHeight(nibView.frame));
+	nibView.frame = NSMakeRect(0, 0, NSWidth(nibView.frame), NSHeight(nibView.frame));
+	sectionView.frame = NSMakeRect(0, NSHeight(nibView.frame), width, NSHeight(sectionView.frame));
 	[containerView addSubview:nibView];
 	[containerView addSubview:sectionView];
 	self.view = containerView;

@@ -325,16 +325,12 @@ NSString* const kUserDefaultsMarkdownPreviewViewSizeKey   = @"markdownPreviewVie
 		CONSTRAINT(@"V:|[fileBrowserDivider]", 0);
 		CONSTRAINT(@"V:|[fileBrowserView]", 0);
 
-		// bottom
+		// bottom — a bottom terminal only spans the document area, so the
+		// file browser keeps its full height alongside it.
 		if(_htmlOutputView && !_htmlOutputOnRight)
 		{
 			CONSTRAINT(@"V:[fileBrowserView][htmlOutputDivider]", 0);
 			CONSTRAINT(@"V:[fileBrowserDivider][htmlOutputDivider]", 0);
-		}
-		else if(terminalAtBottom)
-		{
-			CONSTRAINT(@"V:[fileBrowserView][terminalDivider]", 0);
-			CONSTRAINT(@"V:[fileBrowserDivider][terminalDivider]", 0);
 		}
 		else
 		{
@@ -376,19 +372,10 @@ NSString* const kUserDefaultsMarkdownPreviewViewSizeKey   = @"markdownPreviewVie
 
 		if(_htmlOutputOnRight)
 		{
-			// top + bottom
-			CONSTRAINT(@"V:|[htmlOutputView]", 0);
-			CONSTRAINT(@"V:|[htmlOutputDivider]", 0);
-			if(terminalAtBottom)
-			{
-				CONSTRAINT(@"V:[htmlOutputView][terminalDivider]", 0);
-				CONSTRAINT(@"V:[htmlOutputDivider][terminalDivider]", 0);
-			}
-			else
-			{
-				CONSTRAINT(@"V:[htmlOutputView]|", 0);
-				CONSTRAINT(@"V:[htmlOutputDivider]|", 0);
-			}
+			// top + bottom — full height even with a bottom terminal, which
+			// only spans the document area.
+			CONSTRAINT(@"V:|[htmlOutputView]|", 0);
+			CONSTRAINT(@"V:|[htmlOutputDivider]|", 0);
 
 			// left + right — a right-side preview sits between the document
 			// view and the HTML output (preview is innermost on its edge).
@@ -447,9 +434,12 @@ NSString* const kUserDefaultsMarkdownPreviewViewSizeKey   = @"markdownPreviewVie
 
 		if(terminalAtBottom)
 		{
-			CONSTRAINT(@"V:[terminalDivider][terminalView]|", 0);
-			CONSTRAINT(@"H:|[terminalView]|", 0);
-			CONSTRAINT(@"H:|[terminalDivider]|", 0);
+			// The bottom terminal sits under the document area only: its edges
+			// follow the document view, and side panes (file browser, HTML
+			// output on the right) keep their full height beside it.
+			CONSTRAINT(@"V:[terminalDivider][terminalView]|", NSLayoutFormatAlignAllLeft|NSLayoutFormatAlignAllRight);
+			[_myConstraints addObject:[NSLayoutConstraint constraintWithItem:_terminalDivider attribute:NSLayoutAttributeLeft relatedBy:NSLayoutRelationEqual toItem:_documentView attribute:NSLayoutAttributeLeft multiplier:1 constant:0]];
+			[_myConstraints addObject:[NSLayoutConstraint constraintWithItem:_terminalDivider attribute:NSLayoutAttributeRight relatedBy:NSLayoutRelationEqual toItem:_documentView attribute:NSLayoutAttributeRight multiplier:1 constant:0]];
 		}
 		else if(terminalOnLeft)
 		{

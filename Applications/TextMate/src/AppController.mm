@@ -243,6 +243,9 @@ BOOL HasDocumentWindow (NSArray* windows)
 				},
 				{ @"Show File Browser",      @selector(toggleFileBrowser:),    @"d", .modifierFlags = NSEventModifierFlagCommand|NSEventModifierFlagOption|NSEventModifierFlagControl },
 				{ @"Show HTML Output",       @selector(toggleHTMLOutput:),     @"h", .modifierFlags = NSEventModifierFlagCommand|NSEventModifierFlagOption|NSEventModifierFlagControl },
+				// Showing the pane is a View concern and stays here beside the
+				// other panes; managing the terminals inside it lives in the
+				// Terminal menu, the way the file browser has one of its own.
 				{ @"Show Terminal",          @selector(toggleTerminal:),       @"`", .modifierFlags = NSEventModifierFlagControl },
 				{ @"Show Line Numbers",      @selector(toggleLineNumbers:),    @"l", .modifierFlags = NSEventModifierFlagCommand|NSEventModifierFlagOption },
 				{ @"Show Minimap",           @selector(toggleMinimap:)                },
@@ -408,6 +411,16 @@ BOOL HasDocumentWindow (NSArray* windows)
 				{ /* -------- */ },
 				{ @"Go to Folder…",    @selector(orderFrontGoToFolder:)           },
 				{ @"Reload",           @selector(reload:)                         },
+			}
+		},
+		{ @"Terminal",
+			.submenu = {
+				{ @"New Terminal",      @selector(newTerminal:),      @"~", .modifierFlags = NSEventModifierFlagControl }, // ⌃⇧` — shifted character per house style, cf. “Show Previous Tab” @"{"
+				{ /* -------- */ },
+				{ @"Next Terminal",     @selector(nextTerminal:),     @"]", .modifierFlags = NSEventModifierFlagCommand|NSEventModifierFlagControl },
+				{ @"Previous Terminal", @selector(previousTerminal:), @"[", .modifierFlags = NSEventModifierFlagCommand|NSEventModifierFlagControl },
+				{ /* -------- */ },
+				{ @"Close Terminal",    @selector(closeTerminal:) },
 			}
 		},
 		{ @"Bundles",

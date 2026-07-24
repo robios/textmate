@@ -8,6 +8,7 @@
 static void* const kPTYReadQueueIdentityKey  = (void*)&kPTYReadQueueIdentityKey;
 static void* const kPTYWriteQueueIdentityKey = (void*)&kPTYWriteQueueIdentityKey;
 #include <fcntl.h>
+#include <libproc.h>
 #include <poll.h>
 #include <signal.h>
 #include <sys/ioctl.h>
@@ -58,6 +59,66 @@ static void* const kPTYWriteQueueIdentityKey = (void*)&kPTYWriteQueueIdentityKey
 - (BOOL)isRunning
 {
 	return _processIdentifier > 0;
+}
+
+// The pgid of whatever currently owns the terminal. The shell was made a
+// session leader by forkpty, so its pgid equals its pid; any foreground
+// job therefore shows up as a pgid different from _processIdentifier.
+- (pid_t)foregroundProcessGroup
+{
+	int fd = _masterFD;
+	if(fd == -1 || _processIdentifier <= 0)
+		return -1;
+	return tcgetpgrp(fd);
+}
+
+// First live (non-zombie) direct child of the shell, or -1. A suspended
+// (^Z) or backgrounded job no longer owns the pty’s foreground process
+// group, but it is still a child of the shell — Terminal.app warns for
+// these too.
+- (pid_t)firstLiveChildProcess
+{
+	pid_t shell = _processIdentifier;
+	if(shell <= 0)
+		return -1;
+
+	int size = proc_listpids(PROC_PPID_ONLY, (uint32_t)shell, NULL, 0);
+	if(size <= 0)
+		return -1;
+
+	std::vector<pid_t> pids(size / sizeof(pid_t) + 8, 0);
+	size = proc_listpids(PROC_PPID_ONLY, (uint32_t)shell, pids.data(), (int)(pids.size() * sizeof(pid_t)));
+	for(int i = 0; i < size / (int)sizeof(pid_t); ++i)
+	{
+		if(pids[i] <= 0)
+			continue;
+		struct proc_bsdinfo info;
+		if(proc_pidinfo(pids[i], PROC_PIDTBSDINFO, 0, &info, sizeof(info)) == sizeof(info) && info.pbi_status != SZOMB)
+			return pids[i];
+	}
+	return -1;
+}
+
+- (BOOL)hasForegroundProcess
+{
+	pid_t pgid = [self foregroundProcessGroup];
+	if(pgid > 0 && pgid != _processIdentifier)
+		return YES;
+	return [self firstLiveChildProcess] > 0;
+}
+
+- (NSString*)foregroundProcessName
+{
+	pid_t pid = [self foregroundProcessGroup];
+	if(pid <= 0 || pid == _processIdentifier)
+		pid = [self firstLiveChildProcess];
+	if(pid <= 0)
+		return nil;
+
+	char name[2*MAXCOMLEN];
+	if(proc_name(pid, name, sizeof(name)) > 0)
+		return [NSString stringWithUTF8String:name];
+	return nil;
 }
 
 - (BOOL)spawn

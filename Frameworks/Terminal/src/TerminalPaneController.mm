@@ -1,15 +1,12 @@
 #import "TerminalPaneController.h"
-#import "TerminalEmulator.h"
+#import "TerminalSession.h"
 #import "TerminalGridView.h"
 #import "TerminalStatusBar.h"
-#import "PTYController.h"
 #import <OakAppKit/OakUIConstructionFunctions.h>
-#include <pwd.h>
-
-static NSString* const kUserDefaultsTerminalScrollbackLinesKey = @"terminalScrollbackLines";
 
 @interface TerminalPaneContainerView : NSView
 @property (nonatomic, copy) void(^appearanceChangedHandler)(void);
+@property (nonatomic, copy) void(^windowChangedHandler)(void);
 @end
 
 @implementation TerminalPaneContainerView
@@ -19,114 +16,59 @@ static NSString* const kUserDefaultsTerminalScrollbackLinesKey = @"terminalScrol
 	if(_appearanceChangedHandler)
 		_appearanceChangedHandler();
 }
+
+- (void)viewDidMoveToWindow
+{
+	[super viewDidMoveToWindow];
+	if(_windowChangedHandler)
+		_windowChangedHandler();
+}
 @end
 
 @interface TerminalPaneController ()
 {
 	std::map<std::string, std::string> _environment;
 }
-@property (nonatomic) TerminalEmulator* emulator;
-@property (nonatomic) PTYController* ptyController;
+@property (nonatomic) NSMutableArray<TerminalSession*>* sessions;
+@property (nonatomic) NSUInteger activeIndex; // only meaningful while sessions.count > 0
+@property (nonatomic) NSView* installedSessionView;
 @property (nonatomic) TerminalStatusBar* statusBar;
-@property (nonatomic) NSString* currentDirectory; // last OSC 7 report, shown in the status bar
-@property (nonatomic) BOOL shellRequested;
-@property (nonatomic) BOOL needsReset; // previous session ended; clear the screen before the next spawn
 @property (nonatomic) NSColor* themeBackgroundColor;
 @property (nonatomic) NSColor* themeForegroundColor;
 @end
 
 @implementation TerminalPaneController
-+ (void)initialize
-{
-	[NSUserDefaults.standardUserDefaults registerDefaults:@{
-		kUserDefaultsTerminalScrollbackLinesKey: @10000,
-	}];
-}
-
 - (instancetype)init
 {
 	if(self = [super init])
 	{
-		NSInteger scrollback = [NSUserDefaults.standardUserDefaults integerForKey:kUserDefaultsTerminalScrollbackLinesKey];
-		_emulator = [[TerminalEmulator alloc] initWithColumns:80 rows:24 maxScrollback:std::max<NSInteger>(scrollback, 0)];
-		_gridView = [[TerminalGridView alloc] initWithEmulator:_emulator];
+		_sessions  = [NSMutableArray array];
 		_statusBar = [[TerminalStatusBar alloc] initWithFrame:NSZeroRect];
 
-		// The grid view must be an NSScrollView documentView: a plain sibling
-		// whose drawRect: runs in the same window commit as OakTextView’s
-		// huge tiled layer blanks the text view silently (gutter/minimap
-		// pattern; see OakDocumentView.mm).
-		NSScrollView* gridScrollView = [[NSScrollView alloc] initWithFrame:NSZeroRect];
-		gridScrollView.borderType                 = NSNoBorder;
-		gridScrollView.hasVerticalScroller        = NO;
-		gridScrollView.hasHorizontalScroller      = NO;
-		gridScrollView.verticalScrollElasticity   = NSScrollElasticityNone;
-		gridScrollView.horizontalScrollElasticity = NSScrollElasticityNone;
-		gridScrollView.drawsBackground            = NO;
-		gridScrollView.documentView               = _gridView;
-
-		_gridView.translatesAutoresizingMaskIntoConstraints = NO;
-		[NSLayoutConstraint activateConstraints:@[
-			[_gridView.leadingAnchor constraintEqualToAnchor:gridScrollView.contentView.leadingAnchor],
-			[_gridView.topAnchor constraintEqualToAnchor:gridScrollView.contentView.topAnchor],
-			[_gridView.widthAnchor constraintEqualToAnchor:gridScrollView.contentView.widthAnchor],
-			[_gridView.heightAnchor constraintEqualToAnchor:gridScrollView.contentView.heightAnchor],
-		]];
-
 		TerminalPaneContainerView* container = [[TerminalPaneContainerView alloc] initWithFrame:NSZeroRect];
-		NSDictionary* views = @{ @"grid": gridScrollView, @"status": _statusBar };
+		NSDictionary* views = @{ @"status": _statusBar };
 		OakAddAutoLayoutViewsToSuperview(views.allValues, container);
-		[container addConstraints:[NSLayoutConstraint constraintsWithVisualFormat:@"H:|[grid]|" options:0 metrics:nil views:views]];
 		[container addConstraints:[NSLayoutConstraint constraintsWithVisualFormat:@"H:|[status]|" options:0 metrics:nil views:views]];
-		[container addConstraints:[NSLayoutConstraint constraintsWithVisualFormat:@"V:|[grid][status]|" options:0 metrics:nil views:views]];
+		[container addConstraints:[NSLayoutConstraint constraintsWithVisualFormat:@"V:[status]|" options:0 metrics:nil views:views]];
 		_view = container;
 
 		__weak TerminalPaneController* weakSelf = self;
 		container.appearanceChangedHandler = ^{
 			[weakSelf updateColors];
 		};
-
-		_gridView.writeDataHandler = ^(NSData* data){
-			[weakSelf handleInputData:data];
-		};
-		_gridView.gridSizeChangedHandler = ^(NSUInteger columns, NSUInteger rows, NSUInteger pixelWidth, NSUInteger pixelHeight){
+		container.windowChangedHandler = ^{
 			TerminalPaneController* strongSelf = weakSelf;
-			if(!strongSelf)
-				return;
-			[strongSelf->_ptyController resizeToColumns:columns rows:rows pixelWidth:pixelWidth pixelHeight:pixelHeight];
-			if(strongSelf.shellRequested && !strongSelf.ptyController)
-				[strongSelf spawnShell];
+			BOOL inWindow = strongSelf.view.window ? YES : NO;
+			for(TerminalSession* session in strongSelf.sessions)
+				session.allowsProcessPolling = inWindow;
+			[strongSelf refreshStatusBar];
 		};
-
-		_emulator.pwdChangedHandler = ^(NSString* rawPwd){
-			NSString* path = rawPwd;
-			if([rawPwd hasPrefix:@"file://"])
-				path = [NSURL URLWithString:rawPwd].path ?: rawPwd;
-			dispatch_async(dispatch_get_main_queue(), ^{
-				TerminalPaneController* strongSelf = weakSelf;
-				if(strongSelf && path.length)
-				{
-					strongSelf.currentDirectory = path;
-					strongSelf.statusBar.workingDirectory = path;
-				}
-			});
+		_statusBar.tabSelectedHandler = ^(NSUInteger index){
+			[weakSelf selectTerminalAtIndex:index];
 		};
-		_emulator.bellHandler = ^{
-			dispatch_async(dispatch_get_main_queue(), ^{
-				NSBeep();
-			});
+		_statusBar.newTabHandler = ^{
+			[weakSelf addTerminal];
 		};
-		_emulator.clipboardWriteHandler = ^(NSString* text){
-			dispatch_async(dispatch_get_main_queue(), ^{
-				if(text.length)
-				{
-					[NSPasteboard.generalPasteboard clearContents];
-					[NSPasteboard.generalPasteboard setString:text forType:NSPasteboardTypeString];
-				}
-			});
-		};
-
-		[self updateColors];
 	}
 	return self;
 }
@@ -136,8 +78,63 @@ static NSString* const kUserDefaultsTerminalScrollbackLinesKey = @"terminalScrol
 	[self shutdown];
 }
 
-- (std::map<std::string, std::string>)environment                                    { return _environment; }
-- (void)setEnvironment:(std::map<std::string, std::string>)newEnvironment            { _environment = newEnvironment; }
+- (std::map<std::string, std::string>)environment                         { return _environment; }
+- (void)setEnvironment:(std::map<std::string, std::string>)newEnvironment { _environment = newEnvironment; }
+
+// Placement is app-layout state owned by the window controller; the pane
+// just forwards it to the status bar’s switcher (and clicks back out).
+- (NSString*)placement                    { return _statusBar.placement; }
+- (void)setPlacement:(NSString*)placement { _statusBar.placement = placement; }
+
+- (void)setPlacementChangedHandler:(void(^)(NSString*))handler
+{
+	_placementChangedHandler = [handler copy];
+	_statusBar.placementChangedHandler = _placementChangedHandler;
+}
+
+// ==============
+// = Aggregates =
+// ==============
+
+- (TerminalSession*)activeSession
+{
+	return _activeIndex < _sessions.count ? _sessions[_activeIndex] : nil;
+}
+
+- (TerminalGridView*)gridView             { return self.activeSession.gridView; }
+- (NSUInteger)numberOfTerminals           { return _sessions.count; }
+
+- (BOOL)hasRunningProcess
+{
+	for(TerminalSession* session in _sessions)
+	{
+		if(session.hasRunningProcess)
+			return YES;
+	}
+	return NO;
+}
+
+- (NSArray<NSString*>*)runningProcessNames
+{
+	NSMutableArray<NSString*>* res = [NSMutableArray array];
+	for(TerminalSession* session in _sessions)
+	{
+		if(session.hasRunningProcess)
+		{
+			if(NSString* name = session.runningProcessName)
+				[res addObject:name];
+		}
+	}
+	return res;
+}
+
+- (NSString*)runningProcessName                   { return self.runningProcessNames.firstObject; }
+- (BOOL)activeTerminalHasRunningProcess           { return self.activeSession.hasRunningProcess; }
+- (NSString*)activeTerminalRunningProcessName     { return self.activeSession.runningProcessName; }
+
+// ==========
+// = Colors =
+// ==========
 
 - (void)setThemeBackgroundColor:(NSColor*)backgroundColor foregroundColor:(NSColor*)foregroundColor
 {
@@ -158,110 +155,184 @@ static NSString* const kUserDefaultsTerminalScrollbackLinesKey = @"terminalScrol
 
 - (void)updateColors
 {
-	if([self prefersDarkPalette])
-			[_emulator setDefaultBackgroundColor:(GhosttyColorRgb){ 12, 12, 12 } foregroundColor:(GhosttyColorRgb){ 212, 212, 212 } cursorColor:(GhosttyColorRgb){ 212, 212, 212 }];
-	else	[_emulator setDefaultBackgroundColor:(GhosttyColorRgb){ 252, 252, 252 } foregroundColor:(GhosttyColorRgb){ 40, 40, 40 } cursorColor:(GhosttyColorRgb){ 40, 40, 40 }];
-	[_gridView refreshFromEmulator];
-	_gridView.needsDisplay = YES;
+	BOOL dark = [self prefersDarkPalette];
+	for(TerminalSession* session in _sessions)
+		[session applyDarkPalette:dark];
 }
 
-- (NSString*)loginShellPath
+// =====================
+// = Session lifecycle =
+// =====================
+
+- (TerminalSession*)createSession
 {
-	auto shell = _environment.find("SHELL");
-	if(shell != _environment.end() && !shell->second.empty())
-		return [NSString stringWithUTF8String:shell->second.c_str()];
-	if(struct passwd* entry = getpwuid(getuid()))
-	{
-		if(entry->pw_shell && *entry->pw_shell)
-			return [NSString stringWithUTF8String:entry->pw_shell];
-	}
-	return @"/bin/zsh";
+	TerminalSession* session = [[TerminalSession alloc] init];
+	session.workingDirectory = self.workingDirectory;
+	session.environment      = _environment;
+	[session applyDarkPalette:[self prefersDarkPalette]];
+	session.allowsProcessPolling = _view.window ? YES : NO;
+
+	__weak TerminalPaneController* weakSelf = self;
+	__weak TerminalSession* weakSession = session;
+	session.exitedHandler = ^{
+		if(TerminalSession* strongSession = weakSession)
+			[weakSelf removeSession:strongSession];
+	};
+	session.stateChangedHandler = ^{
+		[weakSelf refreshStatusBar];
+	};
+	session.bellHandler = ^{
+		NSBeep();
+		TerminalPaneController* strongSelf = weakSelf;
+		TerminalSession* strongSession = weakSession;
+		if(strongSelf && strongSession && strongSession != strongSelf.activeSession)
+		{
+			strongSession.hasUnreadBell = YES;
+			[strongSelf refreshStatusBar];
+		}
+	};
+	session.gridSizeChangedHandler = ^(NSUInteger columns, NSUInteger rows){
+		TerminalPaneController* strongSelf = weakSelf;
+		if(strongSelf && weakSession == strongSelf.activeSession)
+			[strongSelf.statusBar flashGridSize:columns rows:rows];
+	};
+
+	return session;
 }
 
 - (void)startShellIfNeeded
 {
-	_shellRequested = YES;
-	if(!_ptyController && _gridView.gridColumns > 0)
-		[self spawnShell];
-	if(!_statusBar.workingDirectory.length)
-		_statusBar.workingDirectory = self.workingDirectory;
-}
-
-- (void)prepareForFreshSessionIfNeeded
-{
-	if(!_needsReset)
-		return;
-	_needsReset = NO;
-	_currentDirectory = nil;
-	[_emulator reset];
-	[_gridView refreshFromEmulator];
-	_gridView.needsDisplay = YES;
-}
-
-- (void)spawnShell
-{
-	[self prepareForFreshSessionIfNeeded];
-
-	NSString* directory = self.workingDirectory ?: NSHomeDirectory();
-	NSString* shellPath = [self loginShellPath];
-
-	std::map<std::string, std::string> environment = _environment;
-	environment["TERM"]         = "xterm-256color";
-	environment["TERM_PROGRAM"] = "TextMate";
-	if(environment.find("SHELL") == environment.end())
-		environment["SHELL"] = shellPath.fileSystemRepresentation;
-
-	NSUInteger columns = std::max<NSUInteger>(_gridView.gridColumns, 20);
-	NSUInteger rows    = std::max<NSUInteger>(_gridView.gridRows, 5);
-	NSSize cellSize    = _gridView.cellSize;
-	CGFloat scale      = _gridView.window.backingScaleFactor ?: 2;
-
-	PTYController* pty = [[PTYController alloc] initWithPath:shellPath.fileSystemRepresentation arguments:{ } environment:environment workingDirectory:directory.fileSystemRepresentation loginShell:YES columns:columns rows:rows pixelWidth:columns * cellSize.width * scale pixelHeight:rows * cellSize.height * scale];
-
-	__weak TerminalPaneController* weakSelf = self;
-	TerminalEmulator* emulator = _emulator;
-	pty.readHandler = ^(void const* bytes, size_t length){
-		[emulator feedBytes:bytes length:length];
-	};
-	pty.exitHandler = ^(int status){
-		dispatch_async(dispatch_get_main_queue(), ^{
-			[weakSelf shellDidExitWithStatus:status];
-		});
-	};
-
-	emulator.writeToPTYHandler = ^(NSData* data){
-		[weakSelf.ptyController writeData:data];
-	};
-
-	if([pty spawn])
+	if(_sessions.count == 0)
 	{
-		_ptyController = pty;
-		_statusBar.workingDirectory = directory;
+		[_sessions addObject:[self createSession]];
+		_activeIndex = 0;
+		[self installActiveSessionView];
+		[self refreshStatusBar];
+	}
+	for(TerminalSession* session in _sessions)
+		[session startShellIfNeeded];
+}
+
+- (void)addTerminal
+{
+	TerminalSession* session = [self createSession];
+	NSUInteger insertionIndex = _sessions.count ? _activeIndex + 1 : 0;
+	[_sessions insertObject:session atIndex:insertionIndex];
+	[self selectTerminalAtIndex:insertionIndex];
+	[session startShellIfNeeded]; // spawns once the grid gets its size from layout
+}
+
+- (void)selectTerminalAtIndex:(NSUInteger)index
+{
+	if(index >= _sessions.count)
+		return;
+	_activeIndex = index;
+	self.activeSession.hasUnreadBell = NO;
+	[self installActiveSessionView];
+	[self refreshStatusBar];
+	if(_view.window && self.activeSession)
+		[_view.window makeFirstResponder:self.activeSession.gridView];
+}
+
+- (void)selectNextTerminal
+{
+	if(_sessions.count > 1)
+		[self selectTerminalAtIndex:(_activeIndex + 1) % _sessions.count];
+}
+
+- (void)selectPreviousTerminal
+{
+	if(_sessions.count > 1)
+		[self selectTerminalAtIndex:(_activeIndex + _sessions.count - 1) % _sessions.count];
+}
+
+- (void)closeActiveTerminal
+{
+	if(TerminalSession* session = self.activeSession)
+		[self removeSession:session]; // removeSession shuts the session down
+}
+
+- (void)removeSession:(TerminalSession*)session
+{
+	NSUInteger index = [_sessions indexOfObjectIdenticalTo:session];
+	if(index == NSNotFound)
+		return;
+
+	BOOL wasActive = index == _activeIndex;
+	[session shutdown];
+	[_sessions removeObjectAtIndex:index];
+	if(_activeIndex > index || _activeIndex >= _sessions.count)
+		_activeIndex = _activeIndex > 0 ? _activeIndex - 1 : 0;
+
+	if(_sessions.count == 0)
+	{
+		// Notify before tearing the view out: the owner’s hide path restores
+		// editor focus only while the pane (with the focused grid) is still
+		// in the window.
+		if(_shellExitedHandler)
+			_shellExitedHandler();
+		[self installActiveSessionView]; // clears the slot
+		[self refreshStatusBar];
+	}
+	else if(wasActive)
+	{
+		[self selectTerminalAtIndex:_activeIndex]; // adjacent tab takes over, focused
 	}
 	else
 	{
-		char const* message = "[failed to start shell]\r\n";
-		[_emulator feedBytes:message length:strlen(message)];
+		[self refreshStatusBar];
 	}
-}
-
-- (void)shellDidExitWithStatus:(int)status
-{
-	_ptyController = nil;
-	_shellRequested = NO;
-	_needsReset = YES; // the next open starts a fresh session
-	if(_shellExitedHandler)
-		_shellExitedHandler();
-}
-
-- (void)handleInputData:(NSData*)data
-{
-	[_ptyController writeData:data];
 }
 
 - (void)shutdown
 {
-	[_ptyController shutdown];
-	_ptyController = nil;
+	for(TerminalSession* session in _sessions)
+		[session shutdown];
+}
+
+// ======================
+// = View and status bar =
+// ======================
+
+- (void)installActiveSessionView
+{
+	NSView* newView = self.activeSession.view;
+	if(_installedSessionView == newView)
+		return;
+
+	[_installedSessionView removeFromSuperview];
+	_installedSessionView = newView;
+
+	if(newView)
+	{
+		newView.translatesAutoresizingMaskIntoConstraints = NO;
+		[_view addSubview:newView];
+		[NSLayoutConstraint activateConstraints:@[
+			[newView.leadingAnchor constraintEqualToAnchor:_view.leadingAnchor],
+			[newView.trailingAnchor constraintEqualToAnchor:_view.trailingAnchor],
+			[newView.topAnchor constraintEqualToAnchor:_view.topAnchor],
+			[newView.bottomAnchor constraintEqualToAnchor:_statusBar.topAnchor],
+		]];
+		[_view layoutSubtreeIfNeeded]; // size the grid now so TIOCSWINSZ is current before the first keystroke
+	}
+}
+
+- (void)refreshStatusBar
+{
+	TerminalSession* active = self.activeSession;
+	_statusBar.workingDirectory = active.currentDirectory ?: active.workingDirectory ?: self.workingDirectory;
+	_statusBar.processName = active.cachedHasRunningProcess ? (active.cachedRunningProcessName ?: @"process") : nil;
+
+	NSMutableArray<NSString*>* titles = [NSMutableArray array];
+	NSMutableIndexSet* activity = [NSMutableIndexSet indexSet];
+	NSMutableIndexSet* unread   = [NSMutableIndexSet indexSet];
+	[_sessions enumerateObjectsUsingBlock:^(TerminalSession* session, NSUInteger i, BOOL* stop){
+		[titles addObject:session.displayName ?: @"terminal"];
+		if(session.cachedHasRunningProcess)
+			[activity addIndex:i];
+		if(session.hasUnreadBell)
+			[unread addIndex:i];
+	}];
+	[_statusBar setTabTitles:titles selectedIndex:_activeIndex activityIndexes:activity unreadIndexes:unread];
 }
 @end

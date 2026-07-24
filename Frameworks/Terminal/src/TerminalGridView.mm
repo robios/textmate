@@ -809,6 +809,31 @@ struct cell_style_key_t
 	[self writeToPTY:data snapToBottom:YES];
 }
 
+// TextMate’s terminal-management shortcuts are control-only combos (⌃`
+// toggles, ⌃⇧` opens a new terminal), which the code below would otherwise
+// consume for the PTY. Match against the live menu items — not hardcoded
+// keys — so equivalents customized in System Settings keep working. Shift
+// is ignored in the flag comparison because the key-equivalent character
+// itself encodes it (“~” vs “`”, uppercase vs lowercase).
+static BOOL EventMatchesTerminalMenuItem (NSEvent* event, NSMenu* menu)
+{
+	for(NSMenuItem* item in menu.itemArray)
+	{
+		if(item.hasSubmenu)
+		{
+			if(EventMatchesTerminalMenuItem(event, item.submenu))
+				return YES;
+		}
+		else if(item.action == @selector(toggleTerminal:) || item.action == @selector(newTerminal:) || item.action == @selector(nextTerminal:) || item.action == @selector(previousTerminal:) || item.action == @selector(closeTerminal:))
+		{
+			NSEventModifierFlags const mask = (NSEventModifierFlagCommand|NSEventModifierFlagControl|NSEventModifierFlagOption|NSEventModifierFlagShift) & ~NSEventModifierFlagShift;
+			if(item.keyEquivalent.length && [item.keyEquivalent isEqualToString:event.charactersIgnoringModifiers] && (item.keyEquivalentModifierMask & mask) == (event.modifierFlags & mask))
+				return YES;
+		}
+	}
+	return NO;
+}
+
 - (BOOL)performKeyEquivalent:(NSEvent*)event
 {
 	if(event.type != NSEventTypeKeyDown)
@@ -822,6 +847,11 @@ struct cell_style_key_t
 
 	if(self.hasMarkedText)
 		return NO; // let the input context finish/cancel the composition
+
+	// TextMate’s own terminal-management shortcuts (⌃`, ⌃⇧`, …) must beat
+	// the PTY while the terminal has focus — hand them back to the menu.
+	if(EventMatchesTerminalMenuItem(event, NSApp.mainMenu))
+		return NO;
 
 	// Consume control combos and function keys here: some (⌃-arrows,
 	// ⌃-delete) never reach -keyDown:, and returning YES also keeps

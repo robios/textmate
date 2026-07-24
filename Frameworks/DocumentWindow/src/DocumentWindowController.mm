@@ -108,6 +108,7 @@ static void show_command_error (std::string const& message, oak::uuid_t const& u
 @property (nonatomic) BOOL                        htmlOutputInWindow;
 
 @property (nonatomic) TerminalPaneController*     terminalPane;
+@property (nonatomic) BOOL                        terminalKillConfirmed; // one-shot: the “process is still running” sheet was answered with Close
 
 @property (nonatomic) MarkdownPreviewView*        markdownPreviewPane;
 @property (nonatomic) BOOL                        observingThemeUUID; // terminal pane and markdown preview share the themeUUID observation
@@ -389,6 +390,7 @@ static NSArray* const kObservedKeyPaths = @[ @"arrayController.arrangedObjects.p
 - (void)userDefaultsDidChange:(NSNotification*)aNotification
 {
 	self.htmlOutputInWindow = [[NSUserDefaults.standardUserDefaults stringForKey:kUserDefaultsHTMLOutputPlacementKey] isEqualToString:@"window"];
+	self.terminalPane.placement = [NSUserDefaults.standardUserDefaults stringForKey:kUserDefaultsTerminalPlacementKey]; // no-op until the pane exists; the status bar normalizes non-left/bottom to “right”
 	self.disableFileBrowserWindowResize = [NSUserDefaults.standardUserDefaults boolForKey:kUserDefaultsDisableFileBrowserWindowResizeKey];
 	self.autoRevealFile = [NSUserDefaults.standardUserDefaults boolForKey:kUserDefaultsAutoRevealFileKey];
 	self.documentView.hideStatusBar = [NSUserDefaults.standardUserDefaults boolForKey:kUserDefaultsHideStatusBarKey];
@@ -624,13 +626,57 @@ static NSArray* const kObservedKeyPaths = @[ @"arrayController.arrangedObjects.p
 		[[DocumentWindowController sharedProjectStateDB] setValue:[self sessionInfoIncludingUntitledDocuments:NO] forKey:self.projectPath];
 }
 
+// Terminal.app-style warning shown before running terminal processes would
+// be terminated by closing the window or quitting. Aggregates across all
+// terminal tabs in this window. Calls back with YES when the user chose to
+// proceed.
+- (void)showTerminalProcessWarningForQuit:(BOOL)quitFlag completionHandler:(void(^)(BOOL canClose))callback
+{
+	NSArray<NSString*>* names = self.terminalPane.runningProcessNames;
+
+	NSString* message;
+	if(names.count > 1)
+		message = [NSString stringWithFormat:@"Processes are still running in the terminal: “%@” and %lu other%s.", names.firstObject, names.count-1, names.count-1 == 1 ? "" : "s"];
+	else if(names.count == 1)
+		message = [NSString stringWithFormat:@"A process is still running in the terminal: “%@”.", names.firstObject];
+	else
+		message = @"A process is still running in the terminal.";
+
+	NSAlert* alert = [[NSAlert alloc] init];
+	[alert setAlertStyle:NSAlertStyleWarning];
+	[alert setMessageText:message];
+	if(names.count > 1)
+			[alert setInformativeText:quitFlag ? @"Quitting will terminate them." : @"Closing will terminate them."];
+	else	[alert setInformativeText:quitFlag ? @"Quitting will terminate it." : @"Closing will terminate it."];
+	[alert addButtons:(quitFlag ? @"Quit" : @"Close"), @"Cancel", nil];
+	[alert beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse returnCode){
+		callback(returnCode == NSAlertFirstButtonReturn);
+	}];
+}
+
 - (BOOL)windowShouldClose:(id)sender
 {
+	// Consume the confirmation flag up front so it cannot survive an
+	// interleaved HTML-output prompt below and leak into a later close.
+	BOOL terminalKillConfirmed = std::exchange(_terminalKillConfirmed, NO);
+
 	if(!self.htmlOutputInWindow && _htmlOutputView.isRunningCommand)
 	{
 		[_htmlOutputView stopLoadingWithUserInteraction:YES completionHandler:^(BOOL didStop){
 			if(didStop)
 				[sender performSelector:@selector(performClose:) withObject:self afterDelay:0];
+		}];
+		return NO;
+	}
+
+	if(!terminalKillConfirmed && self.terminalPane.hasRunningProcess)
+	{
+		[self showTerminalProcessWarningForQuit:NO completionHandler:^(BOOL canClose){
+			if(canClose)
+			{
+				self.terminalKillConfirmed = YES; // consumed by the windowShouldClose: re-entry below
+				[sender performSelector:@selector(performClose:) withObject:self afterDelay:0];
+			}
 		}];
 		return NO;
 	}
@@ -728,7 +774,59 @@ static NSArray* const kObservedKeyPaths = @[ @"arrayController.arrangedObjects.p
 	}
 }
 
+// Sheets each window whose terminal still runs a foreground process, in
+// order; any Cancel aborts the chain (and thereby the termination).
++ (void)askToTerminateTerminalProcessesUsingEnumerator:(NSEnumerator*)anEnumerator completionHandler:(void(^)(BOOL canTerminate))callback
+{
+	if(DocumentWindowController* controller = [anEnumerator nextObject])
+	{
+		// Re-check at each step: the window may have closed and the process
+		// may have finished while an earlier sheet in the chain was up. Skip
+		// such controllers (treat as confirmed) — a sheet on an ordered-out
+		// window may never complete, which would leave the pending
+		// NSTerminateLater unanswered and wedge the quit.
+		if(!controller.window.isVisible || !controller.terminalPane.hasRunningProcess)
+			return [self askToTerminateTerminalProcessesUsingEnumerator:anEnumerator completionHandler:callback];
+
+		[controller showTerminalProcessWarningForQuit:YES completionHandler:^(BOOL canClose){
+			if(canClose)
+				[self askToTerminateTerminalProcessesUsingEnumerator:anEnumerator completionHandler:callback];
+			else
+				callback(NO);
+		}];
+	}
+	else
+	{
+		callback(YES);
+	}
+}
+
 + (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication*)sender
+{
+	NSMutableArray<DocumentWindowController*>* controllersWithRunningProcess = [NSMutableArray array];
+	for(DocumentWindowController* controller in SortedControllers())
+	{
+		if(controller.terminalPane.hasRunningProcess)
+			[controllersWithRunningProcess addObject:controller];
+	}
+
+	if(controllersWithRunningProcess.count)
+	{
+		[self askToTerminateTerminalProcessesUsingEnumerator:[controllersWithRunningProcess objectEnumerator] completionHandler:^(BOOL canTerminate){
+			if(!canTerminate)
+				return [NSApp replyToApplicationShouldTerminate:NO];
+
+			NSApplicationTerminateReply reply = [self applicationShouldTerminateAfterTerminalCheck:sender];
+			if(reply != NSTerminateLater)
+				[NSApp replyToApplicationShouldTerminate:reply == NSTerminateNow];
+		}];
+		return NSTerminateLater;
+	}
+
+	return [self applicationShouldTerminateAfterTerminalCheck:sender];
+}
+
++ (NSApplicationTerminateReply)applicationShouldTerminateAfterTerminalCheck:(NSApplication*)sender
 {
 	NSMutableArray<DocumentWindowController*>* controllers = [NSMutableArray array];
 	NSMutableArray<OakDocument*>* documents = [NSMutableArray array];
@@ -2011,18 +2109,19 @@ static NSArray* const kObservedKeyPaths = @[ @"arrayController.arrangedObjects.p
 
 // Like the file browser, showing the terminal grows the window outward on
 // the pane’s edge (and hiding shrinks it back) instead of squeezing the
-// editor, screen space permitting.
-- (void)adjustWindowFrameForTerminalPane:(BOOL)makeVisibleFlag
+// editor, screen space permitting. The frame math lives in its own method
+// because the session snapshot must apply the exact same shrink (see
+// sessionInfoIncludingUntitledDocuments:).
+- (NSRect)windowFrame:(NSRect)windowFrame adjustedForTerminalPaneVisible:(BOOL)makeVisibleFlag
 {
 	if(self.disableFileBrowserWindowResize || ([self.window styleMask] & NSWindowStyleMaskFullScreen) == NSWindowStyleMaskFullScreen)
-		return;
+		return windowFrame;
 
 	NSString* placement = self.layoutView.terminalPlacement;
 	BOOL bottom = [placement isEqualToString:@"bottom"];
 	BOOL left   = [placement isEqualToString:@"left"];
 	CGFloat delta = (bottom ? self.terminalSize.height : self.terminalSize.width) + 1;
 
-	NSRect windowFrame = self.window.frame;
 	NSRect screenFrame = [[self.window screen] visibleFrame];
 
 	if(makeVisibleFlag)
@@ -2066,7 +2165,14 @@ static NSArray* const kObservedKeyPaths = @[ @"arrayController.arrangedObjects.p
 		}
 	}
 
-	[self.window setFrame:windowFrame display:YES];
+	return windowFrame;
+}
+
+- (void)adjustWindowFrameForTerminalPane:(BOOL)makeVisibleFlag
+{
+	NSRect windowFrame = [self windowFrame:self.window.frame adjustedForTerminalPaneVisible:makeVisibleFlag];
+	if(!NSEqualRects(windowFrame, self.window.frame))
+		[self.window setFrame:windowFrame display:YES];
 }
 
 - (void)setTerminalVisible:(BOOL)makeVisibleFlag
@@ -2083,11 +2189,20 @@ static NSArray* const kObservedKeyPaths = @[ @"arrayController.arrangedObjects.p
 				self.terminalPane.shellExitedHandler = ^{
 					weakSelf.terminalVisible = NO;
 				};
+				// The status bar’s placement switcher: writing the default takes
+				// the same route as the Preferences popup — ProjectLayoutView
+				// observes the key and relocates the pane live, and every window’s
+				// userDefaultsDidChange: feeds the new value back into its own
+				// switcher, keeping all placement UIs in agreement.
+				self.terminalPane.placement = [NSUserDefaults.standardUserDefaults stringForKey:kUserDefaultsTerminalPlacementKey];
+				self.terminalPane.placementChangedHandler = ^(NSString* placement){
+					[NSUserDefaults.standardUserDefaults setObject:placement forKey:kUserDefaultsTerminalPlacementKey];
+				};
+
 				[self observeThemeUUIDIfNeeded];
 			}
 			[self updateTerminalPaneTheme];
-			self.terminalPane.workingDirectory = self.projectPath ?: [self.selectedDocument.path stringByDeletingLastPathComponent] ?: NSHomeDirectory();
-			self.terminalPane.environment = [self terminalEnvironment];
+			[self refreshTerminalSpawnParameters];
 			self.layoutView.terminalView = self.terminalPane.view;
 			[self adjustWindowFrameForTerminalPane:YES];
 			[self.terminalPane startShellIfNeeded];
@@ -2117,6 +2232,59 @@ static NSArray* const kObservedKeyPaths = @[ @"arrayController.arrangedObjects.p
 	if(self.terminalVisible && ![self terminalHasFocus])
 			[self.window makeFirstResponder:self.terminalPane.gridView];
 	else	self.terminalVisible = !self.terminalVisible;
+}
+
+// The next spawn (first terminal or a new tab) uses the current project
+// directory and a freshly computed environment — the latter matters for the
+// agent-bridge variables, whose port only exists while the bridge runs.
+- (void)refreshTerminalSpawnParameters
+{
+	self.terminalPane.workingDirectory = self.projectPath ?: [self.selectedDocument.path stringByDeletingLastPathComponent] ?: NSHomeDirectory();
+	self.terminalPane.environment = [self terminalEnvironment];
+}
+
+- (IBAction)newTerminal:(id)sender
+{
+	BOOL hadTerminals = self.terminalPane.numberOfTerminals > 0;
+	if(!self.terminalVisible)
+		self.terminalVisible = YES; // creates the pane and its first session as needed
+	if(hadTerminals)
+	{
+		[self refreshTerminalSpawnParameters];
+		[self.terminalPane addTerminal];
+	}
+	[self.window makeFirstResponder:self.terminalPane.gridView];
+}
+
+- (IBAction)nextTerminal:(id)sender
+{
+	[self.terminalPane selectNextTerminal];
+}
+
+- (IBAction)previousTerminal:(id)sender
+{
+	[self.terminalPane selectPreviousTerminal];
+}
+
+- (IBAction)closeTerminal:(id)sender
+{
+	TerminalPaneController* pane = self.terminalPane;
+	if(!self.terminalVisible || pane.numberOfTerminals == 0)
+		return;
+
+	if(!pane.activeTerminalHasRunningProcess)
+		return [pane closeActiveTerminal];
+
+	NSString* name = pane.activeTerminalRunningProcessName;
+	NSAlert* alert = [[NSAlert alloc] init];
+	[alert setAlertStyle:NSAlertStyleWarning];
+	[alert setMessageText:name ? [NSString stringWithFormat:@"A process is still running in this terminal: “%@”.", name] : @"A process is still running in this terminal."];
+	[alert setInformativeText:@"Closing the terminal will terminate it."];
+	[alert addButtons:@"Close", @"Cancel", nil];
+	[alert beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse returnCode){
+		if(returnCode == NSAlertFirstButtonReturn)
+			[pane closeActiveTerminal];
+	}];
 }
 
 - (BOOL)terminalHasFocus
@@ -2582,6 +2750,10 @@ static NSArray* const kObservedKeyPaths = @[ @"arrayController.arrangedObjects.p
 	}
 	else if([menuItem action] == @selector(toggleTerminal:))
 		[menuItem setTitle:self.terminalVisible && [self terminalHasFocus] ? @"Hide Terminal" : @"Show Terminal"];
+	else if([menuItem action] == @selector(nextTerminal:) || [menuItem action] == @selector(previousTerminal:))
+		active = self.terminalVisible && self.terminalPane.numberOfTerminals > 1;
+	else if([menuItem action] == @selector(closeTerminal:))
+		active = self.terminalVisible && self.terminalPane.numberOfTerminals > 0;
 	else if([menuItem action] == @selector(toggleMarkdownPreview:))
 	{
 		[menuItem setTitle:self.markdownPreviewVisible ? @"Hide Markdown Preview" : @"Show Markdown Preview"];
@@ -2912,7 +3084,18 @@ static NSUInteger DisableSessionSavingCount = 0;
 	else if(self.window.isZoomed)
 		res[@"zoomed"] = @YES;
 	else
-		res[@"windowFrame"] = [self.window stringWithSavedFrame];
+	{
+		// The terminal never restores as visible (see setupControllerForProject:)
+		// but showing it grew the window outward, so snapshot the frame the hide
+		// path would shrink back to — same math, so clamping and skip conditions
+		// (full screen, disableFileBrowserWindowResize) stay identical and the
+		// frame is untouched whenever no growth happened. Saved in the legacy
+		// NSRect format that the restore path already parses.
+		NSRect windowFrame = self.terminalVisible ? [self windowFrame:self.window.frame adjustedForTerminalPaneVisible:NO] : self.window.frame;
+		if(NSEqualRects(windowFrame, self.window.frame))
+				res[@"windowFrame"] = [self.window stringWithSavedFrame];
+		else	res[@"windowFrame"] = NSStringFromRect(windowFrame);
+	}
 
 	res[@"miniaturized"]       = @([self.window isMiniaturized]);
 	res[@"htmlOutputSize"]     = NSStringFromSize(self.htmlOutputSize);

@@ -20,6 +20,17 @@
 @property (nonatomic, readonly) pid_t processIdentifier;
 @property (nonatomic, readonly, getter = isRunning) BOOL running;
 
+// Running-process detection (Terminal.app semantics): YES when the pty’s
+// foreground process group (tcgetpgrp on the master) differs from the
+// spawned shell itself, OR the shell has a live (non-zombie) child
+// process — the latter catches suspended (^Z) and backgrounded jobs,
+// whose foreground pgid has returned to the shell. The name is the
+// foreground process group leader’s name (proc_name) when a foreground
+// job exists, otherwise the first live child’s; nil when the shell sits
+// idle at its prompt or the name cannot be resolved.
+@property (nonatomic, readonly) BOOL hasForegroundProcess;
+@property (nonatomic, readonly) NSString* foregroundProcessName;
+
 - (BOOL)spawn; // returns NO if forkpty or exec setup failed
 - (void)writeData:(NSData*)data;
 - (void)resizeToColumns:(NSUInteger)columns rows:(NSUInteger)rows pixelWidth:(NSUInteger)pixelWidth pixelHeight:(NSUInteger)pixelHeight;
