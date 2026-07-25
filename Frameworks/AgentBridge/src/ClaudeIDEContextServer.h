@@ -1,5 +1,5 @@
-#ifndef AGENT_BRIDGE_SERVER_H_WN31TQ8C
-#define AGENT_BRIDGE_SERVER_H_WN31TQ8C
+#ifndef CLAUDE_IDE_CONTEXT_SERVER_H_WN31TQ8C
+#define CLAUDE_IDE_CONTEXT_SERVER_H_WN31TQ8C
 
 #import <Foundation/Foundation.h>
 
@@ -11,7 +11,7 @@
 // state is reached exclusively through AgentBridgeWorkspace. The bridge only
 // PROVIDES context (open editors, selection, diagnostics) — writes are the
 // agent’s own business and are reviewed after the fact against git.
-@interface AgentBridgeServer : NSObject
+@interface ClaudeIDEContextServer : NSObject
 - (instancetype)initWithAuthToken:(NSString*)authToken workspace:(AgentBridgeWorkspace*)workspace;
 
 // readyHandler is called once on the main queue with the bound port (0 on failure).
@@ -34,4 +34,4 @@
 - (void)drainPendingSendsWithTimeout:(NSTimeInterval)timeout;
 @end
 
-#endif /* AGENT_BRIDGE_SERVER_H_WN31TQ8C */
+#endif /* CLAUDE_IDE_CONTEXT_SERVER_H_WN31TQ8C */

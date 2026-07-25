@@ -6,9 +6,9 @@
 	<string>nop</string>
 	<key>command</key>
 	<string>#!/bin/sh
-# Show the agent bridge state as a tool tip. tm_agent exits 0 when the
-# bridge is running, 2 when it is stopped; other codes mean the app or the
-# bridge could not be reached.
+# Show the Claude IDE-context server state as a tool tip. tm_agent exits 0
+# when the server is running, 2 when it is stopped; other codes mean the app
+# or server could not be reached.
 
 out=$("$TM_AGENT" status 2&gt;&amp;1)
 rc=$?
@@ -17,15 +17,15 @@ if [ $rc -eq 0 ]; then
 	clients=$(printf '%s\n' "$out" | sed -n 's/^clients: //p')
 	port=$(printf '%s\n' "$out" | sed -n 's/^port: //p')
 	if [ "${clients:-0}" -gt 0 ]; then
-		echo "Agent bridge running on port ${port:-?} — $clients client(s) connected."
+		echo "Claude IDE context active on port ${port:-?} — $clients client(s) connected."
 	else
-		echo "Agent bridge running on port ${port:-?} — no client connected."
+		echo "Claude IDE context active on port ${port:-?} — no client connected."
 		echo "Run ‘claude’ in the terminal (⌃\`) to connect."
 	fi
 elif [ $rc -eq 2 ]; then
-	echo "Agent bridge is stopped."
+	echo "Claude IDE context is stopped."
 else
-	echo "${out:-agent bridge unavailable}"
+	echo "${out:-Claude IDE context unavailable}"
 fi
 exit 206
 </string>
@@ -34,7 +34,7 @@ exit 206
 	<key>inputFormat</key>
 	<string>text</string>
 	<key>name</key>
-	<string>Agent Bridge Status</string>
+	<string>Claude IDE Context Status</string>
 	<key>outputFormat</key>
 	<string>text</string>
 	<key>outputLocation</key>

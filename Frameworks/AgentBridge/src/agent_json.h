@@ -10,6 +10,8 @@
 // both call. Kept in one place so the wire shapes cannot drift between them.
 namespace agent_json
 {
+	inline constexpr size_t maximum_selection_bytes = 64 * 1024;
+
 	// Serialize without throwing: tool results may contain buffer excerpts
 	// whose range boundaries split a multi-byte character, and dump()’s default
 	// strict handler throws type_error.316 on invalid UTF-8.

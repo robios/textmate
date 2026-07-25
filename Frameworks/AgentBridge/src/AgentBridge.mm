@@ -1,7 +1,8 @@
 #import "AgentBridge.h"
-#import "AgentBridgeLockFile.h"
-#import "AgentBridgeServer.h"
 #import "AgentBridgeTools.h"
+#import "ClaudeIDEContextServer.h"
+#import "ClaudeIDEContextLockFile.h"
+#import "CodexIDEContextServer.h"
 #import "agent_tools.h"
 #import "AgentBridgeWorkspace.h"
 #import <OakSystem/application.h>
@@ -11,14 +12,15 @@
 
 using json = nlohmann::json;
 
-NSString* const kUserDefaultsAgentBridgeEnabledKey             = @"agentBridgeEnabled";
+NSString* const kUserDefaultsEditorContextSharingEnabledKey     = @"agentBridgeEnabled";
 NSNotificationName const AgentBridgeStatusDidChangeNotification = @"AgentBridgeStatusDidChangeNotification";
 
 @interface AgentBridge ()
 {
-	AgentBridgeWorkspace* _workspace;
-	AgentBridgeServer*    _server;
-	AgentBridgeLockFile*  _lockFile;
+	AgentBridgeWorkspace*     _workspace;
+	ClaudeIDEContextServer*   _claudeIDEContextServer;
+	ClaudeIDEContextLockFile* _claudeLockFile;
+	CodexIDEContextServer*    _codexIDEContextServer;
 }
 @end
 
@@ -85,50 +87,62 @@ static BOOL ParseLineArgument (NSString* value, NSInteger* line)
 	});
 }
 
-+ (BOOL)isRunning
++ (BOOL)isClaudeIDEContextServerRunning
 {
-	AgentBridgeServer* server = SharedAgentBridge ? SharedAgentBridge->_server : nil;
+	ClaudeIDEContextServer* server = SharedAgentBridge ? SharedAgentBridge->_claudeIDEContextServer : nil;
 	return server.isRunning;
 }
 
-+ (NSUInteger)connectedClientCount
++ (NSUInteger)connectedClaudeClientCount
 {
-	AgentBridgeServer* server = SharedAgentBridge ? SharedAgentBridge->_server : nil;
+	ClaudeIDEContextServer* server = SharedAgentBridge ? SharedAgentBridge->_claudeIDEContextServer : nil;
 	return server.connectedClientCount;
 }
 
-+ (NSUInteger)serverPort
++ (NSUInteger)claudeIDEContextServerPort
 {
-	AgentBridgeServer* server = SharedAgentBridge ? SharedAgentBridge->_server : nil;
+	ClaudeIDEContextServer* server = SharedAgentBridge ? SharedAgentBridge->_claudeIDEContextServer : nil;
 	return server.isRunning ? server.port : 0;
 }
 
-+ (void)sendAtMentionedWithFilePath:(NSString*)filePath lineStart:(NSInteger)lineStart lineEnd:(NSInteger)lineEnd
++ (BOOL)isCodexIDEContextServerRunning
+{
+	CodexIDEContextServer* server = SharedAgentBridge ? SharedAgentBridge->_codexIDEContextServer : nil;
+	return server.isRunning;
+}
+
++ (NSString*)codexIDEContextTemporaryDirectory
+{
+	CodexIDEContextServer* server = SharedAgentBridge ? SharedAgentBridge->_codexIDEContextServer : nil;
+	return server.temporaryDirectory;
+}
+
++ (void)sendClaudeAtMentionedWithFilePath:(NSString*)filePath lineStart:(NSInteger)lineStart lineEnd:(NSInteger)lineEnd
 {
 	if(AgentBridge* bridge = SharedAgentBridge)
-		[bridge->_server sendAtMentionedWithFilePath:filePath lineStart:lineStart lineEnd:lineEnd];
+		[bridge->_claudeIDEContextServer sendAtMentionedWithFilePath:filePath lineStart:lineStart lineEnd:lineEnd];
 }
 
 + (void)handleCLIRequest:(NSString*)command arguments:(NSDictionary<NSString*, NSString*>*)arguments completionHandler:(void(^)(NSDictionary<NSString*, NSString*>*))handler // main thread
 {
 	AgentBridge* bridge = SharedAgentBridge;
-	AgentBridgeServer* server = bridge ? bridge->_server : nil;
+	ClaudeIDEContextServer* claudeServer = bridge ? bridge->_claudeIDEContextServer : nil;
 
 	if([command isEqualToString:@"agent-status"])
 	{
-		BOOL const running = server.isRunning;
+		BOOL const running = claudeServer.isRunning;
 		return handler(@{
 			@"status":  @"ok",
 			@"running": running ? @"yes" : @"no",
-			@"port":    [NSString stringWithFormat:@"%lu", (unsigned long)(running ? server.port : 0)],
-			@"clients": [NSString stringWithFormat:@"%lu", (unsigned long)(server ? server.connectedClientCount : 0)],
+			@"port":    [NSString stringWithFormat:@"%lu", (unsigned long)(running ? claudeServer.port : 0)],
+			@"clients": [NSString stringWithFormat:@"%lu", (unsigned long)(claudeServer ? claudeServer.connectedClientCount : 0)],
 		});
 	}
 
 	if([command isEqualToString:@"agent-mention"])
 	{
-		if(!server.isRunning)
-			return handler(ErrorResponse(@"the agent bridge is not running in TextMate"));
+		if(!claudeServer.isRunning)
+			return handler(ErrorResponse(@"the Claude IDE context server is not running in TextMate"));
 
 		NSString* path = arguments[@"path"];
 		if(path.length == 0)
@@ -146,10 +160,10 @@ static BOOL ParseLineArgument (NSString* value, NSInteger* line)
 		if(lineEnd < lineStart)
 			return handler(ErrorResponse(@"line-end must not be less than line-start"));
 
-		if(server.connectedClientCount == 0)
-			return handler(ErrorResponse(@"no agent client is connected to TextMate"));
+		if(claudeServer.connectedClientCount == 0)
+			return handler(ErrorResponse(@"no Claude Code client is connected to TextMate"));
 
-		[server sendAtMentionedWithFilePath:path lineStart:lineStart lineEnd:lineEnd];
+		[claudeServer sendAtMentionedWithFilePath:path lineStart:lineStart lineEnd:lineEnd];
 		return handler(@{ @"status": @"ok" });
 	}
 
@@ -167,9 +181,9 @@ static BOOL ParseLineArgument (NSString* value, NSInteger* line)
 {
 	AgentBridge* bridge = SharedAgentBridge;
 	if(!bridge)
-		return handler(ErrorResponse(@"the agent bridge is not set up in TextMate"));
-	if(![NSUserDefaults.standardUserDefaults boolForKey:kUserDefaultsAgentBridgeEnabledKey])
-		return handler(ErrorResponse(@"the agent bridge is disabled in TextMate (Preferences → AI)"));
+		return handler(ErrorResponse(@"editor context sharing is not set up in TextMate"));
+	if(![NSUserDefaults.standardUserDefaults boolForKey:kUserDefaultsEditorContextSharingEnabledKey])
+		return handler(ErrorResponse(@"editor context sharing is disabled in TextMate (Preferences → AI)"));
 
 	NSString* name = arguments[@"name"];
 	if(name.length == 0)
@@ -217,26 +231,26 @@ static BOOL ParseLineArgument (NSString* value, NSInteger* line)
 	if(self = [super init])
 	{
 		[NSUserDefaults.standardUserDefaults registerDefaults:@{
-			kUserDefaultsAgentBridgeEnabledKey: @YES,
+			kUserDefaultsEditorContextSharingEnabledKey: @YES,
 		}];
 
 		UpdateCLISymlink();
 
-		[AgentBridgeLockFile removeStaleLockFilesInDirectory:[AgentBridgeLockFile defaultLockDirectory]];
+		[ClaudeIDEContextLockFile removeStaleLockFilesInDirectory:[ClaudeIDEContextLockFile defaultLockDirectory]];
 
 		_workspace = [[AgentBridgeWorkspace alloc] init];
 
 		__weak AgentBridge* weakSelf = self;
 		_workspace.selectionDidChangeHandler = ^(AgentBridgeSelection* selection){
 			if(AgentBridge* strongSelf = weakSelf)
-				[strongSelf->_server sendSelectionChanged:selection];
+				[strongSelf->_claudeIDEContextServer sendSelectionChanged:selection];
 		};
 		_workspace.workspaceFoldersDidChangeHandler = ^(NSArray<NSString*>* folders){
 			[weakSelf updateLockFile];
 		};
 
-		if([NSUserDefaults.standardUserDefaults boolForKey:kUserDefaultsAgentBridgeEnabledKey])
-			[self startServer];
+		if([NSUserDefaults.standardUserDefaults boolForKey:kUserDefaultsEditorContextSharingEnabledKey])
+			[self startContextServices];
 
 		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(applicationWillTerminate:) name:NSApplicationWillTerminateNotification object:nil];
 		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(userDefaultsDidChange:) name:NSUserDefaultsDidChangeNotification object:nil];
@@ -244,14 +258,21 @@ static BOOL ParseLineArgument (NSString* value, NSInteger* line)
 	return self;
 }
 
-- (void)startServer // main queue
+- (void)startContextServices // main queue
 {
-	if(_server)
+	if(_claudeIDEContextServer || _codexIDEContextServer)
 		return;
 
-	NSString* authToken = [AgentBridgeLockFile generateAuthToken];
-	AgentBridgeServer* server = [[AgentBridgeServer alloc] initWithAuthToken:authToken workspace:_workspace];
-	_server = server;
+	_codexIDEContextServer = [[CodexIDEContextServer alloc] initWithWorkspace:_workspace];
+	if(![_codexIDEContextServer start])
+	{
+		NSLog(@"[AgentBridge] Codex IDE-context server failed to start; /ide integration is unavailable");
+		_codexIDEContextServer = nil;
+	}
+
+	NSString* authToken = [ClaudeIDEContextLockFile generateAuthToken];
+	ClaudeIDEContextServer* server = [[ClaudeIDEContextServer alloc] initWithAuthToken:authToken workspace:_workspace];
+	_claudeIDEContextServer = server;
 
 	__weak AgentBridge* weakSelf = self;
 	server.statusDidChangeHandler = ^{
@@ -260,32 +281,34 @@ static BOOL ParseLineArgument (NSString* value, NSInteger* line)
 
 	[server startWithReadyHandler:^(NSUInteger port){
 		AgentBridge* strongSelf = weakSelf;
-		if(!strongSelf || strongSelf->_server != server) // stopped (or replaced) before the listener came up
+		if(!strongSelf || strongSelf->_claudeIDEContextServer != server) // stopped (or replaced) before the listener came up
 			return;
 
 		if(port == 0)
 		{
-			NSLog(@"[AgentBridge] WebSocket server failed to start; Claude Code IDE integration is unavailable");
+			NSLog(@"[AgentBridge] Claude IDE-context server failed to start");
 			[strongSelf postStatusNotification];
 			return;
 		}
 
-		strongSelf->_lockFile = [[AgentBridgeLockFile alloc] initWithPort:port authToken:authToken directory:[AgentBridgeLockFile defaultLockDirectory]];
+		strongSelf->_claudeLockFile = [[ClaudeIDEContextLockFile alloc] initWithPort:port authToken:authToken directory:[ClaudeIDEContextLockFile defaultLockDirectory]];
 		[strongSelf updateLockFile];
 		[strongSelf postStatusNotification];
 	}];
 }
 
-- (void)stopServer // main queue
+- (void)stopContextServices // main queue
 {
-	if(!_server)
+	if(!_claudeIDEContextServer && !_codexIDEContextServer)
 		return;
 
-	[_lockFile remove];
-	_lockFile = nil;
+	[_claudeLockFile remove];
+	_claudeLockFile = nil;
 
-	[_server stop];
-	_server = nil;
+	[_claudeIDEContextServer stop];
+	_claudeIDEContextServer = nil;
+	[_codexIDEContextServer stop];
+	_codexIDEContextServer = nil;
 
 	[self postStatusNotification];
 }
@@ -293,11 +316,11 @@ static BOOL ParseLineArgument (NSString* value, NSInteger* line)
 - (void)userDefaultsDidChange:(NSNotification*)aNotification
 {
 	dispatch_async(dispatch_get_main_queue(), ^{
-		BOOL enabled = [NSUserDefaults.standardUserDefaults boolForKey:kUserDefaultsAgentBridgeEnabledKey];
-		if(enabled && !self->_server)
-			[self startServer];
-		else if(!enabled && self->_server)
-			[self stopServer];
+		BOOL enabled = [NSUserDefaults.standardUserDefaults boolForKey:kUserDefaultsEditorContextSharingEnabledKey];
+		if(enabled && !self->_claudeIDEContextServer && !self->_codexIDEContextServer)
+			[self startContextServices];
+		else if(!enabled && (self->_claudeIDEContextServer || self->_codexIDEContextServer))
+			[self stopContextServices];
 	});
 }
 
@@ -308,13 +331,14 @@ static BOOL ParseLineArgument (NSString* value, NSInteger* line)
 
 - (void)updateLockFile
 {
-	[_lockFile writeWithWorkspaceFolders:[_workspace workspaceFolders]];
+	[_claudeLockFile writeWithWorkspaceFolders:[_workspace workspaceFolders]];
 }
 
 - (void)applicationWillTerminate:(NSNotification*)aNotification
 {
-	[_lockFile remove];
-	[_server drainPendingSendsWithTimeout:1.0]; // a quit-time tool reply must reach the socket before the connections are cancelled
-	[_server stop];
+	[_claudeLockFile remove];
+	[_claudeIDEContextServer drainPendingSendsWithTimeout:1.0]; // a quit-time tool reply must reach the socket before the connections are cancelled
+	[_claudeIDEContextServer stop];
+	[_codexIDEContextServer stop];
 }
 @end

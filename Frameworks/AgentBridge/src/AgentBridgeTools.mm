@@ -17,7 +17,6 @@ using json = nlohmann::json;
 // grow: the diagnostics themselves, and the files they are grouped under. A
 // list of ten thousand empty file envelopes is unbounded in exactly the way
 // the entry cap exists to prevent.
-static size_t const kMaximumSelectionBytes    = 64 * 1024;
 static size_t const kMaximumDiagnosticEntries = 200;
 static size_t const kMaximumDiagnosticFiles   = 50;
 
@@ -25,7 +24,7 @@ static size_t const kMaximumDiagnosticFiles   = 50;
 + (json)payloadForSelection:(AgentBridgeSelection*)selection
 {
 	std::string const text   = to_s(selection.text ?: @"");
-	std::string const capped = agent_json::truncate_utf8(text, kMaximumSelectionBytes);
+	std::string const capped = agent_json::truncate_utf8(text, agent_json::maximum_selection_bytes);
 
 	json res = {
 		{ "text", capped },

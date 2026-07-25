@@ -1,4 +1,4 @@
-#import "AgentBridgeLockFile.h"
+#import "ClaudeIDEContextLockFile.h"
 #import <Security/SecRandom.h>
 #import <nlohmann/json.hpp>
 #import <sys/stat.h>
@@ -8,7 +8,7 @@
 
 using json = nlohmann::json;
 
-@implementation AgentBridgeLockFile
+@implementation ClaudeIDEContextLockFile
 {
 	NSString* _directory;
 }

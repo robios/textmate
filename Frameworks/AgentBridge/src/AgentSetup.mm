@@ -1,4 +1,5 @@
 #import "AgentSetup.h"
+#import "AgentBridge.h"
 #import "agent_quote.h"
 #import <OakSystem/application.h>
 #import <settings/settings.h>
@@ -46,7 +47,14 @@ static NSString* TOMLQuoted (NSString* value)
 + (NSString*)codexLaunchCommandLine
 {
 	NSString* command = [NSString stringWithFormat:@"mcp_servers.textmate.command=%@", TOMLQuoted([self commandLineToolPath])];
-	return [NSString stringWithFormat:@"%@ -c %@ -c %@",
+	NSString* temporaryDirectory = [AgentBridge codexIDEContextTemporaryDirectory];
+	// Codex discovers its fallback IDE socket below TMPDIR, so a TextMate-
+	// launched Codex and its children intentionally inherit this private path.
+	// The server only removes it when empty; child-created files are left for
+	// macOS temp cleanup rather than deleted while the Codex session may live.
+	NSString* environment = temporaryDirectory.length ? [NSString stringWithFormat:@"%@ ", to_ns(agent_quote::environment("TMPDIR", to_s(temporaryDirectory)))] : @"";
+	return [NSString stringWithFormat:@"%@%@ -c %@ -c %@",
+		environment,
 		ShellQuoted([self codexExecutable]),
 		ShellQuoted(command),
 		ShellQuoted(@"mcp_servers.textmate.args=[\"mcp\"]")];

@@ -13,9 +13,9 @@
 // main queue, possibly after the invocation returns.
 typedef void(^AgentBridgeToolReply)(std::string const& text, BOOL isError);
 
-// The one implementation of the MCP tools, shared by both frontends: the
-// WebSocket server Claude Code connects to, and the mate-socket seam that
-// ‘tm_agent mcp’ forwards to on behalf of every other agent CLI. The frontends
+// The one implementation of the MCP tools, shared by both MCP frontends: the
+// ClaudeIDEContextServer WebSocket transport, and the mate-socket seam that
+// ‘tm_agent mcp’ forwards to on behalf of MCP-capable agent CLIs. The frontends
 // differ only in transport and in the routing path they can supply — the shim
 // knows the cwd its agent was started in, the WebSocket server does not.
 @interface AgentBridgeTools : NSObject

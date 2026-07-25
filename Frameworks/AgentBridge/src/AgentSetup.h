@@ -31,9 +31,9 @@
 + (NSString*)claudeLaunchCommandLine;
 
 // A complete shell command line starting Codex with the TextMate MCP server
-// registered through launch-time -c overrides, leaving the user’s own
-// config.toml untouched. Quoted for the shell, so a path with spaces (or a
-// quote) survives the trip.
+// registered through launch-time -c overrides and, while available, TextMate's
+// private IDE-context TMPDIR. Leaves the user’s own config.toml untouched.
+// Quoted for the shell, so a path with spaces (or a quote) survives the trip.
 + (NSString*)codexLaunchCommandLine;
 
 // The equivalent registration as a config.toml block, for a Codex the user

@@ -3,39 +3,43 @@
 
 #import <Foundation/Foundation.h>
 
-// User default (BOOL, default YES): run the Claude Code IDE bridge. The
-// bridge reconciles against this key whenever user defaults change, so
-// toggling it (Preferences → AI) starts/stops the server at runtime.
-extern NSString* const kUserDefaultsAgentBridgeEnabledKey;
+// User default (BOOL, default YES): share TextMate's live editor context with
+// agent CLIs. The bridge reconciles against this key whenever user defaults
+// change, so toggling it (Preferences → AI) starts/stops both native IDE
+// context servers and disables/enables the generic MCP route at runtime.
+extern NSString* const kUserDefaultsEditorContextSharingEnabledKey;
 
-// Posted on the main queue whenever the server starts or stops, the port
-// changes, or a client connects/disconnects.
+// Posted on the main queue whenever a context service starts or stops, the
+// Claude server port changes, or a Claude client connects/disconnects.
 extern NSNotificationName const AgentBridgeStatusDidChangeNotification;
 
-// App-global Claude Code IDE bridge: one WebSocket server plus one discovery
-// lock file per app instance. Call +setup once at launch (AppController).
-// Zero behavior change while no client is connected — the bridge only
-// listens on 127.0.0.1 and keeps the lock file current.
+// App-global coordinator for agent-facing editor context. It owns the shared
+// workspace model, Claude Code's WebSocket IDE-context server, Codex's local
+// IDE-context IPC server, and the generic `tm_agent mcp` request seam. Call
+// +setup once at launch (AppController).
 @interface AgentBridge : NSObject
 + (void)setup;
 
-// Status for the AI preferences pane.
-+ (BOOL)isRunning;
-+ (NSUInteger)connectedClientCount;
+// Provider-specific status for the AI preferences pane.
++ (BOOL)isClaudeIDEContextServerRunning;
++ (NSUInteger)connectedClaudeClientCount;
++ (NSUInteger)claudeIDEContextServerPort; // 0 if unavailable
++ (BOOL)isCodexIDEContextServerRunning;
 
-// Port of the running WebSocket server, 0 if unavailable. Used by
-// DocumentWindowController to inject CLAUDE_CODE_SSE_PORT into the
-// integrated terminal’s environment.
-+ (NSUInteger)serverPort;
+// Private TMPDIR containing TextMate's fallback Codex IDE-context Unix socket.
+// TextMate normally joins Codex's primary IPC router; the integrated terminal
+// inherits this value so /ide still works when that router is unavailable.
+// nil while the bridge is disabled or failed to start.
++ (NSString*)codexIDEContextTemporaryDirectory;
 
-// Push a file reference into a connected CLI’s prompt (send path only; no UI yet).
-+ (void)sendAtMentionedWithFilePath:(NSString*)filePath lineStart:(NSInteger)lineStart lineEnd:(NSInteger)lineEnd;
+// Push a file reference into a connected Claude Code prompt.
++ (void)sendClaudeAtMentionedWithFilePath:(NSString*)filePath lineStart:(NSInteger)lineStart lineEnd:(NSInteger)lineEnd;
 
 // Handler for the tm_agent CLI (requests arrive over the mate socket, see
 // RMateServer.mm). Must be called on the main thread. Commands are:
 //
-//   agent-status  — bridge state (running, port, clients)
-//   agent-mention — path, line-start, line-end (0-based)
+//   agent-status  — Claude IDE server state (legacy wire name)
+//   agent-mention — send Claude a path, line-start, line-end (0-based)
 //   agent-tool    — invoke an MCP context tool on behalf of ‘tm_agent mcp’:
 //                   ‘name’, ‘arguments’ (a JSON object, serialized), and ‘cwd’
 //                   (the shim’s working directory, which routes the query to

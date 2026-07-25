@@ -19,7 +19,7 @@ static nlohmann::json ToolNamed (nlohmann::json const& tools, std::string const&
 
 void test_websocket_tool_set ()
 {
-	nlohmann::json const tools = agent_tools::descriptors(agent_tools::websocket);
+	nlohmann::json const tools = agent_tools::descriptors(agent_tools::claude_websocket);
 
 	// The names Claude Code has always seen; the shared table must not quietly
 	// drop or rename one.
@@ -50,7 +50,7 @@ void test_stdio_tool_set ()
 void test_offline_and_live_lists_agree ()
 {
 	nlohmann::json const stdioTools     = agent_tools::descriptors(agent_tools::stdio);
-	nlohmann::json const websocketTools = agent_tools::descriptors(agent_tools::websocket);
+	nlohmann::json const websocketTools = agent_tools::descriptors(agent_tools::claude_websocket);
 
 	// Every tool the shim advertises offline must exist on the live server with
 	// an identical descriptor: same description, same input schema. A client
@@ -62,13 +62,13 @@ void test_offline_and_live_lists_agree ()
 		OAK_ASSERT(!live.is_null());
 		OAK_ASSERT_EQ(live.dump(), tool.dump());
 		OAK_ASSERT(agent_tools::advertised(name, agent_tools::stdio));
-		OAK_ASSERT(agent_tools::advertised(name, agent_tools::websocket));
+		OAK_ASSERT(agent_tools::advertised(name, agent_tools::claude_websocket));
 	}
 }
 
 void test_descriptor_shape ()
 {
-	for(auto const& tool : agent_tools::descriptors(agent_tools::websocket))
+	for(auto const& tool : agent_tools::descriptors(agent_tools::claude_websocket))
 	{
 		OAK_ASSERT(tool.contains("name") && tool["name"].is_string());
 		OAK_ASSERT(tool.contains("description") && !tool["description"].get<std::string>().empty());
@@ -87,7 +87,7 @@ void test_descriptor_shape ()
 
 void test_unknown_tool_is_not_advertised ()
 {
-	OAK_ASSERT(!agent_tools::advertised("openDiff", agent_tools::websocket));         // removed in Phase A
+	OAK_ASSERT(!agent_tools::advertised("openDiff", agent_tools::claude_websocket));  // removed in Phase A
 	OAK_ASSERT(!agent_tools::advertised("saveDocument", agent_tools::stdio));         // websocket only
 	OAK_ASSERT(!agent_tools::advertised("getLatestSelection", agent_tools::stdio));   // websocket only
 }

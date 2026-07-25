@@ -14,7 +14,7 @@
 // settings_t::set(), i.e. ~/Library/Application Support/TextMate/
 // Global.tmProperties — not NSUserDefaults. Projects can still override any
 // of them per directory, file type, or scope through .tm_properties files.
-// The Agent Bridge keys are app-global user defaults.
+// Editor-context sharing is an app-global user default.
 
 @interface AIPreferences ()
 {
@@ -25,7 +25,8 @@
 	NSButton*    _copilotEnabledCheckBox;
 	NSButton*    _ghostTextOnlyCheckBox;
 	NSButton*    _lspEnabledCheckBox;
-	NSTextField*   _bridgeStatusText;
+	NSTextField* _claudeIDEStatusText;
+	NSTextField* _codexIDEStatusText;
 }
 @end
 
@@ -35,7 +36,7 @@
 	if(self = [super initWithNibName:nil label:@"AI" image:PreferencesToolbarImage(@"sparkles", @"AI", nil)])
 	{
 		self.defaultsProperties = @{
-			@"agentBridgeEnabled": kUserDefaultsAgentBridgeEnabledKey,
+			@"editorContextSharingEnabled": kUserDefaultsEditorContextSharingEnabledKey,
 		};
 
 		self.tmProperties = @{
@@ -45,7 +46,7 @@
 		};
 
 		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(copilotStatusDidChange:) name:CopilotStatusDidChangeNotification object:nil];
-		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(agentBridgeStatusDidChange:) name:AgentBridgeStatusDidChangeNotification object:nil];
+		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(agentContextStatusDidChange:) name:AgentBridgeStatusDidChangeNotification object:nil];
 	}
 	return self;
 }
@@ -102,18 +103,16 @@
 	_lspEnabledCheckBox.target = self;
 	_lspEnabledCheckBox.action = @selector(toggleLSPEnabled:);
 
-	// ==========================================================
-	// = Agent Bridge — what every agent CLI shares, then each  =
-	// = CLI’s own row. The switch and the AGENTS.md snippet    =
-	// = govern both frontends, so they cannot live inside one  =
-	// = provider’s section without reading as that provider’s. =
-	// ==========================================================
+	// ==============================
+	// = Agent editor context       =
+	// ==============================
 
-	_bridgeStatusText = OakCreateLabel(@"");
+	_claudeIDEStatusText = OakCreateLabel(@"");
+	_codexIDEStatusText  = OakCreateLabel(@"");
 
-	NSButton* bridgeEnabledCheckBox = OakCreateCheckBox(@"Enable Agent Bridge");
+	NSButton* editorContextEnabledCheckBox = OakCreateCheckBox(@"Enable Editor Context Sharing");
 
-	NSButton* copyAgentsButton = OakCreateButton(@"Copy AGENTS.md Snippet");
+	NSButton* copyAgentsButton = OakCreateButton(@"Copy AGENTS.md Guidance");
 	copyAgentsButton.target = self;
 	copyAgentsButton.action = @selector(copyAgentsFileSnippet:);
 
@@ -147,38 +146,42 @@
 
 		@[ ], // 12 — separator
 
-		// Agent Bridge — rows 13-17. Everything shared by every agent CLI: the
-		// one switch that governs both frontends, and the house rules that read
-		// the same in any project’s AGENTS.md or CLAUDE.md.
-		@[ OakCreateLabel(@"Agent Bridge:"),      _bridgeStatusText ],                                                          // 13
-		@[ NSGridCell.emptyContentView,           bridgeEnabledCheckBox ],                                                      // 14
-		@[ NSGridCell.emptyContentView,           makeHint(@"One switch for both routes into the editor: Claude Code connects as TextMate’s IDE, every other agent CLI reads the same context through the tm_agent MCP server") ], // 15
-		@[ NSGridCell.emptyContentView,           copyAgentsButton ],                                                           // 16
-		@[ NSGridCell.emptyContentView,           makeHint(@"House rules for a project’s AGENTS.md: when to ask TextMate for the current file, the selection, and diagnostics. Claude Code is pushed that context and needs no snippet") ], // 17
+		// Editor Context — rows 13-14. This is the only shared control; provider
+		// status belongs in the provider sections below.
+		@[ OakCreateLabel(@"Editor Context:"),    editorContextEnabledCheckBox ],                                               // 13
+		@[ NSGridCell.emptyContentView,           makeHint(@"Allows Claude Code, Codex, and MCP-compatible agents to read TextMate’s live selection, open editors, and diagnostics") ], // 14
 
-		@[ ], // 18 — separator
+		@[ ], // 15 — separator
 
-		// Claude Code — rows 19-20
-		@[ OakCreateLabel(@"Claude Code:"),       claudePathField ],                                                            // 19
-		@[ NSGridCell.emptyContentView,           makeHint(@"Path to the claude executable; leave blank to use the one on PATH. Terminal → New Claude Code Terminal starts it already able to see this window") ], // 20
+		// Claude Code — rows 16-18
+		@[ OakCreateLabel(@"Claude Code:"),       _claudeIDEStatusText ],                                                       // 16
+		@[ OakCreateLabel(@"Executable:"),        claudePathField ],                                                            // 17
+		@[ NSGridCell.emptyContentView,           makeHint(@"Uses Claude Code’s native IDE protocol; leave the executable blank to use claude from PATH") ], // 18
 
-		@[ ], // 21 — separator
+		@[ ], // 19 — separator
 
-		// Codex — rows 22-25
-		@[ OakCreateLabel(@"Codex:"),             codexPathField ],                                                            // 22
-		@[ NSGridCell.emptyContentView,           makeHint(@"Path to the codex executable; leave blank to use the one on PATH. Terminal → New Codex Terminal registers TextMate’s MCP server for that run and leaves your config.toml alone") ], // 23
-		@[ NSGridCell.emptyContentView,           copyConfigButton ],                                                           // 24
-		@[ NSGridCell.emptyContentView,           makeHint(@"For a Codex you start yourself instead: paste the snippet into ~/.codex/config.toml") ], // 25
+		// Codex — rows 20-24
+		@[ OakCreateLabel(@"Codex:"),             _codexIDEStatusText ],                                                        // 20
+		@[ OakCreateLabel(@"Executable:"),        codexPathField ],                                                             // 21
+		@[ NSGridCell.emptyContentView,           makeHint(@"Uses Codex’s native /ide context plus TextMate MCP tools. Terminal → New Codex Terminal configures both for that run; leave the executable blank to use codex from PATH") ], // 22
+		@[ NSGridCell.emptyContentView,           copyConfigButton ],                                                           // 23
+		@[ NSGridCell.emptyContentView,           makeHint(@"For Codex started outside TextMate, add the MCP snippet to ~/.codex/config.toml") ], // 24
+
+		@[ ], // 25 — separator
+
+		// Other MCP agents — rows 26-27
+		@[ OakCreateLabel(@"MCP Agents:"),        copyAgentsButton ],                                                           // 26
+		@[ NSGridCell.emptyContentView,           makeHint(@"Other MCP-compatible agents connect through tm_agent mcp. Copy project guidance that tells them when to request TextMate’s current selection, open editors, and diagnostics") ], // 27
 
 	]];
 
-	// Four providers’ worth of rows no longer fit a fixed pane.
-	self.view = OakSetupScrollableGridView(gridView, { 9, 12, 18, 21 });
+	// The provider sections no longer fit a fixed pane.
+	self.view = OakSetupScrollableGridView(gridView, { 9, 12, 15, 19, 25 });
 
 	[serverPathField bind:NSValueBinding toObject:self withKeyPath:@"copilotCommand" options:@{ NSNullPlaceholderBindingOption: @"Auto-detect" }];
 	[claudePathField bind:NSValueBinding toObject:self withKeyPath:@"claudeCommand" options:@{ NSNullPlaceholderBindingOption: @"claude (from PATH)" }];
 	[codexPathField bind:NSValueBinding toObject:self withKeyPath:@"codexCommand" options:@{ NSNullPlaceholderBindingOption: @"codex (from PATH)" }];
-	[bridgeEnabledCheckBox bind:NSValueBinding toObject:self withKeyPath:@"agentBridgeEnabled" options:nil];
+	[editorContextEnabledCheckBox bind:NSValueBinding toObject:self withKeyPath:@"editorContextSharingEnabled" options:nil];
 }
 
 - (void)viewWillAppear
@@ -189,7 +192,7 @@
 	_lspEnabledCheckBox.state    = settings_for_path().get("lspEnabled", true)            ? NSControlStateValueOn : NSControlStateValueOff;
 
 	[self updateCopilotStatus];
-	[self updateAgentBridgeStatus];
+	[self updateAgentContextStatus];
 }
 
 // ===========
@@ -286,30 +289,37 @@
 	else	[NSNotificationCenter.defaultCenter postNotificationName:LSPServerStatusDidChangeNotification object:self userInfo:@{ @"reconnectDocuments": @YES }];
 }
 
-// ================
-// = Agent Bridge =
-// ================
+// ========================
+// = Agent editor context =
+// ========================
 
-- (void)updateAgentBridgeStatus
+- (void)updateAgentContextStatus
 {
-	if(AgentBridge.isRunning)
+	BOOL enabled = [NSUserDefaults.standardUserDefaults boolForKey:kUserDefaultsEditorContextSharingEnabledKey];
+	if(!enabled)
 	{
-		// The port and the client count belong to the WebSocket half; the stdio
-		// shim connects per tool call and has neither. Say which is being
-		// reported, now that the section covers both.
-		NSUInteger clients = AgentBridge.connectedClientCount;
-		_bridgeStatusText.stringValue = [NSString stringWithFormat:@"IDE server on port %lu — %lu client%s connected", AgentBridge.serverPort, clients, clients == 1 ? "" : "s"];
+		_claudeIDEStatusText.stringValue = @"Disabled";
+		_codexIDEStatusText.stringValue  = @"Disabled";
+		return;
+	}
+
+	if(AgentBridge.isClaudeIDEContextServerRunning)
+	{
+		NSUInteger clients = AgentBridge.connectedClaudeClientCount;
+		_claudeIDEStatusText.stringValue = [NSString stringWithFormat:@"IDE context active — /ide available — %lu client%s", clients, clients == 1 ? "" : "s"];
 	}
 	else
 	{
-		_bridgeStatusText.stringValue = @"Stopped";
+		_claudeIDEStatusText.stringValue = @"IDE context unavailable";
 	}
+
+	_codexIDEStatusText.stringValue = AgentBridge.isCodexIDEContextServerRunning ? @"IDE context active — /ide available" : @"IDE context unavailable";
 }
 
-- (void)agentBridgeStatusDidChange:(NSNotification*)aNotification
+- (void)agentContextStatusDidChange:(NSNotification*)aNotification
 {
 	if(self.viewLoaded)
-		[self updateAgentBridgeStatus];
+		[self updateAgentContextStatus];
 }
 
 // =========

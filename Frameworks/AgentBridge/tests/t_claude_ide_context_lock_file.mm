@@ -1,4 +1,4 @@
-#import <AgentBridge/AgentBridgeLockFile.h>
+#import <AgentBridge/ClaudeIDEContextLockFile.h>
 #import <sys/stat.h>
 #import <unistd.h>
 
@@ -9,8 +9,8 @@ static NSString* temporary_directory ()
 
 void test_auth_token_format ()
 {
-	NSString* first  = [AgentBridgeLockFile generateAuthToken];
-	NSString* second = [AgentBridgeLockFile generateAuthToken];
+	NSString* first  = [ClaudeIDEContextLockFile generateAuthToken];
+	NSString* second = [ClaudeIDEContextLockFile generateAuthToken];
 
 	OAK_ASSERT_EQ(first.length, 32);
 	OAK_ASSERT(![first isEqualToString:second]);
@@ -22,9 +22,9 @@ void test_auth_token_format ()
 void test_lock_file_roundtrip_and_permissions ()
 {
 	NSString* dir = temporary_directory();
-	NSString* token = [AgentBridgeLockFile generateAuthToken];
+	NSString* token = [ClaudeIDEContextLockFile generateAuthToken];
 
-	AgentBridgeLockFile* lock = [[AgentBridgeLockFile alloc] initWithPort:12345 authToken:token directory:dir];
+	ClaudeIDEContextLockFile* lock = [[ClaudeIDEContextLockFile alloc] initWithPort:12345 authToken:token directory:dir];
 	OAK_ASSERT([lock writeWithWorkspaceFolders:@[ @"/tmp/project" ]]);
 	OAK_ASSERT([lock.path.lastPathComponent isEqualToString:@"12345.lock"]);
 
@@ -60,19 +60,19 @@ void test_stale_lock_cleanup ()
 	int status;
 	waitpid(deadPid, &status, 0);
 
-	AgentBridgeLockFile* staleLock = [[AgentBridgeLockFile alloc] initWithPort:11111 authToken:[AgentBridgeLockFile generateAuthToken] directory:dir];
+	ClaudeIDEContextLockFile* staleLock = [[ClaudeIDEContextLockFile alloc] initWithPort:11111 authToken:[ClaudeIDEContextLockFile generateAuthToken] directory:dir];
 	OAK_ASSERT([staleLock writeWithWorkspaceFolders:@[ ]]);
 	NSString* staleContents = [NSString stringWithContentsOfFile:staleLock.path encoding:NSUTF8StringEncoding error:nil];
 	staleContents = [staleContents stringByReplacingOccurrencesOfString:[NSString stringWithFormat:@"%d", getpid()] withString:[NSString stringWithFormat:@"%d", deadPid]];
 	OAK_ASSERT([staleContents writeToFile:staleLock.path atomically:YES encoding:NSUTF8StringEncoding error:nil]);
 
 	// A live lock (our own pid) and a foreign non-JSON file must both survive.
-	AgentBridgeLockFile* liveLock = [[AgentBridgeLockFile alloc] initWithPort:22222 authToken:[AgentBridgeLockFile generateAuthToken] directory:dir];
+	ClaudeIDEContextLockFile* liveLock = [[ClaudeIDEContextLockFile alloc] initWithPort:22222 authToken:[ClaudeIDEContextLockFile generateAuthToken] directory:dir];
 	OAK_ASSERT([liveLock writeWithWorkspaceFolders:@[ ]]);
 	NSString* foreignPath = [dir stringByAppendingPathComponent:@"33333.lock"];
 	OAK_ASSERT([@"not json" writeToFile:foreignPath atomically:YES encoding:NSUTF8StringEncoding error:nil]);
 
-	[AgentBridgeLockFile removeStaleLockFilesInDirectory:dir];
+	[ClaudeIDEContextLockFile removeStaleLockFilesInDirectory:dir];
 
 	OAK_ASSERT(![NSFileManager.defaultManager fileExistsAtPath:staleLock.path]);
 	OAK_ASSERT([NSFileManager.defaultManager fileExistsAtPath:liveLock.path]);

@@ -1,4 +1,5 @@
 #import "AgentBridgeWorkspace.h"
+#import "agent_routing_path.h"
 #import <document/OakDocument.h>
 #import <document/OakDocument Private.h>
 #import <document/OakDocumentController.h>
@@ -186,7 +187,7 @@ static void* kAgentBridgeSelectionObserverContext = &kAgentBridgeSelectionObserv
 	if(!routingPath.length || !routingPath.absolutePath)
 		return [self activeController];
 
-	std::string const cwd = path::normalize(to_s(routingPath));
+	std::string const cwd = agent_routing_path::normalize(to_s(routingPath));
 
 	id <AgentBridgeHostWindow> res = nil;
 	size_t bestLength = 0;
@@ -196,7 +197,7 @@ static void* kAgentBridgeSelectionObserverContext = &kAgentBridgeSelectionObserv
 		if(!projectPath.length)
 			continue;
 
-		std::string const root = path::normalize(to_s(projectPath));
+		std::string const root = agent_routing_path::normalize(to_s(projectPath));
 		if(root != cwd && !path::is_child(cwd, root))
 			continue;
 		if(res && root.size() <= bestLength)
@@ -211,6 +212,22 @@ static void* kAgentBridgeSelectionObserverContext = &kAgentBridgeSelectionObserv
 - (NSString*)projectPathForRoutingPath:(NSString*)routingPath
 {
 	return [self controllerForRoutingPath:routingPath].projectPath ?: [self workspaceFolders].firstObject;
+}
+
+- (BOOL)canRouteIDEContextForWorkspaceRoot:(NSString*)workspaceRoot
+{
+	if(!workspaceRoot.length || !workspaceRoot.absolutePath)
+		return NO;
+
+	for(NSString* folder in [self workspaceFolders])
+	{
+		// A parent of several open projects is ambiguous. Only advertise a
+		// provider when controllerForRoutingPath: can resolve the same project
+		// without falling back to whichever window happens to be active.
+		if(agent_routing_path::routes_to_project(to_s(workspaceRoot), to_s(folder)))
+			return YES;
+	}
+	return NO;
 }
 
 - (NSWindow*)windowForController:(id <AgentBridgeHostWindow>)controller
@@ -253,6 +270,26 @@ static void* kAgentBridgeSelectionObserverContext = &kAgentBridgeSelectionObserv
 				@"isDirty":    @(document.isDocumentEdited),
 			}];
 		}
+	}
+	return res;
+}
+
+- (NSArray<NSDictionary*>*)openEditorsInAnsweringWindowForRoutingPath:(NSString*)routingPath
+{
+	NSMutableArray<NSDictionary*>* res = [NSMutableArray array];
+	id <AgentBridgeHostWindow> controller = [self controllerForRoutingPath:routingPath];
+	for(OakDocument* document in controller.documents)
+	{
+		if(!document.path)
+			continue;
+
+		[res addObject:@{
+			@"path":       document.path,
+			@"isActive":   @(document == controller.selectedDocument),
+			@"label":      document.displayName ?: document.path.lastPathComponent,
+			@"languageId": document.fileType ?: @"plaintext",
+			@"isDirty":    @(document.isDocumentEdited),
+		}];
 	}
 	return res;
 }

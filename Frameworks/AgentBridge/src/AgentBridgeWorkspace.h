@@ -19,8 +19,9 @@
 // Protocol-agnostic access to the app's windows, documents, selection and
 // diagnostics. This layer knows nothing about WebSockets or JSON-RPC — the
 // server (adapter) translates between it and the wire protocol. It is the
-// one shared context source: the WebSocket MCP frontend (Claude) and, later,
-// the stdio MCP shim for other providers both answer out of here.
+// one shared context source: Claude's WebSocket MCP frontend, Codex's native
+// IDE-context frontend, and the stdio MCP shim for other providers all answer
+// out of here.
 @interface AgentBridgeWorkspace : NSObject
 @property (nonatomic, copy) void(^selectionDidChangeHandler)(AgentBridgeSelection* selection);
 @property (nonatomic, copy) void(^workspaceFoldersDidChangeHandler)(NSArray<NSString*>* folders);
@@ -37,8 +38,10 @@
 - (NSArray<NSString*>*)workspaceFolders; // aggregated project roots of all document windows, frontmost first
 - (NSString*)activeProjectPath;
 - (NSString*)projectPathForRoutingPath:(NSString*)routingPath; // the answering window’s project root
+- (BOOL)canRouteIDEContextForWorkspaceRoot:(NSString*)workspaceRoot; // YES only when this root is inside an open project
 - (NSArray<NSDictionary*>*)openEditors;  // path, isActive, label, languageId, isDirty
 - (NSArray<NSDictionary*>*)openEditorsForRoutingPath:(NSString*)routingPath; // same list; isActive follows the answering window
+- (NSArray<NSDictionary*>*)openEditorsInAnsweringWindowForRoutingPath:(NSString*)routingPath; // same shape, but excludes unrelated project windows
 - (AgentBridgeSelection*)currentSelection;
 - (AgentBridgeSelection*)currentSelectionForRoutingPath:(NSString*)routingPath;
 

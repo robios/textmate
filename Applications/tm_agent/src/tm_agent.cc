@@ -8,12 +8,10 @@
 #include <sysexits.h>
 #include <unistd.h>
 
-// tm_agent talks to the agent bridge inside a running TextMate over the mate
-// socket (the UNIX domain socket also used by the ‘mate’ CLI, served by
-// RMateServer on the app’s main queue). It is protocol-agnostic towards the
-// agent: TextMate forwards ‘mention’ as an ‘at_mentioned’ notification to
-// whatever agent CLI is connected to the bridge, and ‘mcp’ turns the same
-// socket into a stdio MCP server any agent CLI can be configured with.
+// tm_agent talks to AgentBridge inside a running TextMate over the mate socket
+// (the UNIX domain socket also used by the ‘mate’ CLI, served by RMateServer on
+// the app’s main queue). ‘mention’ and ‘status’ target Claude Code's native
+// IDE-context route; ‘mcp’ is the provider-neutral stdio MCP route.
 
 static char const* const AppVersion = TEXTMATE_VERSION_STRING;
 
@@ -25,16 +23,15 @@ static void usage (FILE* io)
 		"       %1$s status\n"
 		"       %1$s mcp\n"
 		"\n"
-		"Talks to the agent bridge in a running TextMate.\n"
+		"Connects agent CLIs to editor context from a running TextMate.\n"
 		"\n"
 		"Subcommands:\n"
-		" mention   Push a file reference (at_mentioned) into the agent CLI\n"
+		" mention   Push a file reference (at_mentioned) into Claude Code\n"
 		"           connected to TextMate. Line numbers are 0-based; omitting\n"
 		"           them references the start of the file, --line-start without\n"
 		"           --line-end references a single line.\n"
-		" status    Print bridge state: running/stopped, port, and number of\n"
-		"           connected agent clients. Exits 0 when the bridge is\n"
-		"           running, 2 when it is stopped.\n"
+		" status    Print Claude IDE-context state, port, and connected Claude\n"
+		"           client count. Exits 0 when active, 2 when stopped.\n"
 		" mcp       Serve the Model Context Protocol on stdin/stdout, exposing\n"
 		"           TextMate’s editor context (current selection, open files,\n"
 		"           project folders, diagnostics) to any agent CLI configured\n"
@@ -46,8 +43,8 @@ static void usage (FILE* io)
 		" -h, --help     Show this information.\n"
 		" -v, --version  Print version information.\n"
 		"\n"
-		"Exit codes: 0 success, 1 request rejected by TextMate, 2 bridge\n"
-		"stopped (status), %3$d usage error, %4$d TextMate not running.\n",
+		"Exit codes: 0 success, 1 request rejected by TextMate, 2 Claude IDE\n"
+		"context stopped (status), %3$d usage error, %4$d TextMate not running.\n",
 		getprogname(), AppVersion, EX_USAGE, EX_UNAVAILABLE
 	);
 }
@@ -123,7 +120,7 @@ int main (int argc, char const* argv[])
 	{
 		std::string message = value("message");
 		if(message.empty())
-			message = "TextMate did not answer the request — is this TextMate build agent-bridge-enabled?";
+			message = "TextMate did not answer the request — is editor context sharing available in this build?";
 		fprintf(stderr, "%s: %s\n", getprogname(), message.c_str());
 		return 1;
 	}
@@ -131,7 +128,7 @@ int main (int argc, char const* argv[])
 	if(request.command == "agent-status")
 	{
 		bool const running = value("running") == "yes";
-		fprintf(stdout, "bridge: %s\n", running ? "running" : "stopped");
+		fprintf(stdout, "claude-ide-context: %s\n", running ? "running" : "stopped");
 		fprintf(stdout, "port: %s\n", running ? value("port").c_str() : "0");
 		fprintf(stdout, "clients: %s\n", value("clients").empty() ? "0" : value("clients").c_str());
 		return running ? EX_OK : 2;

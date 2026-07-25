@@ -15,8 +15,8 @@ void test_truncate_leaves_short_text_alone ()
 void test_truncate_cuts_ascii_at_the_limit ()
 {
 	std::string const text(70 * 1024, 'x');
-	std::string const capped = agent_json::truncate_utf8(text, 64 * 1024);
-	OAK_ASSERT_EQ(capped.size(), 64 * 1024);
+	std::string const capped = agent_json::truncate_utf8(text, agent_json::maximum_selection_bytes);
+	OAK_ASSERT_EQ(capped.size(), agent_json::maximum_selection_bytes);
 	OAK_ASSERT_EQ(text.compare(0, capped.size(), capped), 0);
 }
 

@@ -1,8 +1,8 @@
 # Claude Code bundle
 
-Bundle commands that drive TextMate’s agent bridge — the WebSocket/MCP
-server that Claude Code (and compatible agent CLIs) connect to when started
-from the integrated terminal.
+Bundle commands that drive TextMate’s Claude IDE-context integration — the
+WebSocket/MCP server that Claude Code discovers from the integrated terminal
+or through its standard IDE lock file.
 
 ## Commands (Bundles → Claude Code)
 
@@ -10,7 +10,7 @@ from the integrated terminal.
 |-------------------------|-----------|---------------------------------------------------------------------|
 | Send Selection to Claude| ⌥⌘K       | Pushes the selected line range into the connected CLI (`at_mentioned`) |
 | Send File to Claude     | ⌥⇧⌘K      | Pushes a reference to the whole file                                 |
-| Agent Bridge Status     | –         | Tool tip with bridge state: running/stopped, port, client count      |
+| Claude IDE Context Status| –        | Tool tip with IDE-context state, port, and Claude client count       |
 
 Both send commands save the active file first — the agent reads from disk,
 so what you reference is what it sees.
@@ -35,6 +35,7 @@ so what you reference is what it sees.
 If no CLI is connected the commands show a tool tip explaining what to do —
 nothing is sent.
 
-The commands are agent-agnostic: they only talk to `tm_agent`, which talks
-to the bridge. Any CLI implementing the same IDE protocol receives the
-references. See `AGENT_BUNDLE.md` at the repository root for the design.
+These commands are Claude-specific because `at_mentioned` and the discovery
+lock file are part of Claude Code’s IDE protocol. Other agents use TextMate’s
+provider-neutral `tm_agent mcp` route instead. See `AGENT_BUNDLE.md` at the
+repository root for the design.

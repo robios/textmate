@@ -1,4 +1,4 @@
-#import "AgentBridgeServer.h"
+#import "ClaudeIDEContextServer.h"
 #import "AgentBridgeTools.h"
 #import "AgentBridgeWorkspace.h"
 #import "agent_json.h"
@@ -49,7 +49,7 @@ static json ContentResult (std::string const& text, bool isError)
 	return res;
 }
 
-@implementation AgentBridgeServer
+@implementation ClaudeIDEContextServer
 {
 	NSString*             _authToken;
 	AgentBridgeWorkspace* _workspace;
@@ -113,9 +113,9 @@ static json ContentResult (std::string const& text, bool isError)
 	nw_ws_options_set_auto_reply_ping(wsOptions, true);
 	nw_ws_options_set_maximum_message_size(wsOptions, kMaximumIncomingMessageSize);
 
-	__weak AgentBridgeServer* weakSelf = self;
+	__weak ClaudeIDEContextServer* weakSelf = self;
 	nw_ws_options_set_client_request_handler(wsOptions, _queue, ^nw_ws_response_t(nw_ws_request_t request){
-		AgentBridgeServer* strongSelf = weakSelf;
+		ClaudeIDEContextServer* strongSelf = weakSelf;
 		return strongSelf ? [strongSelf responseForClientRequest:request] : nw_ws_response_create(nw_ws_response_status_reject, NULL);
 	});
 
@@ -127,7 +127,7 @@ static json ContentResult (std::string const& text, bool isError)
 
 	__weak nw_listener_t weakListener = listener;
 	nw_listener_set_state_changed_handler(listener, ^(nw_listener_state_t state, nw_error_t error){
-		AgentBridgeServer* strongSelf = weakSelf;
+		ClaudeIDEContextServer* strongSelf = weakSelf;
 		nw_listener_t strongListener = weakListener;
 		if(!strongSelf || !strongListener)
 			return;
@@ -173,7 +173,7 @@ static json ContentResult (std::string const& text, bool isError)
 	});
 
 	nw_listener_set_new_connection_handler(listener, ^(nw_connection_t connection){
-		if(AgentBridgeServer* strongSelf = weakSelf)
+		if(ClaudeIDEContextServer* strongSelf = weakSelf)
 			[strongSelf acceptConnection:connection];
 		else
 			nw_connection_cancel(connection);
@@ -306,9 +306,9 @@ static bool TokenMatches (NSString* candidate, NSString* expected)
 
 	nw_connection_set_queue(connection, _queue);
 
-	__weak AgentBridgeServer* weakSelf = self;
+	__weak ClaudeIDEContextServer* weakSelf = self;
 	nw_connection_set_state_changed_handler(connection, ^(nw_connection_state_t state, nw_error_t error){
-		AgentBridgeServer* strongSelf = weakSelf;
+		ClaudeIDEContextServer* strongSelf = weakSelf;
 		if(!strongSelf)
 			return;
 
@@ -339,7 +339,7 @@ static bool TokenMatches (NSString* candidate, NSString* expected)
 	// A connection that never completes the upgrade must not hold its file
 	// descriptor (or the serialized handshake slot) forever.
 	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kHandshakeTimeout * NSEC_PER_SEC)), _queue, ^{
-		AgentBridgeServer* strongSelf = weakSelf;
+		ClaudeIDEContextServer* strongSelf = weakSelf;
 		if(strongSelf && strongSelf->_handshakingConnection == connection)
 		{
 			NSLog(@"[AgentBridge] cancelling connection: WebSocket handshake timed out");
@@ -356,9 +356,9 @@ static bool TokenMatches (NSString* candidate, NSString* expected)
 
 - (void)receiveNextMessageOnConnection:(nw_connection_t)connection // _queue
 {
-	__weak AgentBridgeServer* weakSelf = self;
+	__weak ClaudeIDEContextServer* weakSelf = self;
 	nw_connection_receive_message(connection, ^(dispatch_data_t content, nw_content_context_t context, bool isComplete, nw_error_t error){
-		AgentBridgeServer* strongSelf = weakSelf;
+		ClaudeIDEContextServer* strongSelf = weakSelf;
 		if(!strongSelf)
 			return;
 
@@ -537,7 +537,7 @@ static bool TokenMatches (NSString* candidate, NSString* expected)
 	}
 	else if(method == "tools/list")
 	{
-		json result = { { "tools", agent_tools::descriptors(agent_tools::websocket) } };
+		json result = { { "tools", agent_tools::descriptors(agent_tools::claude_websocket) } };
 		[self sendResult:result forRequestId:requestId toConnection:connection];
 	}
 	else if(method == "tools/call")
@@ -573,9 +573,9 @@ static bool TokenMatches (NSString* candidate, NSString* expected)
 		return;
 	[_seededConnections addObject:connection];
 
-	__weak AgentBridgeServer* weakSelf = self;
+	__weak ClaudeIDEContextServer* weakSelf = self;
 	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kSeedDelay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-		AgentBridgeServer* strongSelf = weakSelf;
+		ClaudeIDEContextServer* strongSelf = weakSelf;
 		if(!strongSelf)
 			return;
 
@@ -600,7 +600,7 @@ static bool TokenMatches (NSString* candidate, NSString* expected)
 	std::string const name = string_arg(params, "name");
 	json const args = params.contains("arguments") && params["arguments"].is_object() ? params["arguments"] : json::object();
 
-	__weak AgentBridgeServer* weakSelf = self;
+	__weak ClaudeIDEContextServer* weakSelf = self;
 	AgentBridgeToolReply reply = ^(std::string const& text, BOOL isError){
 		[weakSelf sendResult:ContentResult(text, isError) forRequestId:requestId toConnection:connection];
 	};

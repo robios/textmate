@@ -42,3 +42,10 @@ void test_codex_override_round_trip ()
 	std::string const value = agent_quote::shell("mcp_servers.textmate.command=" + agent_quote::toml(path));
 	OAK_ASSERT_EQ(value, "'mcp_servers.textmate.command=\"/Users/me/My Apps/TextMate.app/Contents/MacOS/tm_agent\"'");
 }
+
+void test_codex_private_tmpdir_assignment ()
+{
+	OAK_ASSERT_EQ(agent_quote::environment("TMPDIR", "/private/tmp/tm-codex-Ab12Cd"), "TMPDIR=/private/tmp/tm-codex-Ab12Cd");
+	OAK_ASSERT_EQ(agent_quote::environment("TMPDIR", "/tmp/Ben's Codex; echo unsafe"),
+		"TMPDIR='/tmp/Ben'\\''s Codex; echo unsafe'");
+}

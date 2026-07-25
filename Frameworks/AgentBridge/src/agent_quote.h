@@ -50,6 +50,13 @@ namespace agent_quote
 		return res + "'";
 	}
 
+	// A shell environment assignment. The name is a source-code constant; the
+	// value is one shell word and may therefore contain spaces or metacharacters.
+	inline std::string environment (std::string const& name, std::string const& value)
+	{
+		return name + "=" + shell(value);
+	}
+
 } /* agent_quote */
 
 #endif /* AGENT_QUOTE_H_T3XN82VK */

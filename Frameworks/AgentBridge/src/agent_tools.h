@@ -7,7 +7,7 @@
 #include <vector>
 
 // The one table of MCP tool descriptors, compiled into both frontends: the
-// WebSocket server inside TextMate (AgentBridgeServer, which Claude Code
+// WebSocket server inside TextMate (ClaudeIDEContextServer, which Claude Code
 // connects to) and the stdio shim in the tm_agent CLI (‘tm_agent mcp’, which
 // every other agent CLI registers as an MCP server). The shim answers
 // ‘tools/list’ from this table even while TextMate is not running, so a second
@@ -25,8 +25,8 @@ namespace agent_tools
 	// Claude-specific tools.
 	enum frontend_t
 	{
-		websocket = 1 << 0, // Claude Code, over the WebSocket MCP server
-		stdio     = 1 << 1, // ‘tm_agent mcp’, over stdin/stdout
+		claude_websocket = 1 << 0, // Claude Code, over its WebSocket MCP server
+		stdio             = 1 << 1, // ‘tm_agent mcp’, over stdin/stdout
 	};
 
 	// The MCP revisions this server implements, oldest first — an order the
@@ -80,31 +80,31 @@ namespace agent_tools
 					{ "selectToEndOfLine", { { "type", "boolean" }, { "description", "Extend selection to end of line" } } },
 					{ "makeFrontmost",     { { "type", "boolean" }, { "description", "Whether to make the file the active editor tab" } } },
 				}, nlohmann::json::array({ "filePath" })),
-				websocket | stdio,
+				claude_websocket | stdio,
 			},
 			{
 				"getCurrentSelection",
 				"Get the text the user currently has selected in TextMate, and the file it is in. Call this first whenever the user refers to the current file, the selection, the cursor, or “this code”. The editor buffer may contain unsaved changes that are not yet on disk, so this is more current than reading the file.",
 				object_schema(nlohmann::json::object()),
-				websocket | stdio,
+				claude_websocket | stdio,
 			},
 			{
 				"getLatestSelection",
 				"Get the most recent non-empty text selection, even if the user has since clicked elsewhere. Use this when getCurrentSelection reports an empty selection but the user is clearly referring to something they just highlighted.",
 				object_schema(nlohmann::json::object()),
-				websocket,
+				claude_websocket,
 			},
 			{
 				"getOpenEditors",
 				"List the documents currently open in TextMate, which one is active, and which have unsaved changes. Call this when the user says “the open files”, “the other tab”, or otherwise refers to what they are working on without naming a path.",
 				object_schema(nlohmann::json::object()),
-				websocket | stdio,
+				claude_websocket | stdio,
 			},
 			{
 				"getWorkspaceFolders",
 				"Get the project folders open in TextMate. Call this before guessing at paths: it tells you which project the user is working in and what to resolve relative paths against.",
 				object_schema(nlohmann::json::object()),
-				websocket | stdio,
+				claude_websocket | stdio,
 			},
 			{
 				"getDiagnostics",
@@ -112,7 +112,7 @@ namespace agent_tools
 				object_schema({
 					{ "uri", { { "type", "string" }, { "description", "Optional file URI to get diagnostics for; omit for all files" } } },
 				}),
-				websocket | stdio,
+				claude_websocket | stdio,
 			},
 			{
 				"checkDocumentDirty",
@@ -120,7 +120,7 @@ namespace agent_tools
 				object_schema({
 					{ "filePath", { { "type", "string" }, { "description", "Path to the document to check" } } },
 				}, nlohmann::json::array({ "filePath" })),
-				websocket,
+				claude_websocket,
 			},
 			{
 				"saveDocument",
@@ -128,7 +128,7 @@ namespace agent_tools
 				object_schema({
 					{ "filePath", { { "type", "string" }, { "description", "Path to the document to save" } } },
 				}, nlohmann::json::array({ "filePath" })),
-				websocket,
+				claude_websocket,
 			},
 			{
 				"executeCode",
@@ -136,7 +136,7 @@ namespace agent_tools
 				object_schema({
 					{ "code", { { "type", "string" }, { "description", "Code to execute" } } },
 				}, nlohmann::json::array({ "code" })),
-				websocket,
+				claude_websocket,
 			},
 		};
 		return res;

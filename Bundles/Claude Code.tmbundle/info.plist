@@ -5,7 +5,7 @@
 	<key>name</key>
 	<string>Claude Code</string>
 	<key>description</key>
-	<string>Drive the agent bridge from the editor: push file and selection references into a Claude Code CLI connected to the running TextMate. See the README.md inside this bundle.</string>
+	<string>Push file and selection references into a Claude Code CLI connected through TextMate’s native Claude IDE-context integration. See the README.md inside this bundle.</string>
 	<key>mainMenu</key>
 	<dict>
 		<key>items</key>

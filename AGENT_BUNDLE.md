@@ -7,20 +7,21 @@ one keystroke.
 ```
 bundle command ──(TM_AGENT env)──▶ tm_agent ──(mate socket)──▶ RMateServer
                                                                    │ main thread
-                                                             AgentBridge
+                                                        ClaudeIDEContextServer
                                                                    │ WebSocket (MCP)
                                                              claude CLI (at_mentioned)
 ```
 
 ## tm_agent
 
-A small CLI embedded in `TextMate.app/Contents/MacOS/`. It is
-protocol-agnostic towards the agent: it talks to the *agent bridge* in the
-running app, which forwards to whatever client is connected.
+A small CLI embedded in `TextMate.app/Contents/MacOS/`. Its `mention` and
+`status` commands target the Claude IDE-context route; its `mcp` command is the
+provider-neutral stdio MCP route used by Codex and other compatible agents.
 
 ```
 tm_agent mention --file <path> [--line-start <n>] [--line-end <n>]
 tm_agent status
+tm_agent mcp
 ```
 
 - `mention` — TextMate broadcasts an `at_mentioned` notification (the Claude
@@ -28,7 +29,10 @@ tm_agent status
   Line numbers are **0-based**, matching the wire protocol. Omitting both
   references the start of the file; `--line-start` alone references a single
   line. Relative paths are made absolute against the caller’s cwd.
-- `status` — prints `bridge: running|stopped`, `port: N`, `clients: N`.
+- `status` — prints `claude-ide-context: running|stopped`,
+  `port: N`, `clients: N`.
+- `mcp` — serves TextMate’s shared context tools over stdio MCP and forwards
+  live tool calls to the running app over the mate socket.
 
 Exit codes: `0` success (for `status`: bridge running), `1` request rejected
 by TextMate (bad path, bridge stopped, no client connected — message on
@@ -74,7 +78,7 @@ build both bind the same socket path — whichever launched last owns it.
   `running`/`port`/`clients`; `agent-mention` validates the path (absolute,
   exists), the 0-based line range, and that a client is connected, then
   calls the existing `sendAtMentionedWithFilePath:lineStart:lineEnd:` path.
-- `AgentBridgeServer` gained `connectedClientCount` (synchronizes with the
+- `ClaudeIDEContextServer` exposes `connectedClientCount` (synchronizes with the
   server queue).
 - On launch, AgentBridge maintains a symlink
   `~/Library/Application Support/TextMate/bin/tm_agent` → the embedded
@@ -93,7 +97,7 @@ Commands (menu: Bundles → Claude Code; see the bundle’s README.md):
   line range (selection input, falls back to the whole document) and runs
   `"$TM_AGENT" mention` with the 0-based range.
 - **Send File to Claude** (⌥⇧⌘K) — same for the whole file.
-- **Agent Bridge Status** — tool tip from `tm_agent status`.
+- **Claude IDE Context Status** — tool tip from `tm_agent status`.
 
 Key equivalents: nothing in `MainMenu.xib` binds K with any modifiers, and
 no installed managed bundle uses `~@k`/`~@K` (plain `@k` is used by three
@@ -124,19 +128,17 @@ integrated terminal (⌃`) first.
 
 ## Reusing the seam for other agents
 
-Nothing in `tm_agent`, the socket records, or the bridge send path is
-Claude-specific. A Gemini/Codex/aider-style CLI gets the same integration
-by:
+The Claude WebSocket and its `~/.claude/ide` discovery lock are deliberately
+Claude-specific. Other agents should register `tm_agent mcp` as a stdio MCP
+server instead. That route exposes the provider-neutral subset of the shared
+tool table and uses the caller’s working directory to select the matching
+TextMate project window.
 
-1. Connecting to the bridge’s WebSocket (port from
-   `CLAUDE_CODE_SSE_PORT`/`ENABLE_IDE_INTEGRATION` in the integrated
-   terminal’s environment, auth token from `~/.claude/ide/<port>.lock`) and
-   speaking MCP — then `tm_agent mention` reaches it as `at_mentioned`,
-   selections stream as `selection_changed`.
-2. Optionally, a “Gemini” bundle that reuses `$TM_AGENT` verbatim — only
-   names, key equivalents, and the `requiredCommands` entry for the CLI
-   binary differ.
+Codex uses both its native `CodexIDEContextServer` route for `/ide` context and
+`tm_agent mcp` for explicit TextMate tools. Another MCP-capable agent needs
+only the latter; it does not emulate Claude’s discovery protocol or receive
+Claude’s `selection_changed`/`at_mentioned` notifications.
 
-New IDE→CLI notifications should follow the same pattern: add the send path
-to `AgentBridgeServer`, expose it in `handleCLIRequest:`, add a `tm_agent`
-subcommand.
+New Claude IDE→CLI notifications belong on `ClaudeIDEContextServer`; new
+provider-neutral context tools belong in `AgentBridgeTools` and the shared
+`agent_tools.h` descriptor table.
