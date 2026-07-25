@@ -1,10 +1,15 @@
 #import "AgentBridge.h"
 #import "AgentBridgeLockFile.h"
 #import "AgentBridgeServer.h"
+#import "AgentBridgeTools.h"
+#import "agent_tools.h"
 #import "AgentBridgeWorkspace.h"
 #import <OakSystem/application.h>
 #import <ns/ns.h>
+#import <nlohmann/json.hpp>
 #import <Cocoa/Cocoa.h>
+
+using json = nlohmann::json;
 
 NSString* const kUserDefaultsAgentBridgeEnabledKey             = @"agentBridgeEnabled";
 NSNotificationName const AgentBridgeStatusDidChangeNotification = @"AgentBridgeStatusDidChangeNotification";
@@ -104,7 +109,7 @@ static BOOL ParseLineArgument (NSString* value, NSInteger* line)
 		[bridge->_server sendAtMentionedWithFilePath:filePath lineStart:lineStart lineEnd:lineEnd];
 }
 
-+ (NSDictionary<NSString*, NSString*>*)handleCLIRequest:(NSString*)command arguments:(NSDictionary<NSString*, NSString*>*)arguments // main thread
++ (void)handleCLIRequest:(NSString*)command arguments:(NSDictionary<NSString*, NSString*>*)arguments completionHandler:(void(^)(NSDictionary<NSString*, NSString*>*))handler // main thread
 {
 	AgentBridge* bridge = SharedAgentBridge;
 	AgentBridgeServer* server = bridge ? bridge->_server : nil;
@@ -112,43 +117,99 @@ static BOOL ParseLineArgument (NSString* value, NSInteger* line)
 	if([command isEqualToString:@"agent-status"])
 	{
 		BOOL const running = server.isRunning;
-		return @{
+		return handler(@{
 			@"status":  @"ok",
 			@"running": running ? @"yes" : @"no",
 			@"port":    [NSString stringWithFormat:@"%lu", (unsigned long)(running ? server.port : 0)],
 			@"clients": [NSString stringWithFormat:@"%lu", (unsigned long)(server ? server.connectedClientCount : 0)],
-		};
+		});
 	}
 
 	if([command isEqualToString:@"agent-mention"])
 	{
 		if(!server.isRunning)
-			return ErrorResponse(@"the agent bridge is not running in TextMate");
+			return handler(ErrorResponse(@"the agent bridge is not running in TextMate"));
 
 		NSString* path = arguments[@"path"];
 		if(path.length == 0)
-			return ErrorResponse(@"missing ‘path’ argument");
+			return handler(ErrorResponse(@"missing ‘path’ argument"));
 		if(!path.absolutePath)
-			return ErrorResponse([NSString stringWithFormat:@"path is not absolute: %@", path]);
+			return handler(ErrorResponse([NSString stringWithFormat:@"path is not absolute: %@", path]));
 
 		path = path.stringByStandardizingPath;
 		if(![NSFileManager.defaultManager fileExistsAtPath:path])
-			return ErrorResponse([NSString stringWithFormat:@"no such file: %@", path]);
+			return handler(ErrorResponse([NSString stringWithFormat:@"no such file: %@", path]));
 
 		NSInteger lineStart = 0, lineEnd = 0;
 		if(!ParseLineArgument(arguments[@"line-start"], &lineStart) || !ParseLineArgument(arguments[@"line-end"], &lineEnd))
-			return ErrorResponse(@"line-start/line-end must be non-negative integers");
+			return handler(ErrorResponse(@"line-start/line-end must be non-negative integers"));
 		if(lineEnd < lineStart)
-			return ErrorResponse(@"line-end must not be less than line-start");
+			return handler(ErrorResponse(@"line-end must not be less than line-start"));
 
 		if(server.connectedClientCount == 0)
-			return ErrorResponse(@"no agent client is connected to TextMate");
+			return handler(ErrorResponse(@"no agent client is connected to TextMate"));
 
 		[server sendAtMentionedWithFilePath:path lineStart:lineStart lineEnd:lineEnd];
-		return @{ @"status": @"ok" };
+		return handler(@{ @"status": @"ok" });
 	}
 
-	return ErrorResponse([NSString stringWithFormat:@"unknown command: %@", command]);
+	if([command isEqualToString:@"agent-tool"])
+		return [self handleToolRequestWithArguments:arguments completionHandler:handler];
+
+	handler(ErrorResponse([NSString stringWithFormat:@"unknown command: %@", command]));
+}
+
+// The stdio MCP shim’s tool calls (‘tm_agent mcp’). Unlike agent-mention this
+// does not need the WebSocket server — it is a second, independent frontend —
+// but it does follow the same master switch, so turning the bridge off in
+// Preferences still means no agent reads this editor.
++ (void)handleToolRequestWithArguments:(NSDictionary<NSString*, NSString*>*)arguments completionHandler:(void(^)(NSDictionary<NSString*, NSString*>*))handler // main thread
+{
+	AgentBridge* bridge = SharedAgentBridge;
+	if(!bridge)
+		return handler(ErrorResponse(@"the agent bridge is not set up in TextMate"));
+	if(![NSUserDefaults.standardUserDefaults boolForKey:kUserDefaultsAgentBridgeEnabledKey])
+		return handler(ErrorResponse(@"the agent bridge is disabled in TextMate (Preferences → AI)"));
+
+	NSString* name = arguments[@"name"];
+	if(name.length == 0)
+		return handler(ErrorResponse(@"missing ‘name’ argument"));
+
+	// The shim’s tool table is this route’s contract, stated once here rather
+	// than trusted to the client that shares it. Anything reaching the mate
+	// socket can ask for a tool the shim never advertised — the socket is
+	// local and unprivileged either way, so this is not a boundary — and a
+	// websocket-only tool answered here would be answered without the routing
+	// its stdio siblings get, which is a wrong answer rather than a refused
+	// one. The refusal is the same message the shim would have given.
+	if(!agent_tools::advertised(to_s(name), agent_tools::stdio))
+		return handler(ErrorResponse([NSString stringWithFormat:@"unknown tool: %@", name]));
+
+	// Arguments travel as one serialized JSON object; anything else is a bug in
+	// the caller, not something to guess at.
+	json toolArguments = json::object();
+	if(NSString* serialized = arguments[@"arguments"])
+	{
+		std::string const str = to_s(serialized);
+		json parsed = json::parse(str.begin(), str.end(), nullptr, false);
+		if(parsed.is_discarded() || !parsed.is_object())
+			return handler(ErrorResponse(@"‘arguments’ must be a JSON object"));
+		toolArguments = parsed;
+	}
+
+	__block BOOL didReply = NO;
+	BOOL known = [AgentBridgeTools invokeToolNamed:name arguments:toolArguments workspace:bridge->_workspace routingPath:arguments[@"cwd"] reply:^(std::string const& text, BOOL isError){
+		if(std::exchange(didReply, YES))
+			return; // a tool that answered twice must not corrupt the wire
+		handler(@{
+			@"status":     @"ok",
+			@"result":     to_ns(text),
+			@"tool-error": isError ? @"yes" : @"no",
+		});
+	}];
+
+	if(!known)
+		handler(ErrorResponse([NSString stringWithFormat:@"unknown tool: %@", name]));
 }
 
 - (instancetype)init

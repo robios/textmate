@@ -88,3 +88,33 @@ void test_parse_response ()
 	OAK_ASSERT(agent_cli::parse_response("").empty());
 	OAK_ASSERT(agent_cli::parse_response("garbage without separator\n").empty());
 }
+
+void test_parse_mcp ()
+{
+	agent_cli::request_t request;
+	std::string error;
+
+	// ‘mcp’ goes through the same parser as the one-shot subcommands so its
+	// argument checking is not a separate path — main recognizes the sentinel
+	// command and serves the protocol instead of sending anything.
+	OAK_ASSERT(agent_cli::parse_arguments({ "mcp" }, &request, &error));
+	OAK_ASSERT_EQ(request.command, agent_cli::McpCommand);
+	OAK_ASSERT(request.arguments.empty());
+
+	OAK_ASSERT(!agent_cli::parse_arguments({ "mcp", "--serve" }, &request, &error));
+}
+
+void test_tool_request ()
+{
+	agent_cli::request_t request = agent_cli::tool_request("getCurrentSelection", "{\"uri\":\"file:///tmp/a\"}", "/Users/me/project");
+	OAK_ASSERT_EQ(request.command, "agent-tool");
+	OAK_ASSERT_EQ(request.arguments["name"], "getCurrentSelection");
+	OAK_ASSERT_EQ(request.arguments["arguments"], "{\"uri\":\"file:///tmp/a\"}");
+	OAK_ASSERT_EQ(request.arguments["cwd"], "/Users/me/project");
+
+	// The framing drops empty values, so an empty argument object or an
+	// unknown cwd is simply absent rather than an empty key on the wire.
+	request = agent_cli::tool_request("getOpenEditors", "", "");
+	OAK_ASSERT_EQ(request.arguments.size(), 1);
+	OAK_ASSERT_EQ(agent_cli::frame_request(request), "agent-tool\r\nname: getOpenEditors\r\n\r\n.\r\n");
+}

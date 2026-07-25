@@ -32,9 +32,16 @@ namespace agent_cli
 		return true;
 	}
 
+	// ‘mcp’ is handled in-process rather than sent: it is a long-lived MCP
+	// server on stdin/stdout that makes one agent-tool request per tool call.
+	// It goes through parse_arguments all the same, so every subcommand’s
+	// argument checking stays in one tested place.
+	constexpr char const* McpCommand = "agent-mcp";
+
 	// Parse ‘tm_agent <subcommand> …’ (argv[0] already stripped):
 	//   mention --file <path> [--line-start <n>] [--line-end <n>]
 	//   status
+	//   mcp
 	// Line numbers are 0-based. --line-start without --line-end references a
 	// single line; omitting both references the start of the file (0-0). On
 	// success fills *request and returns true, otherwise *error explains why.
@@ -47,7 +54,7 @@ namespace agent_cli
 		};
 
 		if(args.empty())
-			return fail("no subcommand given (expected ‘mention’ or ‘status’)");
+			return fail("no subcommand given (expected ‘mention’, ‘status’, or ‘mcp’)");
 
 		std::string const& subcommand = args.front();
 		if(subcommand == "status")
@@ -58,8 +65,16 @@ namespace agent_cli
 			return true;
 		}
 
+		if(subcommand == "mcp")
+		{
+			if(args.size() > 1)
+				return fail("mcp takes no arguments");
+			request->command = McpCommand;
+			return true;
+		}
+
 		if(subcommand != "mention")
-			return fail("unknown subcommand ‘" + subcommand + "’ (expected ‘mention’ or ‘status’)");
+			return fail("unknown subcommand ‘" + subcommand + "’ (expected ‘mention’, ‘status’, or ‘mcp’)");
 
 		std::string file;
 		long lineStart = -1, lineEnd = -1;
@@ -107,6 +122,24 @@ namespace agent_cli
 		request->arguments["line-start"] = std::to_string(lineStart);
 		request->arguments["line-end"]   = std::to_string(lineEnd);
 		return true;
+	}
+
+	// The request the MCP shim makes per tool call. ‘arguments’ is the tool’s
+	// argument object already serialized as JSON — one string on one wire line,
+	// since the framing below escapes newlines — and ‘cwd’ is the directory the
+	// shim was started in, which is what routes the query to the window whose
+	// project contains it. Both are omitted when empty: the framing drops empty
+	// values anyway, and a missing key reads as “not supplied” on the far side.
+	inline request_t tool_request (std::string const& name, std::string const& arguments, std::string const& cwd)
+	{
+		request_t res;
+		res.command = "agent-tool";
+		res.arguments["name"] = name;
+		if(!arguments.empty())
+			res.arguments["arguments"] = arguments;
+		if(!cwd.empty())
+			res.arguments["cwd"] = cwd;
+		return res;
 	}
 
 	// Same value escaping as mate’s write_key_pair (RMateServer unescapes).

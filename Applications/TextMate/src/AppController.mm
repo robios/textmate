@@ -421,6 +421,9 @@ BOOL HasDocumentWindow (NSArray* windows)
 		{ @"Terminal",
 			.submenu = {
 				{ @"New Terminal",      @selector(newTerminal:),      @"~", .modifierFlags = NSEventModifierFlagControl }, // ⌃⇧` — shifted character per house style, cf. “Show Previous Tab” @"{"
+				// Terminals that start an agent CLI already able to see this window’s editor context
+				{ @"New Claude Code Terminal", @selector(newClaudeCodeTerminal:) },
+				{ @"New Codex Terminal",       @selector(newCodexTerminal:) },
 				{ /* -------- */ },
 				{ @"Next Terminal",     @selector(nextTerminal:),     @"]", .modifierFlags = NSEventModifierFlagCommand|NSEventModifierFlagControl },
 				{ @"Previous Terminal", @selector(previousTerminal:), @"[", .modifierFlags = NSEventModifierFlagCommand|NSEventModifierFlagControl },

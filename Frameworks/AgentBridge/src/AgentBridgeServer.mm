@@ -1,5 +1,8 @@
 #import "AgentBridgeServer.h"
+#import "AgentBridgeTools.h"
 #import "AgentBridgeWorkspace.h"
+#import "agent_json.h"
+#import "agent_tools.h"
 #import <document/OakDocument.h>
 #import <ns/ns.h>
 #import <nlohmann/json.hpp>
@@ -7,57 +10,35 @@
 
 using json = nlohmann::json;
 
+using agent_json::dump;
+using agent_json::file_uri;
+using agent_json::string_arg;
+
 static char const* const kAuthorizationHeaderField = "x-claude-code-ide-authorization";
+static char const* const kMCPSubprotocol            = "mcp";
 
 // The protocol needs one or two concurrent clients; the cap only exists so a
 // misbehaving local process cannot exhaust our file descriptors.
 static NSUInteger const kMaxConnections            = 8;
 static NSTimeInterval const kHandshakeTimeout      = 10;
+static NSTimeInterval const kSeedDelay             = 0.5; // see seedEditorContextForConnection:
 static size_t const kMaximumIncomingMessageSize    = 16 << 20; // 16 MiB
-
-// Serialize without throwing: tool results may contain buffer excerpts whose
-// range boundaries split a multi-byte character, and dump()’s default strict
-// handler throws type_error.316 on invalid UTF-8.
-static std::string DumpJSON (json const& payload)
-{
-	return payload.dump(-1, ' ', false, json::error_handler_t::replace);
-}
-
-static std::string StringArg (json const& args, char const* key, std::string const& fallback = "")
-{
-	auto it = args.find(key);
-	return it != args.end() && it->is_string() ? it->get<std::string>() : fallback;
-}
-
-static bool BoolArg (json const& args, char const* key, bool fallback)
-{
-	auto it = args.find(key);
-	return it != args.end() && it->is_boolean() ? it->get<bool>() : fallback;
-}
-
-static std::string FileURIForPath (NSString* path)
-{
-	// Percent-encoded like every other IDE client; isDirectory:NO both avoids
-	// a stat() and matches the convention of no trailing slash on folder URIs.
-	return to_s([NSURL fileURLWithPath:path isDirectory:NO].absoluteString);
-}
 
 // selection_changed payload per claudecode.nvim’s selection.lua: text (empty
 // when nothing is selected), filePath/fileUrl, and an LSP-style start/end
 // range with isEmpty — the same shape whether broadcast on selection changes
 // or sent once to seed a newly connected client.
+//
+// The selection fields come from the shared payload, so this notification is
+// capped exactly as a tool result is. That matters more here than there:
+// Claude reads the current selection from these pushes and only falls back to
+// asking, so a cap that lived in the tool path alone would sit on the route
+// nobody takes.
 static json SelectionChangedParams (AgentBridgeSelection* selection)
 {
-	return {
-		{ "text", to_s(selection.text ?: @"") },
-		{ "filePath", selection.filePath ? json(to_s(selection.filePath)) : json(nullptr) },
-		{ "fileUrl",  selection.filePath ? json(FileURIForPath(selection.filePath)) : json(nullptr) },
-		{ "selection", {
-			{ "start", { { "line", selection.startLine }, { "character", selection.startCharacter } } },
-			{ "end",   { { "line", selection.endLine   }, { "character", selection.endCharacter   } } },
-			{ "isEmpty", selection.isEmpty ? true : false },
-		} },
-	};
+	json res = [AgentBridgeTools payloadForSelection:selection];
+	res["fileUrl"] = selection.filePath ? json(file_uri(selection.filePath)) : json(nullptr);
+	return res;
 }
 
 static json ContentResult (std::string const& text, bool isError)
@@ -66,76 +47,6 @@ static json ContentResult (std::string const& text, bool isError)
 	if(isError)
 		res["isError"] = true;
 	return res;
-}
-
-static json ToolDescriptors ()
-{
-	auto schema = [](json const& properties, json const& required = json::array()) -> json {
-		return { { "type", "object" }, { "properties", properties }, { "required", required } };
-	};
-
-	return json::array({
-		{
-			{ "name", "openFile" },
-			{ "description", "Open a file in the editor and optionally select a range of text" },
-			{ "inputSchema", schema({
-				{ "filePath",          { { "type", "string"  }, { "description", "Path to the file to open" } } },
-				{ "preview",           { { "type", "boolean" }, { "description", "Whether to open the file in preview mode" } } },
-				{ "startText",         { { "type", "string"  }, { "description", "Text pattern to find the start of the selection" } } },
-				{ "endText",           { { "type", "string"  }, { "description", "Text pattern to find the end of the selection" } } },
-				{ "selectToEndOfLine", { { "type", "boolean" }, { "description", "Extend selection to end of line" } } },
-				{ "makeFrontmost",     { { "type", "boolean" }, { "description", "Whether to make the file the active editor tab" } } },
-			}, json::array({ "filePath" })) },
-		},
-		{
-			{ "name", "getCurrentSelection" },
-			{ "description", "Get the current text selection in the active editor" },
-			{ "inputSchema", schema(json::object()) },
-		},
-		{
-			{ "name", "getLatestSelection" },
-			{ "description", "Get the most recent non-empty text selection" },
-			{ "inputSchema", schema(json::object()) },
-		},
-		{
-			{ "name", "getOpenEditors" },
-			{ "description", "Get the list of currently open documents" },
-			{ "inputSchema", schema(json::object()) },
-		},
-		{
-			{ "name", "getWorkspaceFolders" },
-			{ "description", "Get the workspace (project) folders currently open in the IDE" },
-			{ "inputSchema", schema(json::object()) },
-		},
-		{
-			{ "name", "getDiagnostics" },
-			{ "description", "Get language diagnostics (errors, warnings) from the editor" },
-			{ "inputSchema", schema({
-				{ "uri", { { "type", "string" }, { "description", "Optional file URI to get diagnostics for; omit for all files" } } },
-			}) },
-		},
-		{
-			{ "name", "checkDocumentDirty" },
-			{ "description", "Check if a document has unsaved changes" },
-			{ "inputSchema", schema({
-				{ "filePath", { { "type", "string" }, { "description", "Path to the document to check" } } },
-			}, json::array({ "filePath" })) },
-		},
-		{
-			{ "name", "saveDocument" },
-			{ "description", "Save a document with unsaved changes" },
-			{ "inputSchema", schema({
-				{ "filePath", { { "type", "string" }, { "description", "Path to the document to save" } } },
-			}, json::array({ "filePath" })) },
-		},
-		{
-			{ "name", "executeCode" },
-			{ "description", "Execute code in a Jupyter kernel (not supported by TextMate)" },
-			{ "inputSchema", schema({
-				{ "code", { { "type", "string" }, { "description", "Code to execute" } } },
-			}, json::array({ "code" })) },
-		},
-	});
 }
 
 @implementation AgentBridgeServer
@@ -155,6 +66,11 @@ static json ToolDescriptors ()
 	NSMutableArray*       _pendingConnections;     // accepted, waiting for their turn to handshake
 	nw_connection_t       _handshakingConnection;
 
+	// Main queue only, unlike the collections above. Weak so a dropped
+	// connection leaves nothing behind — the seed is a per-connection one-shot,
+	// not a lifetime the server needs to track.
+	NSHashTable*          _seededConnections;
+
 	BOOL                  _didCallReadyHandler;
 }
 
@@ -168,6 +84,7 @@ static json ToolDescriptors ()
 		_sendGroup          = dispatch_group_create();
 		_connections        = [NSMutableArray array];
 		_pendingConnections = [NSMutableArray array];
+		_seededConnections  = [NSHashTable weakObjectsHashTable];
 	}
 	return self;
 }
@@ -328,7 +245,22 @@ static bool TokenMatches (NSString* candidate, NSString* expected)
 	});
 
 	if(token && TokenMatches(token, _authToken))
-		return nw_ws_response_create(nw_ws_response_status_accept, NULL);
+	{
+		// Echo the subprotocol back. A client that offers one and is accepted
+		// without a selection is entitled to treat that as a failed handshake,
+		// and Claude Code does: since it began sending ‘Sec-WebSocket-Protocol:
+		// mcp’ (2.1.x) an accept with no selection reads to it as “this server
+		// does not speak MCP”, and it drops the connection before a single
+		// frame — the IDE still appears in its list, then refuses to connect.
+		__block char const* selectedSubprotocol = NULL;
+		nw_ws_request_enumerate_subprotocols(request, ^bool(char const* subprotocol){
+			if(strcasecmp(subprotocol, kMCPSubprotocol) != 0)
+				return true;
+			selectedSubprotocol = kMCPSubprotocol; // a literal: the response outlives the enumeration
+			return false;
+		});
+		return nw_ws_response_create(nw_ws_response_status_accept, selectedSubprotocol);
+	}
 
 	NSLog(@"[AgentBridge] rejecting WebSocket connection with %s authorization token", token ? "an invalid" : "no");
 
@@ -462,7 +394,7 @@ static bool TokenMatches (NSString* candidate, NSString* expected)
 
 - (void)sendJSON:(json const&)payload toConnection:(nw_connection_t)connection
 {
-	std::string serialized = DumpJSON(payload);
+	std::string serialized = dump(payload);
 	dispatch_data_t data = dispatch_data_create(serialized.data(), serialized.size(), _queue, DISPATCH_DATA_DESTRUCTOR_DEFAULT);
 
 	nw_protocol_metadata_t metadata = nw_ws_create_metadata(nw_ws_opcode_text);
@@ -567,18 +499,18 @@ static bool TokenMatches (NSString* candidate, NSString* expected)
 
 - (void)dispatchMessage:(json const&)message withRequestId:(json const&)requestId hasId:(bool)hasId onConnection:(nw_connection_t)connection // main queue
 {
-	std::string const method = StringArg(message, "method");
+	std::string const method = string_arg(message, "method");
 	json const params = message.contains("params") && message["params"].is_object() ? message["params"] : json::object();
 
 	if(method == "initialize")
 	{
-		std::string protocolVersion = "2024-11-05";
+		std::string requested;
 		if(params.contains("protocolVersion") && params["protocolVersion"].is_string())
-			protocolVersion = params["protocolVersion"].get<std::string>();
+			requested = params["protocolVersion"].get<std::string>();
 
 		NSString* appVersion = [NSBundle.mainBundle.infoDictionary objectForKey:@"CFBundleShortVersionString"] ?: @"dev";
 		json result = {
-			{ "protocolVersion", protocolVersion },
+			{ "protocolVersion", agent_tools::negotiated_protocol_version(requested) },
 			{ "capabilities", {
 				{ "logging", json::object() },
 				{ "prompts", { { "listChanged", true } } },
@@ -588,19 +520,11 @@ static bool TokenMatches (NSString* candidate, NSString* expected)
 		};
 		[self sendResult:result forRequestId:requestId toConnection:connection];
 	}
-	else if(method.compare(0, 14, "notifications/") == 0)
+	else if(method.compare(0, 14, "notifications/") == 0 || method == "ide_connected")
 	{
 		// notifications/cancelled, … — nothing to do
-		if(method == "notifications/initialized")
-		{
-			// Seed the freshly connected client’s editor context: the CLI only
-			// learns the active file from selection_changed pushes, so a client
-			// that connects after the last caret movement would otherwise start
-			// blind (and “edit this file” targets the wrong document). An empty
-			// selection at the caret is the normal no-selection payload.
-			if(AgentBridgeSelection* selection = [_workspace currentSelection])
-				[self sendNotification:"selection_changed" params:SelectionChangedParams(selection) toConnection:connection];
-		}
+		if(method == "notifications/initialized" || method == "ide_connected")
+			[self seedEditorContextForConnection:connection];
 	}
 	else if(method == "ping")
 	{
@@ -613,7 +537,7 @@ static bool TokenMatches (NSString* candidate, NSString* expected)
 	}
 	else if(method == "tools/list")
 	{
-		json result = { { "tools", ToolDescriptors() } };
+		json result = { { "tools", agent_tools::descriptors(agent_tools::websocket) } };
 		[self sendResult:result forRequestId:requestId toConnection:connection];
 	}
 	else if(method == "tools/call")
@@ -626,6 +550,43 @@ static bool TokenMatches (NSString* candidate, NSString* expected)
 	}
 }
 
+// Seed a freshly connected client’s editor context. The CLI only learns the
+// active file from selection_changed pushes, so a client that connects after
+// the last caret movement would otherwise start blind — “edit this file” then
+// targets the wrong document, and stays wrong until the user happens to switch
+// tabs.
+//
+// Sent on a short delay, which is the whole point. Claude Code announces itself
+// with notifications/initialized and ide_connected and immediately fires its
+// discovery requests; a selection_changed answered in that same instant arrives
+// while the client is still starting up and is dropped — observed on the wire:
+// the seed went out with the correct path, before the client’s own tools/list
+// response, and never reached the conversation, while the identical push from a
+// tab switch twenty seconds later did. Waiting until the burst is over costs
+// nothing a person can perceive, and computing the selection at send time makes
+// the seed describe the editor as it is when the client is ready to hear it.
+//
+// Once per connection: either announcement triggers it, and clients send both.
+- (void)seedEditorContextForConnection:(nw_connection_t)connection // main queue
+{
+	if([_seededConnections containsObject:connection])
+		return;
+	[_seededConnections addObject:connection];
+
+	__weak AgentBridgeServer* weakSelf = self;
+	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kSeedDelay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+		AgentBridgeServer* strongSelf = weakSelf;
+		if(!strongSelf)
+			return;
+
+		// An empty selection at the caret is the normal no-selection payload.
+		// A connection dropped in the meantime is handled by sendNotification:,
+		// which checks it is still connected.
+		if(AgentBridgeSelection* selection = [strongSelf->_workspace currentSelection])
+			[strongSelf sendNotification:"selection_changed" params:SelectionChangedParams(selection) toConnection:connection];
+	});
+}
+
 // =========
 // = Tools =
 // =========
@@ -636,178 +597,18 @@ static bool TokenMatches (NSString* candidate, NSString* expected)
 // stack frame is gone.
 - (void)handleToolCallWithParams:(json)params requestId:(json)requestId onConnection:(nw_connection_t)connection // main queue
 {
-	std::string const name = StringArg(params, "name");
+	std::string const name = string_arg(params, "name");
 	json const args = params.contains("arguments") && params["arguments"].is_object() ? params["arguments"] : json::object();
 
 	__weak AgentBridgeServer* weakSelf = self;
-	void (^replyText)(std::string const&, bool) = ^(std::string const& text, bool isError){
+	AgentBridgeToolReply reply = ^(std::string const& text, BOOL isError){
 		[weakSelf sendResult:ContentResult(text, isError) forRequestId:requestId toConnection:connection];
 	};
-	void (^replyJSON)(json const&, bool) = ^(json const& payload, bool isError){
-		replyText(DumpJSON(payload), isError); // strict dump() throws on buffer excerpts with invalid UTF-8
-	};
 
-	if(name == "getWorkspaceFolders")
-	{
-		NSArray<NSString*>* folders = [_workspace workspaceFolders];
-		json folderList = json::array();
-		for(NSString* folder in folders)
-			folderList.push_back({ { "name", to_s(folder.lastPathComponent) }, { "uri", FileURIForPath(folder) }, { "path", to_s(folder) } });
-
-		NSString* rootPath = [_workspace activeProjectPath] ?: folders.firstObject;
-		json result = { { "success", true }, { "folders", folderList } };
-		result["rootPath"] = rootPath ? json(to_s(rootPath)) : json(nullptr);
-		replyJSON(result, false);
-	}
-	else if(name == "getOpenEditors")
-	{
-		json tabs = json::array();
-		for(NSDictionary* editor in [_workspace openEditors])
-		{
-			tabs.push_back({
-				{ "uri",        FileURIForPath((NSString*)editor[@"path"]) },
-				{ "isActive",   [editor[@"isActive"] boolValue] ? true : false },
-				{ "label",      to_s((NSString*)editor[@"label"]) },
-				{ "languageId", to_s((NSString*)editor[@"languageId"]) },
-				{ "isDirty",    [editor[@"isDirty"] boolValue] ? true : false },
-			});
-		}
-		replyJSON({ { "tabs", tabs } }, false);
-	}
-	else if(name == "getCurrentSelection" || name == "getLatestSelection")
-	{
-		AgentBridgeSelection* selection;
-		if(name == "getCurrentSelection")
-		{
-			selection = [_workspace currentSelection];
-			if(!selection)
-				return replyJSON({ { "success", false }, { "message", "No active editor found" } }, false);
-		}
-		else
-		{
-			selection = _workspace.latestSelection;
-			if(!selection) // no selection change observed yet — a current non-empty selection is an acceptable seed
-			{
-				AgentBridgeSelection* current = [_workspace currentSelection];
-				if(current && !current.isEmpty)
-					selection = current;
-			}
-			if(!selection)
-				return replyJSON({ { "success", false }, { "message", "No selection history available" } }, false);
-		}
-
-		json result = {
-			{ "success", true },
-			{ "text", to_s(selection.text ?: @"") },
-			{ "filePath", selection.filePath ? json(to_s(selection.filePath)) : json(nullptr) },
-			{ "selection", {
-				{ "start", { { "line", selection.startLine }, { "character", selection.startCharacter } } },
-				{ "end",   { { "line", selection.endLine   }, { "character", selection.endCharacter   } } },
-				{ "isEmpty", selection.isEmpty ? true : false },
-			} },
-		};
-		replyJSON(result, false);
-	}
-	else if(name == "openFile")
-	{
-		NSString* filePath = to_ns(StringArg(args, "filePath"));
-		if(!filePath.length)
-			return replyJSON({ { "success", false }, { "message", "filePath is required" } }, true);
-
-		std::string const startTextArg = StringArg(args, "startText");
-		std::string const endTextArg   = StringArg(args, "endText");
-		NSString* startText = startTextArg.empty() ? nil : to_ns(startTextArg);
-		NSString* endText   = endTextArg.empty()   ? nil : to_ns(endTextArg);
-		BOOL selectToEndOfLine = BoolArg(args, "selectToEndOfLine", false);
-		BOOL makeFrontmost     = BoolArg(args, "makeFrontmost", true);
-
-		[_workspace openFileAtPath:filePath selectFromText:startText toText:endText selectToEndOfLine:selectToEndOfLine makeFrontmost:makeFrontmost completionHandler:^(OakDocument* document, NSUInteger lineCount){
-			if(!document)
-				return replyJSON({ { "success", false }, { "message", "File not found: " + to_s(filePath) } }, true);
-
-			if(makeFrontmost)
-				replyText("Opened file: " + to_s(document.path), false);
-			else
-				replyJSON({ { "success", true }, { "filePath", to_s(document.path) }, { "languageId", to_s(document.fileType ?: @"plaintext") }, { "lineCount", lineCount } }, false);
-		}];
-	}
-	else if(name == "checkDocumentDirty")
-	{
-		NSString* filePath = to_ns(StringArg(args, "filePath"));
-		OakDocument* document = [_workspace openDocumentAtPath:filePath];
-		if(!document)
-			return replyJSON({ { "success", false }, { "message", "Document not open: " + to_s(filePath) } }, false);
-
-		replyJSON({ { "success", true }, { "filePath", to_s(document.path) }, { "isDirty", document.isDocumentEdited ? true : false }, { "isUntitled", false } }, false);
-	}
-	else if(name == "saveDocument")
-	{
-		NSString* filePath = to_ns(StringArg(args, "filePath"));
-		OakDocument* document = [_workspace openDocumentAtPath:filePath];
-		if(!document)
-			return replyJSON({ { "success", false }, { "message", "Document not open: " + to_s(filePath) } }, false);
-
-		[_workspace saveDocument:document completionHandler:^(BOOL saved, NSString* message){
-			replyJSON({ { "success", true }, { "filePath", to_s(document.path) }, { "saved", saved ? true : false }, { "message", to_s(message ?: (saved ? @"Document saved" : @"Save failed")) } }, false);
-		}];
-	}
-	else if(name == "getDiagnostics")
-	{
-		std::string const uriFilter = StringArg(args, "uri");
-		static char const* const severityNames[] = { "Error", "Error", "Warning", "Information", "Hint" };
-
-		// The cache keys are URIs as the LSP server sent them (percent-encoded);
-		// the client’s filter may round-trip our own URIs or be a plain path.
-		// Compare decoded filesystem paths so encodings can’t prevent a match.
-		NSString* filterPath = nil;
-		if(!uriFilter.empty())
-		{
-			NSURL* filterURL = [NSURL URLWithString:to_ns(uriFilter)];
-			filterPath = filterURL.isFileURL ? filterURL.path : to_ns(uriFilter);
-		}
-
-		json result = json::array();
-		NSDictionary<NSString*, NSArray<NSDictionary*>*>* diagnosticsByURI = [_workspace diagnosticsByURI];
-		for(NSString* uri in diagnosticsByURI)
-		{
-			if(filterPath)
-			{
-				NSURL* url = [NSURL URLWithString:uri];
-				NSString* path = url.isFileURL ? url.path : uri;
-				if(![path isEqualToString:filterPath])
-					continue;
-			}
-
-			json diagnostics = json::array();
-			for(NSDictionary* entry in diagnosticsByURI[uri])
-			{
-				NSInteger severity = [entry[@"severity"] integerValue];
-				json diagnostic = {
-					{ "message",  to_s((NSString*)entry[@"message"]) },
-					{ "severity", severityNames[severity >= 1 && severity <= 4 ? severity : 1] },
-					{ "range", {
-						{ "start", { { "line", [entry[@"line"] integerValue]    }, { "character", [entry[@"character"] integerValue]    } } },
-						{ "end",   { { "line", [entry[@"endLine"] integerValue] }, { "character", [entry[@"endCharacter"] integerValue] } } },
-					} },
-				};
-				if(NSString* source = entry[@"source"])
-					diagnostic["source"] = to_s(source);
-				if(id code = entry[@"code"])
-					diagnostic["code"] = to_s([code description]);
-				diagnostics.push_back(diagnostic);
-			}
-			result.push_back({ { "uri", to_s(uri) }, { "diagnostics", diagnostics } });
-		}
-		replyJSON(result, false);
-	}
-	else if(name == "executeCode")
-	{
-		replyText("executeCode is not supported: TextMate has no Jupyter kernel integration", true);
-	}
-	else
-	{
+	// No routing path: Claude finds TextMate through the lock file, not from a
+	// working directory, so the frontmost window answers as it always has.
+	if(![AgentBridgeTools invokeToolNamed:to_ns(name) arguments:args workspace:_workspace routingPath:nil reply:reply])
 		[self sendErrorWithCode:-32601 message:"Unknown tool: " + name forRequestId:requestId toConnection:connection];
-	}
 }
 
 // ============================

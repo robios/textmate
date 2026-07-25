@@ -53,6 +53,8 @@
 - (IBAction)toggleHTMLOutput:(id)sender;
 - (IBAction)toggleTerminal:(id)sender;
 - (IBAction)newTerminal:(id)sender;
+- (IBAction)newClaudeCodeTerminal:(id)sender;
+- (IBAction)newCodexTerminal:(id)sender;
 - (IBAction)nextTerminal:(id)sender;
 - (IBAction)previousTerminal:(id)sender;
 - (IBAction)closeTerminal:(id)sender;

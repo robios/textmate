@@ -230,6 +230,11 @@
 	[session startShellIfNeeded]; // spawns once the grid gets its size from layout
 }
 
+- (void)runCommandInActiveTerminal:(NSString*)command
+{
+	[self.activeSession runCommand:command];
+}
+
 - (void)selectTerminalAtIndex:(NSUInteger)index
 {
 	if(index >= _sessions.count)

@@ -17,6 +17,7 @@ static NSString* const kUserDefaultsTerminalScrollbackLinesKey = @"terminalScrol
 @property (nonatomic) TerminalEmulator* emulator;
 @property (nonatomic) PTYController* ptyController;
 @property (nonatomic) BOOL shellRequested;
+@property (nonatomic) NSString* pendingCommand; // typed as soon as the shell exists (see runCommand:)
 @property (nonatomic, readwrite) BOOL cachedHasRunningProcess;
 @property (nonatomic, readwrite) NSString* cachedRunningProcessName;
 @property (nonatomic, readwrite) NSString* currentDirectory;
@@ -236,12 +237,38 @@ static NSString* const kUserDefaultsTerminalScrollbackLinesKey = @"terminalScrol
 		if(!_currentDirectory.length)
 			_currentDirectory = directory;
 		[self noteStateChanged];
+		[self flushPendingCommand];
 	}
 	else
 	{
 		char const* message = "[failed to start shell]\r\n";
 		[_emulator feedBytes:message length:strlen(message)];
 	}
+}
+
+// Writing into the pty is exactly what the grid view does with a keystroke, so
+// the shell sees no difference and the line stays visible and editable — the
+// user can read what TextMate is about to run, and stop or change it. The
+// write can precede the prompt: the tty buffers input the shell has not read
+// yet, and neither zsh nor bash discards typeahead at startup.
+- (void)runCommand:(NSString*)command
+{
+	if(!command.length)
+		return;
+
+	self.pendingCommand = command;
+	if(_ptyController)
+		[self flushPendingCommand];
+}
+
+- (void)flushPendingCommand
+{
+	NSString* command = self.pendingCommand;
+	if(!command.length || !_ptyController)
+		return;
+
+	self.pendingCommand = nil;
+	[_ptyController writeData:[[command stringByAppendingString:@"\n"] dataUsingEncoding:NSUTF8StringEncoding]];
 }
 
 - (void)shellDidExitWithStatus:(int)status

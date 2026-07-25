@@ -55,6 +55,13 @@
 - (void)applyDarkPalette:(BOOL)useDarkPalette;
 - (void)startShellIfNeeded; // spawns once the grid has a real size
 - (void)shutdown;           // SIGHUP + reap; safe to call repeatedly
+
+// Type a command line into this session, as if the user had. Held until the
+// shell is up when it is not yet — a session spawns only once the grid has a
+// real size, so a caller that creates a session and hands it a command in the
+// same breath would otherwise write into nothing. Only the most recent
+// pending command line survives; nothing here queues a script.
+- (void)runCommand:(NSString*)command;
 @end
 
 #endif /* TERMINAL_SESSION_H_E52A7D19 */

@@ -32,11 +32,21 @@ extern NSNotificationName const AgentBridgeStatusDidChangeNotification;
 + (void)sendAtMentionedWithFilePath:(NSString*)filePath lineStart:(NSInteger)lineStart lineEnd:(NSInteger)lineEnd;
 
 // Handler for the tm_agent CLI (requests arrive over the mate socket, see
-// RMateServer.mm). Must be called on the main thread. Commands are
-// ‘agent-status’ and ‘agent-mention’ (path, line-start, line-end — 0-based);
-// the returned pairs form the wire response: ‘status’ is @"ok" or @"error",
-// with @"message" explaining errors.
-+ (NSDictionary<NSString*, NSString*>*)handleCLIRequest:(NSString*)command arguments:(NSDictionary<NSString*, NSString*>*)arguments;
+// RMateServer.mm). Must be called on the main thread. Commands are:
+//
+//   agent-status  — bridge state (running, port, clients)
+//   agent-mention — path, line-start, line-end (0-based)
+//   agent-tool    — invoke an MCP context tool on behalf of ‘tm_agent mcp’:
+//                   ‘name’, ‘arguments’ (a JSON object, serialized), and ‘cwd’
+//                   (the shim’s working directory, which routes the query to
+//                   the window whose project contains it). Answers with
+//                   ‘result’ (the tool’s content text) and ‘tool-error’.
+//
+// The pairs handed to the completion block form the wire response: ‘status’ is
+// @"ok" or @"error", with @"message" explaining errors. The block may be
+// called after this method returns — some tools resolve asynchronously — but
+// always on the main thread, and always exactly once.
++ (void)handleCLIRequest:(NSString*)command arguments:(NSDictionary<NSString*, NSString*>*)arguments completionHandler:(void(^)(NSDictionary<NSString*, NSString*>* response))handler;
 @end
 
 #endif /* AGENT_BRIDGE_H_ZK59WPB6 */

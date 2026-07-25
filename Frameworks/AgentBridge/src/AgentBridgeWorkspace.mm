@@ -176,6 +176,43 @@ static void* kAgentBridgeSelectionObserverContext = &kAgentBridgeSelectionObserv
 	return HostControllers().firstObject;
 }
 
+// The window that answers a query from an agent started in ‘routingPath’: the
+// one whose project root contains it, longest root first so a project checked
+// out inside another does not lose to its parent. Nothing containing it (or no
+// path at all) means the asking process is outside every open project, and the
+// frontmost window is the best guess left.
+- (id <AgentBridgeHostWindow>)controllerForRoutingPath:(NSString*)routingPath
+{
+	if(!routingPath.length || !routingPath.absolutePath)
+		return [self activeController];
+
+	std::string const cwd = path::normalize(to_s(routingPath));
+
+	id <AgentBridgeHostWindow> res = nil;
+	size_t bestLength = 0;
+	for(id <AgentBridgeHostWindow> controller in HostControllers())
+	{
+		NSString* projectPath = controller.projectPath;
+		if(!projectPath.length)
+			continue;
+
+		std::string const root = path::normalize(to_s(projectPath));
+		if(root != cwd && !path::is_child(cwd, root))
+			continue;
+		if(res && root.size() <= bestLength)
+			continue;
+
+		res        = controller;
+		bestLength = root.size();
+	}
+	return res ?: [self activeController];
+}
+
+- (NSString*)projectPathForRoutingPath:(NSString*)routingPath
+{
+	return [self controllerForRoutingPath:routingPath].projectPath ?: [self workspaceFolders].firstObject;
+}
+
 - (NSWindow*)windowForController:(id <AgentBridgeHostWindow>)controller
 {
 	if(!controller)
@@ -194,8 +231,13 @@ static void* kAgentBridgeSelectionObserverContext = &kAgentBridgeSelectionObserv
 
 - (NSArray<NSDictionary*>*)openEditors
 {
+	return [self openEditorsForRoutingPath:nil];
+}
+
+- (NSArray<NSDictionary*>*)openEditorsForRoutingPath:(NSString*)routingPath
+{
 	NSMutableArray<NSDictionary*>* res = [NSMutableArray array];
-	id <AgentBridgeHostWindow> activeController = [self activeController];
+	id <AgentBridgeHostWindow> activeController = [self controllerForRoutingPath:routingPath];
 	for(id <AgentBridgeHostWindow> controller in HostControllers())
 	{
 		for(OakDocument* document in controller.documents)
@@ -221,7 +263,12 @@ static void* kAgentBridgeSelectionObserverContext = &kAgentBridgeSelectionObserv
 
 - (AgentBridgeSelection*)currentSelection
 {
-	id <AgentBridgeHostWindow> controller = [self activeController];
+	return [self currentSelectionForRoutingPath:nil];
+}
+
+- (AgentBridgeSelection*)currentSelectionForRoutingPath:(NSString*)routingPath
+{
+	id <AgentBridgeHostWindow> controller = [self controllerForRoutingPath:routingPath];
 	OakDocument* document = controller.selectedDocument;
 	if(!document || !document.isLoaded)
 		return nil;
@@ -375,10 +422,18 @@ static void* kAgentBridgeSelectionObserverContext = &kAgentBridgeSelectionObserv
 // callers run on the main thread and paths come from an external client.
 - (NSString*)absolutePathForPath:(NSString*)path
 {
+	return [self absolutePathForPath:path routingPath:nil];
+}
+
+- (NSString*)absolutePathForPath:(NSString*)path routingPath:(NSString*)routingPath
+{
 	path = path.stringByExpandingTildeInPath;
 	if(!path.isAbsolutePath)
 	{
-		NSString* root = [self activeProjectPath] ?: NSHomeDirectory();
+		// A relative path from an agent means “relative to where I am”: the
+		// routing path is that process’ own cwd, which is a better answer than
+		// the project of whatever window happens to be frontmost.
+		NSString* root = routingPath.length && routingPath.absolutePath ? routingPath : ([self projectPathForRoutingPath:routingPath] ?: NSHomeDirectory());
 		path = [root stringByAppendingPathComponent:path];
 	}
 	return to_ns(path::normalize(to_s(path)));
@@ -386,7 +441,12 @@ static void* kAgentBridgeSelectionObserverContext = &kAgentBridgeSelectionObserv
 
 - (OakDocument*)openDocumentAtPath:(NSString*)path
 {
-	NSString* standardized = [self absolutePathForPath:path];
+	return [self openDocumentAtPath:path routingPath:nil];
+}
+
+- (OakDocument*)openDocumentAtPath:(NSString*)path routingPath:(NSString*)routingPath
+{
+	NSString* standardized = [self absolutePathForPath:path routingPath:routingPath];
 	for(OakDocument* document in [OakDocumentController.sharedInstance openDocuments])
 	{
 		if(document.path && [document.path isEqualToString:standardized])
@@ -395,9 +455,21 @@ static void* kAgentBridgeSelectionObserverContext = &kAgentBridgeSelectionObserv
 	return nil;
 }
 
-- (void)openFileAtPath:(NSString*)path selectFromText:(NSString*)startText toText:(NSString*)endText selectToEndOfLine:(BOOL)selectToEndOfLine makeFrontmost:(BOOL)makeFrontmost completionHandler:(void(^)(OakDocument*, NSUInteger))handler
+- (void)openFileAtPath:(NSString*)path selectFromText:(NSString*)startText toText:(NSString*)endText selectToEndOfLine:(BOOL)selectToEndOfLine makeFrontmost:(BOOL)makeFrontmost routingPath:(NSString*)routingPath completionHandler:(void(^)(OakDocument*, NSUInteger))handler
 {
-	NSString* absolutePath = [self absolutePathForPath:path];
+	NSString* absolutePath = [self absolutePathForPath:path routingPath:routingPath];
+
+	// Open in the window that answers for the asking agent, so a file it names
+	// lands beside the project it is working on rather than in whichever window
+	// is frontmost. nil identifier keeps TextMate’s own project choice.
+	NSObject* routedController = (NSObject*)[self controllerForRoutingPath:routingPath];
+	NSUUID* projectIdentifier = nil;
+	if(routingPath.length && [routedController respondsToSelector:@selector(identifier)])
+	{
+		id identifier = [routedController valueForKey:@"identifier"];
+		if([identifier isKindOfClass:[NSUUID class]])
+			projectIdentifier = identifier;
+	}
 
 	// Never stat or read an arbitrary path on the main thread: open(2) can
 	// block indefinitely (pending TCC consent, dead mounts, dataless files)
@@ -419,7 +491,7 @@ static void* kAgentBridgeSelectionObserverContext = &kAgentBridgeSelectionObserv
 			std::string const buffer = content ? to_s(content) : std::string();
 
 			text::range_t const range = RangeForTextMatch(buffer, startText, endText, selectToEndOfLine);
-			[OakDocumentController.sharedInstance showDocument:document andSelect:range inProject:nil bringToFront:makeFrontmost];
+			[OakDocumentController.sharedInstance showDocument:document andSelect:range inProject:projectIdentifier bringToFront:makeFrontmost];
 
 			// Opening a document can create a window or change the active
 			// project without any key-window notification firing.

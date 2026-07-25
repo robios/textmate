@@ -590,10 +590,16 @@ struct socket_observer_t
 		else	[NSApp activateIgnoringOtherApps:YES];
 	}
 
-	// Requests from the tm_agent CLI (‘agent-status’, ‘agent-mention’). The
-	// socket’s dispatch source runs on the main queue, so AgentBridge is
-	// reached on the main thread; the reply is written synchronously and the
-	// caller closes the connection.
+	// Requests from the tm_agent CLI (‘agent-status’, ‘agent-mention’,
+	// ‘agent-tool’). The socket’s dispatch source runs on the main queue, so
+	// AgentBridge is reached on the main thread.
+	//
+	// The reply may arrive after we return: ‘agent-tool’ answers for tools that
+	// resolve asynchronously (openFile reads the file off the main thread). The
+	// block therefore captures a *copy* of the socket — socket_t is refcounted,
+	// so the descriptor outlives the observer that is torn down the moment this
+	// returns, and the CLI, which reads until EOF, sees the close when the last
+	// copy goes away.
 	void handle_agent (socket_t const& socket)
 	{
 		record_t const& record = records.front();
@@ -602,26 +608,41 @@ struct socket_observer_t
 		for(auto const& pair : record.arguments)
 			arguments[to_ns(pair.first)] = to_ns(pair.second);
 
-		NSDictionary<NSString*, NSString*>* response = [AgentBridge handleCLIRequest:to_ns(record.command) arguments:arguments];
-
-		std::string reply;
-		for(NSString* key in [response.allKeys sortedArrayUsingSelector:@selector(compare:)])
-		{
-			reply += to_s(key) + ": ";
-			for(char const ch : to_s(response[key]))
+		socket_t socketCopy = socket;
+		[AgentBridge handleCLIRequest:to_ns(record.command) arguments:arguments completionHandler:^(NSDictionary<NSString*, NSString*>* response){
+			std::string reply;
+			for(NSString* key in [response.allKeys sortedArrayUsingSelector:@selector(compare:)])
 			{
-				if(ch == '\\')
-					reply += "\\\\";
-				else if(ch == '\n')
-					reply += "\\n";
-				else
-					reply += ch;
+				reply += to_s(key) + ": ";
+				for(char const ch : to_s(response[key]))
+				{
+					if(ch == '\\')
+						reply += "\\\\";
+					else if(ch == '\n')
+						reply += "\\n";
+					else
+						reply += ch;
+				}
+				reply += "\r\n";
 			}
-			reply += "\r\n";
-		}
 
-		if(write(socket, reply.data(), reply.size()) != (ssize_t)reply.size())
-			os_log_error(OS_LOG_DEFAULT, "tm_agent: failed to write response");
+			// Off the main thread. The socket is blocking and its send buffer
+			// is a few KB, while agent-tool answers now run to 64 KiB of
+			// selection or a few hundred KB of diagnostics — sizes the
+			// agent-status/agent-mention replies this path was built for never
+			// approached. The reader normally drains it at once, but an agent
+			// suspended mid-call (^Z on a codex started from the terminal pane,
+			// which this branch made a menu item) would otherwise block the
+			// main thread until it is resumed, and the editor with it.
+			//
+			// One write per request, so nothing is reordered by dispatching it;
+			// the captured socket_t keeps the descriptor alive until it lands,
+			// and closing it is what tells the CLI the answer is complete.
+			dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+				if(write(socketCopy, reply.data(), reply.size()) != (ssize_t)reply.size())
+					os_log_error(OS_LOG_DEFAULT, "tm_agent: failed to write response");
+			});
+		}];
 	}
 
 	void handle_marks (socket_t const& socket)

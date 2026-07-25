@@ -37,6 +37,52 @@ NSView* OakSetupGridViewWithSeparators (NSGridView* gridView, std::vector<NSUInt
 	return gridView;
 }
 
+// A scroll view’s document view is where its origin lives, and an unflipped
+// one puts that origin at the bottom left — so a pane taller than its window
+// opens scrolled to its end, showing the reader the last thing on it. Flipping
+// the container is the fix; scrolling to the top after the fact would only be
+// right until the next resize.
+@interface OakFlippedContainerView : NSView
+@end
+
+@implementation OakFlippedContainerView
+- (BOOL)isFlipped { return YES; }
+@end
+
+NSView* OakSetupScrollableGridView (NSGridView* gridView, std::vector<NSUInteger> rows)
+{
+	NSView* content = OakSetupGridViewWithSeparators(gridView, rows);
+	content.translatesAutoresizingMaskIntoConstraints = NO;
+
+	NSView* container = [[OakFlippedContainerView alloc] initWithFrame:NSZeroRect];
+	[container addSubview:content];
+	[NSLayoutConstraint activateConstraints:@[
+		[content.topAnchor      constraintEqualToAnchor:container.topAnchor],
+		[content.leadingAnchor  constraintEqualToAnchor:container.leadingAnchor],
+		[content.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
+		[content.bottomAnchor   constraintEqualToAnchor:container.bottomAnchor],
+	]];
+
+	NSScrollView* scrollView = [[NSScrollView alloc] init];
+	scrollView.documentView = container;
+	scrollView.hasVerticalScroller = YES;
+	scrollView.drawsBackground = NO;
+	scrollView.automaticallyAdjustsContentInsets = NO;
+	scrollView.contentInsets = NSEdgeInsetsMake(0, 0, 0, 0);
+
+	// Default-high, not required: the pane must be able to hug its content’s
+	// width, but a hint that wants to be wider than the pane has to wrap
+	// instead of widening it.
+	container.translatesAutoresizingMaskIntoConstraints = NO;
+	NSLayoutConstraint* widthConstraint = [container.widthAnchor constraintEqualToAnchor:scrollView.contentView.widthAnchor];
+	widthConstraint.priority = NSLayoutPriorityDefaultHigh;
+	widthConstraint.active = YES;
+
+	[scrollView setFrameSize:NSMakeSize(content.fittingSize.width, 400)];
+
+	return scrollView;
+}
+
 @interface PreferencesPane ()
 @property (nonatomic, readwrite) NSImage* toolbarItemImage;
 @end

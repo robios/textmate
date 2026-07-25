@@ -4,6 +4,7 @@
 #import <lsp/CopilotManager.h>
 #import <lsp/LSPManager.h>
 #import <AgentBridge/AgentBridge.h>
+#import <AgentBridge/AgentSetup.h>
 #import <settings/settings.h>
 #import <ns/ns.h>
 
@@ -39,6 +40,8 @@
 
 		self.tmProperties = @{
 			@"copilotCommand": @"copilotCommand",
+			@"codexCommand":   @"codexCommand",
+			@"claudeCommand":  @"claudeCommand",
 		};
 
 		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(copilotStatusDidChange:) name:CopilotStatusDidChangeNotification object:nil];
@@ -99,13 +102,30 @@
 	_lspEnabledCheckBox.target = self;
 	_lspEnabledCheckBox.action = @selector(toggleLSPEnabled:);
 
-	// =======================
-	// = Agent Bridge section =
-	// =======================
+	// ==========================================================
+	// = Agent Bridge — what every agent CLI shares, then each  =
+	// = CLI’s own row. The switch and the AGENTS.md snippet    =
+	// = govern both frontends, so they cannot live inside one  =
+	// = provider’s section without reading as that provider’s. =
+	// ==========================================================
 
 	_bridgeStatusText = OakCreateLabel(@"");
 
 	NSButton* bridgeEnabledCheckBox = OakCreateCheckBox(@"Enable Agent Bridge");
+
+	NSButton* copyAgentsButton = OakCreateButton(@"Copy AGENTS.md Snippet");
+	copyAgentsButton.target = self;
+	copyAgentsButton.action = @selector(copyAgentsFileSnippet:);
+
+	NSTextField* claudePathField = [NSTextField textFieldWithString:@""];
+	[claudePathField.widthAnchor constraintEqualToConstant:360].active = YES;
+
+	NSTextField* codexPathField = [NSTextField textFieldWithString:@""];
+	[codexPathField.widthAnchor constraintEqualToConstant:360].active = YES;
+
+	NSButton* copyConfigButton = OakCreateButton(@"Copy config.toml Snippet");
+	copyConfigButton.target = self;
+	copyConfigButton.action = @selector(copyCodexConfigurationSnippet:);
 
 	NSGridView* gridView = [NSGridView gridViewWithViews:@[
 		// Copilot — rows 0-8
@@ -127,16 +147,37 @@
 
 		@[ ], // 12 — separator
 
-		// Agent Bridge — rows 13-15
-		@[ OakCreateLabel(@"Agent Bridge:"), _bridgeStatusText ],                                                               // 13
-		@[ NSGridCell.emptyContentView,      bridgeEnabledCheckBox ],                                                           // 14
-		@[ NSGridCell.emptyContentView,      makeHint(@"Lets Claude Code connect to TextMate as its IDE (WebSocket server on 127.0.0.1)") ], // 15
+		// Agent Bridge — rows 13-17. Everything shared by every agent CLI: the
+		// one switch that governs both frontends, and the house rules that read
+		// the same in any project’s AGENTS.md or CLAUDE.md.
+		@[ OakCreateLabel(@"Agent Bridge:"),      _bridgeStatusText ],                                                          // 13
+		@[ NSGridCell.emptyContentView,           bridgeEnabledCheckBox ],                                                      // 14
+		@[ NSGridCell.emptyContentView,           makeHint(@"One switch for both routes into the editor: Claude Code connects as TextMate’s IDE, every other agent CLI reads the same context through the tm_agent MCP server") ], // 15
+		@[ NSGridCell.emptyContentView,           copyAgentsButton ],                                                           // 16
+		@[ NSGridCell.emptyContentView,           makeHint(@"House rules for a project’s AGENTS.md: when to ask TextMate for the current file, the selection, and diagnostics. Claude Code is pushed that context and needs no snippet") ], // 17
+
+		@[ ], // 18 — separator
+
+		// Claude Code — rows 19-20
+		@[ OakCreateLabel(@"Claude Code:"),       claudePathField ],                                                            // 19
+		@[ NSGridCell.emptyContentView,           makeHint(@"Path to the claude executable; leave blank to use the one on PATH. Terminal → New Claude Code Terminal starts it already able to see this window") ], // 20
+
+		@[ ], // 21 — separator
+
+		// Codex — rows 22-25
+		@[ OakCreateLabel(@"Codex:"),             codexPathField ],                                                            // 22
+		@[ NSGridCell.emptyContentView,           makeHint(@"Path to the codex executable; leave blank to use the one on PATH. Terminal → New Codex Terminal registers TextMate’s MCP server for that run and leaves your config.toml alone") ], // 23
+		@[ NSGridCell.emptyContentView,           copyConfigButton ],                                                           // 24
+		@[ NSGridCell.emptyContentView,           makeHint(@"For a Codex you start yourself instead: paste the snippet into ~/.codex/config.toml") ], // 25
 
 	]];
 
-	self.view = OakSetupGridViewWithSeparators(gridView, { 9, 12 });
+	// Four providers’ worth of rows no longer fit a fixed pane.
+	self.view = OakSetupScrollableGridView(gridView, { 9, 12, 18, 21 });
 
 	[serverPathField bind:NSValueBinding toObject:self withKeyPath:@"copilotCommand" options:@{ NSNullPlaceholderBindingOption: @"Auto-detect" }];
+	[claudePathField bind:NSValueBinding toObject:self withKeyPath:@"claudeCommand" options:@{ NSNullPlaceholderBindingOption: @"claude (from PATH)" }];
+	[codexPathField bind:NSValueBinding toObject:self withKeyPath:@"codexCommand" options:@{ NSNullPlaceholderBindingOption: @"codex (from PATH)" }];
 	[bridgeEnabledCheckBox bind:NSValueBinding toObject:self withKeyPath:@"agentBridgeEnabled" options:nil];
 }
 
@@ -253,8 +294,11 @@
 {
 	if(AgentBridge.isRunning)
 	{
+		// The port and the client count belong to the WebSocket half; the stdio
+		// shim connects per tool call and has neither. Say which is being
+		// reported, now that the section covers both.
 		NSUInteger clients = AgentBridge.connectedClientCount;
-		_bridgeStatusText.stringValue = [NSString stringWithFormat:@"Running on port %lu — %lu client%s connected", AgentBridge.serverPort, clients, clients == 1 ? "" : "s"];
+		_bridgeStatusText.stringValue = [NSString stringWithFormat:@"IDE server on port %lu — %lu client%s connected", AgentBridge.serverPort, clients, clients == 1 ? "" : "s"];
 	}
 	else
 	{
@@ -266,5 +310,29 @@
 {
 	if(self.viewLoaded)
 		[self updateAgentBridgeStatus];
+}
+
+// =========
+// = Codex =
+// =========
+
+// Snippets are copied, never written: both files belong to the user (one is
+// their global Codex configuration, the other is checked into their project),
+// and nothing here has any business editing either.
+- (void)copyToPasteboard:(NSString*)string
+{
+	NSPasteboard* pasteboard = NSPasteboard.generalPasteboard;
+	[pasteboard clearContents];
+	[pasteboard writeObjects:@[ string ]];
+}
+
+- (void)copyCodexConfigurationSnippet:(id)sender
+{
+	[self copyToPasteboard:[AgentSetup codexConfigurationSnippet]];
+}
+
+- (void)copyAgentsFileSnippet:(id)sender
+{
+	[self copyToPasteboard:[AgentSetup agentsFileSnippet]];
 }
 @end

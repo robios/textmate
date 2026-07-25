@@ -1,9 +1,10 @@
 #include "agent_cli.h"
+#include "mate_client.h"
+#include "mcp_shim.h"
 
+#include <climits>
+#include <csignal>
 #include <cstdio>
-#include <cstring>
-#include <sys/socket.h>
-#include <sys/un.h>
 #include <sysexits.h>
 #include <unistd.h>
 
@@ -11,15 +12,10 @@
 // socket (the UNIX domain socket also used by the ‘mate’ CLI, served by
 // RMateServer on the app’s main queue). It is protocol-agnostic towards the
 // agent: TextMate forwards ‘mention’ as an ‘at_mentioned’ notification to
-// whatever agent CLI is connected to the bridge.
+// whatever agent CLI is connected to the bridge, and ‘mcp’ turns the same
+// socket into a stdio MCP server any agent CLI can be configured with.
 
 static char const* const AppVersion = TEXTMATE_VERSION_STRING;
-
-static char const* socket_path ()
-{
-	static std::string const str = "/tmp/textmate-" + std::to_string(getuid()) + ".sock";
-	return str.c_str();
-}
 
 static void usage (FILE* io)
 {
@@ -27,6 +23,7 @@ static void usage (FILE* io)
 		"%1$s %2$s (" __DATE__ ")\n"
 		"Usage: %1$s mention --file <path> [--line-start <n>] [--line-end <n>]\n"
 		"       %1$s status\n"
+		"       %1$s mcp\n"
 		"\n"
 		"Talks to the agent bridge in a running TextMate.\n"
 		"\n"
@@ -38,6 +35,12 @@ static void usage (FILE* io)
 		" status    Print bridge state: running/stopped, port, and number of\n"
 		"           connected agent clients. Exits 0 when the bridge is\n"
 		"           running, 2 when it is stopped.\n"
+		" mcp       Serve the Model Context Protocol on stdin/stdout, exposing\n"
+		"           TextMate’s editor context (current selection, open files,\n"
+		"           project folders, diagnostics) to any agent CLI configured\n"
+		"           with it as an MCP server. Queries are answered by the\n"
+		"           window whose project contains this process’ working\n"
+		"           directory. Not meant to be run by hand.\n"
 		"\n"
 		"Options:\n"
 		" -h, --help     Show this information.\n"
@@ -62,6 +65,17 @@ static std::string absolute_path (std::string const& path)
 
 int main (int argc, char const* argv[])
 {
+	// “TextMate is not running” reaches us two ways, and only one of them is an
+	// errno. If the app goes away between the greeting and the write — a quit
+	// or a crash during a tool call — the write is answered with SIGPIPE, whose
+	// default action kills us. For the shim that is the worst possible failure:
+	// it exists so the agent CLI keeps a healthy server across the app coming
+	// and going, and instead the server vanishes mid-session, which is the
+	// outcome the offline handling was written to prevent. Ignoring the signal
+	// routes it into the EPIPE path the code already has, and the agent reads a
+	// tool error instead of losing its MCP server.
+	signal(SIGPIPE, SIG_IGN);
+
 	std::vector<std::string> args(argv + 1, argv + argc);
 
 	for(auto const& arg : args)
@@ -81,62 +95,25 @@ int main (int argc, char const* argv[])
 		return EX_USAGE;
 	}
 
+	// ‘mcp’ is not a one-shot request but a server that makes its own, one per
+	// tool call, for as long as the agent CLI keeps it alive.
+	if(request.command == agent_cli::McpCommand)
+		return mcp_shim::run(AppVersion);
+
 	auto pathArg = request.arguments.find("path");
 	if(pathArg != request.arguments.end())
 		pathArg->second = absolute_path(pathArg->second);
 
 	// Connect to the running app — deliberately without launching it: a
 	// mention only makes sense against a live editor session.
-	int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-	struct sockaddr_un addr = { 0, AF_UNIX };
-	strcpy(addr.sun_path, socket_path());
-	addr.sun_len = SUN_LEN(&addr);
-
-	if(fd == -1 || connect(fd, (sockaddr*)&addr, sizeof(addr)) == -1)
+	std::map<std::string, std::string> response;
+	std::string error;
+	if(!mate_client::send(request, &response, &error))
 	{
-		fprintf(stderr, "%s: TextMate does not appear to be running (no socket at %s)\n", getprogname(), socket_path());
-		if(fd != -1)
-			close(fd);
+		fprintf(stderr, "%s: %s\n", getprogname(), error.c_str());
 		return EX_UNAVAILABLE;
 	}
 
-	// Read the server’s welcome line before sending our request.
-	char buf[1024];
-	std::string received;
-	while(received.find('\n') == std::string::npos)
-	{
-		ssize_t len = read(fd, buf, sizeof(buf));
-		if(len <= 0)
-		{
-			fprintf(stderr, "%s: no greeting from TextMate\n", getprogname());
-			close(fd);
-			return EX_IOERR;
-		}
-		received.insert(received.end(), buf, buf + len);
-	}
-	received.erase(0, received.find('\n') + 1);
-
-	std::string const frame = agent_cli::frame_request(request);
-	if(write(fd, frame.data(), frame.size()) != (ssize_t)frame.size())
-	{
-		perror("write");
-		close(fd);
-		return EX_IOERR;
-	}
-
-	while(ssize_t len = read(fd, buf, sizeof(buf)))
-	{
-		if(len == -1)
-		{
-			perror("read");
-			close(fd);
-			return EX_IOERR;
-		}
-		received.insert(received.end(), buf, buf + len);
-	}
-	close(fd);
-
-	auto response = agent_cli::parse_response(received);
 	auto value = [&response](char const* key) -> std::string {
 		auto it = response.find(key);
 		return it != response.end() ? it->second : "";

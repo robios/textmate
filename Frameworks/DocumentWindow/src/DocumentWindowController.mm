@@ -22,6 +22,7 @@
 #import <Terminal/TerminalPaneController.h>
 #import <Terminal/TerminalGridView.h>
 #import <AgentBridge/AgentBridge.h>
+#import <AgentBridge/AgentSetup.h>
 #import <OakCommand/OakCommand.h>
 #import <HTMLOutputWindow/HTMLOutputWindow.h>
 #import <OakFilterList/FileChooser.h>
@@ -2322,6 +2323,40 @@ static NSArray* const kObservedKeyPaths = @[ @"arrayController.arrangedObjects.p
 		[self.terminalPane addTerminal];
 	}
 	[self.window makeFirstResponder:self.terminalPane.gridView];
+}
+
+// Start an agent CLI in a terminal of its own. The command line is typed into
+// the session rather than spawned, so it is visible and editable before it
+// runs. How each agent reaches this window’s editor context differs and is
+// none of this method’s business: Codex carries it in the command line
+// (launch-time -c overrides, §4.2), Claude finds it through the lock file and
+// the CLAUDE_CODE_SSE_PORT already in -terminalEnvironment.
+- (void)launchAgentTerminalWithCommandLine:(NSString*)command
+{
+	BOOL hadTerminals = self.terminalPane.numberOfTerminals > 0;
+	if(!self.terminalVisible)
+		self.terminalVisible = YES; // creates the pane and its first session as needed
+
+	[self refreshTerminalSpawnParameters];
+	if(hadTerminals)
+		[self.terminalPane addTerminal]; // never take over a terminal the user is already using
+
+	[self.terminalPane runCommandInActiveTerminal:command];
+	[self.window makeFirstResponder:self.terminalPane.gridView];
+}
+
+// Codex, with the TextMate MCP server registered for this run only, so it can
+// read the current selection and open files without the user having edited
+// their own config.toml. A Codex started elsewhere is covered by the copyable
+// snippet in Preferences → AI instead.
+- (IBAction)newCodexTerminal:(id)sender
+{
+	[self launchAgentTerminalWithCommandLine:[AgentSetup codexLaunchCommandLine]];
+}
+
+- (IBAction)newClaudeCodeTerminal:(id)sender
+{
+	[self launchAgentTerminalWithCommandLine:[AgentSetup claudeLaunchCommandLine]];
 }
 
 - (IBAction)nextTerminal:(id)sender

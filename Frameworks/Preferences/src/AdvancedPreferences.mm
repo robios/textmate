@@ -228,23 +228,7 @@
 		@[ NSGridCell.emptyContentView,      makeHint(@"How many recent commits the review-base menu lists (default 20; 0 lists none). Projects can override reviewBaseCommitLimit in .tm_properties") ], // 49
 	]];
 
-	NSView* content = OakSetupGridViewWithSeparators(gridView, { 12, 21, 30, 35, 40, 45 });
-
-	NSScrollView* scrollView = [[NSScrollView alloc] init];
-	scrollView.documentView = content;
-	scrollView.hasVerticalScroller = YES;
-	scrollView.drawsBackground = NO;
-	scrollView.automaticallyAdjustsContentInsets = NO;
-	scrollView.contentInsets = NSEdgeInsetsMake(0, 0, 0, 0);
-
-	content.translatesAutoresizingMaskIntoConstraints = NO;
-	NSLayoutConstraint* widthConstraint = [content.widthAnchor constraintEqualToAnchor:scrollView.contentView.widthAnchor];
-	widthConstraint.priority = NSLayoutPriorityDefaultHigh;
-	widthConstraint.active = YES;
-
-	[scrollView setFrameSize:NSMakeSize(content.fittingSize.width, 400)];
-
-	self.view = scrollView;
+	self.view = OakSetupScrollableGridView(gridView, { 12, 21, 30, 35, 40, 45 });
 
 	// Editor bindings
 	[disableTypingPairsCheckBox bind:NSValueBinding toObject:self withKeyPath:@"disableTypingPairs" options:nil];

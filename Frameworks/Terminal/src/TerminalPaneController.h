@@ -58,6 +58,11 @@
 
 - (void)startShellIfNeeded;      // ensures one session exists; spawns once the grid has a real size
 - (void)addTerminal;             // new session (spawned with the current workingDirectory/environment), selected and focused
+
+// Type a command line into the active session, as if the user had — held until
+// its shell is up. For starting an agent CLI with its editor integration
+// already configured; the line stays visible and editable in the terminal.
+- (void)runCommandInActiveTerminal:(NSString*)command;
 - (void)selectNextTerminal;
 - (void)selectPreviousTerminal;
 - (void)closeActiveTerminal;     // kills the active session; the adjacent tab (if any) takes over

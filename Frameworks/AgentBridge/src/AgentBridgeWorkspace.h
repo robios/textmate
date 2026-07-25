@@ -27,14 +27,26 @@
 
 @property (nonatomic, readonly) AgentBridgeSelection* latestSelection; // last non-empty selection
 
+// Every context query takes a ‘routing path’: the working directory the asking
+// agent process was started in (§4.2). The window whose project root contains
+// it answers — without this a second TextMate window on an unrelated project
+// could answer a query meant for this one. nil, empty, or a path inside no
+// open project falls back to the frontmost window, which is what the WebSocket
+// frontend (Claude, discovered through the lock file rather than a cwd) has
+// always used; the nil-routing methods below are that case spelled out.
 - (NSArray<NSString*>*)workspaceFolders; // aggregated project roots of all document windows, frontmost first
 - (NSString*)activeProjectPath;
+- (NSString*)projectPathForRoutingPath:(NSString*)routingPath; // the answering window’s project root
 - (NSArray<NSDictionary*>*)openEditors;  // path, isActive, label, languageId, isDirty
+- (NSArray<NSDictionary*>*)openEditorsForRoutingPath:(NSString*)routingPath; // same list; isActive follows the answering window
 - (AgentBridgeSelection*)currentSelection;
+- (AgentBridgeSelection*)currentSelectionForRoutingPath:(NSString*)routingPath;
 
 - (NSString*)absolutePathForPath:(NSString*)path;
+- (NSString*)absolutePathForPath:(NSString*)path routingPath:(NSString*)routingPath; // relative paths resolve against the answering project
 - (OakDocument*)openDocumentAtPath:(NSString*)path;
-- (void)openFileAtPath:(NSString*)path selectFromText:(NSString*)startText toText:(NSString*)endText selectToEndOfLine:(BOOL)selectToEndOfLine makeFrontmost:(BOOL)makeFrontmost completionHandler:(void(^)(OakDocument* document, NSUInteger lineCount))handler;
+- (OakDocument*)openDocumentAtPath:(NSString*)path routingPath:(NSString*)routingPath;
+- (void)openFileAtPath:(NSString*)path selectFromText:(NSString*)startText toText:(NSString*)endText selectToEndOfLine:(BOOL)selectToEndOfLine makeFrontmost:(BOOL)makeFrontmost routingPath:(NSString*)routingPath completionHandler:(void(^)(OakDocument* document, NSUInteger lineCount))handler;
 - (void)saveDocument:(OakDocument*)document completionHandler:(void(^)(BOOL saved, NSString* message))handler;
 - (void)focusTextViewForDocument:(OakDocument*)document; // make the document's window's text view first responder
 - (BOOL)closeTabForDocument:(OakDocument*)document;      // close the document's tab without a save prompt

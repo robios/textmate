@@ -95,12 +95,14 @@ class RejectedError(Exception):
 class WSClient:
     """Minimal RFC 6455 client: handshake, masked send, unmasked recv."""
 
-    def __init__(self, port, token, timeout=5.0):
+    def __init__(self, port, token, timeout=5.0, subprotocol="mcp"):
         self.sock = socket.create_connection(("127.0.0.1", port), timeout=timeout)
         self.sock.settimeout(timeout)
         self.buffer = b""
         self.next_id = 0
         self.responses = {}  # buffered responses by request id
+        self.notifications_before_response = []  # methods dropped while awaiting the last response
+        self.selected_subprotocol = None
         key = base64.b64encode(secrets.token_bytes(16)).decode()
         headers = [
             f"GET / HTTP/1.1",
@@ -110,6 +112,11 @@ class WSClient:
             f"Sec-WebSocket-Key: {key}",
             "Sec-WebSocket-Version: 13",
         ]
+        # Claude Code offers the MCP subprotocol and requires it to be selected;
+        # this client did not, which is how an accept with no selection passed
+        # every check here while the real CLI could not connect at all.
+        if subprotocol:
+            headers.append(f"Sec-WebSocket-Protocol: {subprotocol}")
         if token is not None:
             headers.append(f"x-claude-code-ide-authorization: {token}")
         self.sock.sendall(("\r\n".join(headers) + "\r\n\r\n").encode())
@@ -130,6 +137,11 @@ class WSClient:
 
         accept = base64.b64encode(hashlib.sha1((key + WS_GUID).encode()).digest()).decode()
         assert accept.encode() in response, "bad Sec-WebSocket-Accept from server"
+
+        for line in response.split(b"\r\n"):
+            name, _, value = line.partition(b":")
+            if name.strip().lower() == b"sec-websocket-protocol":
+                self.selected_subprotocol = value.strip().decode()
 
     def close(self):
         self.sock.close()
@@ -198,7 +210,14 @@ class WSClient:
         return request_id
 
     def wait_response(self, request_id, timeout=5):
-        """Wait for a response by id; other responses are buffered, notifications dropped."""
+        """Wait for a response by id; other responses are buffered, notifications dropped.
+
+        Dropping is what a real client effectively does with anything that
+        arrives before it is listening, so the methods dropped along the way are
+        recorded rather than discarded silently — that record is how the seeding
+        order is checked.
+        """
+        self.notifications_before_response = []
         if request_id in self.responses:
             return self.responses.pop(request_id)
         deadline = time.time() + timeout
@@ -208,6 +227,8 @@ class WSClient:
                 if message["id"] == request_id:
                     return message
                 self.responses[message["id"]] = message
+            elif message.get("method"):
+                self.notifications_before_response.append(message["method"])
         raise TimeoutError(f"no response to request {request_id}")
 
     def wait_notification(self, method, timeout=5):
@@ -244,6 +265,13 @@ def main():
 
     # 1. authorized connect + initialize
     ws = WSClient(port, token)
+    # The server must select the subprotocol the client offered. Accepting
+    # without one reads to Claude Code as “this server does not speak MCP”: it
+    # lists the IDE and then refuses to connect, with no frame ever sent.
+    assert ws.selected_subprotocol == "mcp", (
+        f"server accepted without selecting the mcp subprotocol (got {ws.selected_subprotocol!r})")
+    passed.append("handshake selects the mcp subprotocol")
+
     init = ws.rpc("initialize", {
         "protocolVersion": "2024-11-05",
         "capabilities": {},
@@ -259,15 +287,27 @@ def main():
     #     selection_changed carrying the active document's filePath must
     #     arrive without any caret movement in the IDE (requires a file to be
     #     open in the frontmost TextMate window).
+    #
+    #     It must NOT arrive inside the client's startup burst. A real client
+    #     announces itself and immediately fires its discovery requests; a seed
+    #     answered in that same instant lands while it is still starting up and
+    #     is dropped, leaving it blind about the current file until the user
+    #     happens to switch tabs. So the discovery request goes out first here,
+    #     exactly as a real client does, and its response must come back before
+    #     the seed does.
+    tools_id = ws.request("tools/list")
+    tools = ws.wait_response(tools_id)
+    assert "selection_changed" not in ws.notifications_before_response, (
+        "the seeded selection_changed preempted the client's own startup requests; "
+        "a real client is not listening yet at that point and drops it")
     note = ws.wait_notification("selection_changed")
     params = note["params"]
     assert params.get("filePath"), f"initial selection_changed lacks the active document's filePath: {params}"
     assert params["fileUrl"].startswith("file://"), params
     assert {"start", "end", "isEmpty"} <= set(params["selection"]), params
-    passed.append(f"initial selection_changed on connect (filePath={os.path.basename(params['filePath'])})")
+    passed.append(f"initial selection_changed on connect, after the startup burst (filePath={os.path.basename(params['filePath'])})")
 
     # 2. tools/list advertises exactly the context-only tool set
-    tools = ws.rpc("tools/list")
     names = {tool["name"] for tool in tools["result"]["tools"]}
     assert names == EXPECTED_TOOLS, f"tool set mismatch: {names ^ EXPECTED_TOOLS}"
     assert all("inputSchema" in tool for tool in tools["result"]["tools"])
