@@ -123,10 +123,13 @@ static NSString* const kMASPreferencesSelectedViewKey = @"MASPreferences Selecte
 		window.delegate           = self;
 		window.hidesOnDeactivate  = NO;
 		window.toolbar            = toolbar;
-		if(@available(macos 11.0, *))
-		{
-			window.toolbarStyle = NSWindowToolbarStylePreference;
-		}
+		window.toolbarStyle       = NSWindowToolbarStylePreference;
+
+		// Most panes are plain grid views, which always get the static toolbar
+		// look. The scrollable panes (AI, Advanced) would otherwise flip to the
+		// flat scrolled-to-top appearance the automatic style tracks, making the
+		// toolbar change color as those panes scroll.
+		window.titlebarSeparatorStyle = NSTitlebarSeparatorStyleLine;
 	}
 	return self;
 }
