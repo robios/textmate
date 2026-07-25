@@ -4,6 +4,49 @@
 #import <lsp/LSPManager.h>
 #import <CoreText/CoreText.h>
 
+// Copilot returns the suggestion from the start of the caret line, so its first
+// line carries the file's full indentation while the following lines carry
+// theirs. Shown verbatim that wastes most of the popup width on a margin, so
+// strip the indentation the lines have in common. Display only — the text that
+// gets inserted is always the untouched insertText.
+static NSString* DedentCodeBlock (NSString* text)
+{
+	NSArray<NSString*>* lines = [text componentsSeparatedByString:@"\n"];
+	NSCharacterSet* nonWhitespace = NSCharacterSet.whitespaceCharacterSet.invertedSet;
+
+	NSString* commonIndent = nil;
+	for(NSString* line in lines)
+	{
+		NSRange const firstNonWhitespace = [line rangeOfCharacterFromSet:nonWhitespace];
+		if(firstNonWhitespace.location == NSNotFound)
+			continue; // a blank line constrains nothing
+
+		NSString* indent = [line substringToIndex:firstNonWhitespace.location];
+		if(!commonIndent)
+		{
+			commonIndent = indent;
+		}
+		else
+		{
+			NSUInteger i = 0;
+			while(i < commonIndent.length && i < indent.length && [commonIndent characterAtIndex:i] == [indent characterAtIndex:i])
+				++i;
+			commonIndent = [commonIndent substringToIndex:i];
+		}
+
+		if(!commonIndent.length)
+			return text;
+	}
+
+	if(!commonIndent.length)
+		return text;
+
+	NSMutableArray<NSString*>* dedented = [NSMutableArray arrayWithCapacity:lines.count];
+	for(NSString* line in lines)
+		[dedented addObject:[line hasPrefix:commonIndent] ? [line substringFromIndex:commonIndent.length] : line];
+	return [dedented componentsJoinedByString:@"\n"];
+}
+
 @implementation OakTextView (Copilot)
 
 - (void)lspCopilotComplete:(id)sender
@@ -134,7 +177,7 @@
 		ci.originalItem = (NSDictionary*)item;
 
 		NSString* grammarScope = documentView ? to_ns(documentView->file_type()) : nil;
-		ci.documentation = [self syntaxHighlight:fullText withGrammar:grammarScope];
+		ci.documentation = [self syntaxHighlight:DedentCodeBlock(fullText) withGrammar:grammarScope];
 		ci.isResolved = YES;
 		[completionItems addObject:ci];
 	}

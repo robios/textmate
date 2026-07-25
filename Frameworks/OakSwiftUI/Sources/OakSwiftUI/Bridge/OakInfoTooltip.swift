@@ -56,6 +56,11 @@ private let kTabBarHeight: CGFloat = 32
 		let contentHeight = min(height + tabBar, kMaxContentHeight + tabBar)
 
 		popover.contentSize = NSSize(width: contentWidth, height: contentHeight)
+		// The tooltip body is syntax-highlighted with the editor theme, so the
+		// popover chrome has to follow the theme rather than the system
+		// appearance — otherwise a dark theme draws light text on a light
+		// popover.
+		popover.appearance = theme.appearance
 		popover.contentViewController = hostingController
 
 		if popover.isShown {

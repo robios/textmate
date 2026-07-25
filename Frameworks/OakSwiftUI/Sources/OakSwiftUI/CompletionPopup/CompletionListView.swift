@@ -3,6 +3,7 @@ import SwiftUI
 struct CompletionListView: View {
 	@ObservedObject var viewModel: CompletionViewModel
 	let showDocPanel: Bool
+	let docPanelWidth: CGFloat
 	@EnvironmentObject var theme: OakThemeEnvironment
 
 	private var isVerticalDocLayout: Bool {
@@ -33,7 +34,13 @@ struct CompletionListView: View {
 				}
 			}
 		}
-		.background(Color(nsColor: theme.backgroundColor).opacity(0.85))
+		// The stock popup material, so the panel reads as part of the system
+		// rather than as a rectangle of theme color pasted over the editor. The
+		// panel's appearance is pinned to the theme's brightness, so the
+		// material resolves on the same side of light/dark as the syntax colors
+		// drawn on it. hudWindow rather than menu: the menu material transmits
+		// so little in dark mode that it comes out flat.
+		.background(VisualEffectBackground(material: .hudWindow))
 		.clipShape(RoundedRectangle(cornerRadius: 6))
 	}
 
@@ -69,11 +76,11 @@ struct CompletionListView: View {
 	private var docPanel: some View {
 		Group {
 			if let docs = viewModel.resolvedDocumentation, docs.length > 0 {
-				DocDetailView(documentation: docs, isVerticalLayout: isVerticalDocLayout)
+				DocDetailView(documentation: docs, isVerticalLayout: isVerticalDocLayout, width: docPanelWidth)
 					.transition(.opacity)
 			} else if !isVerticalDocLayout {
 				Color.clear
-					.frame(width: 260)
+					.frame(width: docPanelWidth)
 			}
 		}
 		.animation(.easeIn(duration: 0.1), value: viewModel.resolvedDocumentation != nil)

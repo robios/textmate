@@ -237,15 +237,72 @@
 
 // MARK: - Syntax Highlighting
 
+// TextKit drops the leading whitespace of a line that does not fit the width it
+// is laid out in, which flattens indented code onto the left margin in the
+// narrow hover and completion panels. Carry the indentation as a paragraph
+// indent instead: it survives wrapping, and continuation lines then line up
+// under the code rather than under the margin.
+static void ApplyCodeIndentation (NSMutableAttributedString* styled, NSFont* font, size_t tabSize)
+{
+	if(!styled.length)
+		return;
+
+	if(tabSize == 0)
+		tabSize = 4;
+
+	CGFloat const spaceWidth = [@" " sizeWithAttributes:@{ NSFontAttributeName: font }].width;
+	NSString* str = [styled.string copy];
+
+	std::vector<NSRange> lineRanges;
+	for(NSUInteger index = 0; index < str.length; )
+	{
+		NSRange const lineRange = [str lineRangeForRange:NSMakeRange(index, 0)];
+		lineRanges.push_back(lineRange);
+		index = NSMaxRange(lineRange);
+	}
+
+	// Back-to-front: deleting a line's indentation must not shift the ranges
+	// that have not been processed yet.
+	for(auto it = lineRanges.rbegin(); it != lineRanges.rend(); ++it)
+	{
+		NSUInteger whitespaceLength = 0;
+		CGFloat columns = 0;
+		while(whitespaceLength < it->length)
+		{
+			unichar const ch = [str characterAtIndex:it->location + whitespaceLength];
+			if(ch == ' ')
+				columns += 1;
+			else if(ch == '\t')
+				columns = (floor(columns / tabSize) + 1) * tabSize;
+			else
+				break;
+			++whitespaceLength;
+		}
+
+		NSMutableParagraphStyle* paragraphStyle = [NSMutableParagraphStyle new];
+		paragraphStyle.lineBreakMode       = NSLineBreakByWordWrapping;
+		paragraphStyle.firstLineHeadIndent  = columns * spaceWidth;
+		paragraphStyle.headIndent           = columns * spaceWidth;
+
+		if(whitespaceLength)
+			[styled deleteCharactersInRange:NSMakeRange(it->location, whitespaceLength)];
+		[styled addAttribute:NSParagraphStyleAttributeName value:paragraphStyle range:NSMakeRange(it->location, it->length - whitespaceLength)];
+	}
+}
+
 - (NSMutableAttributedString*)syntaxHighlight:(NSString*)code withGrammar:(NSString*)grammarScope
 {
+	NSFont* baseFont = [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightMedium];
+
 	if(!grammarScope || code.length == 0)
 	{
 		NSDictionary* attrs = @{
-			NSFontAttributeName: [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightMedium],
+			NSFontAttributeName: baseFont,
 			NSForegroundColorAttributeName: [NSColor labelColor]
 		};
-		return [[NSMutableAttributedString alloc] initWithString:code ?: @"" attributes:attrs];
+		NSMutableAttributedString* plain = [[NSMutableAttributedString alloc] initWithString:code ?: @"" attributes:attrs];
+		ApplyCodeIndentation(plain, baseFont, self.tabSize);
+		return plain;
 	}
 
 	parse::grammar_ptr grammar;
@@ -265,7 +322,7 @@
 	NSUInteger prefixLen = (parseCode != code) ? phpPrefix.length : 0;
 
 	NSDictionary* baseAttrs = @{
-		NSFontAttributeName: [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightMedium],
+		NSFontAttributeName: baseFont,
 		NSForegroundColorAttributeName: theme.foregroundColor ?: [NSColor labelColor]
 	};
 	NSMutableAttributedString* styled = [[NSMutableAttributedString alloc] initWithString:parseCode attributes:baseAttrs];
@@ -313,6 +370,8 @@
 
 	if(prefixLen > 0)
 		[styled deleteCharactersInRange:NSMakeRange(0, prefixLen)];
+
+	ApplyCodeIndentation(styled, baseFont, self.tabSize);
 
 	return styled;
 }

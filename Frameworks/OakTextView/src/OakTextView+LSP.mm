@@ -36,17 +36,40 @@ static NSDictionary<NSString*, NSArray<NSDictionary*>*>* editsFromWorkspaceEdit 
 @implementation OakTextView (LSP)
 
 // R4: Unified lazy accessor for the shared theme environment
+//
+// The values are refreshed on every access rather than only at creation: the
+// environment outlives theme and font changes, and every panel that uses it
+// asks for it again right before it is shown.
+//
+// Colors matter as much as the font here. The panels render code that is
+// syntax-highlighted with the *editor theme*, so their chrome has to match the
+// theme, not the system appearance — a dark theme under a light system
+// appearance otherwise puts light-on-white text in the popup.
 - (OakThemeEnvironment*)lspTheme
 {
 	if(!_lspTheme)
-	{
 		_lspTheme = [[OakThemeEnvironment alloc] init];
-		NSFont* f = self.font ?: [NSFont userFixedPitchFontOfSize:12];
-		[_lspTheme applyTheme:@{
-			@"fontName": f.fontName,
-			@"fontSize": @(f.pointSize),
-		}];
+
+	NSFont* f = self.font ?: [NSFont userFixedPitchFontOfSize:12];
+	NSMutableDictionary* values = [NSMutableDictionary dictionaryWithDictionary:@{
+		@"fontName": f.fontName,
+		@"fontSize": @(f.pointSize),
+	}];
+
+	if(theme_ptr const& theme = self.theme)
+	{
+		std::string const fileType = to_s(self.document.fileType ?: @"");
+		if(CGColorRef background = theme->background(fileType.empty() ? NULL_STR : fileType))
+		{
+			// A transparent theme background would let the editor show through
+			// the popup; the popup needs to be readable on its own.
+			values[@"backgroundColor"] = [[NSColor colorWithCGColor:background] colorWithAlphaComponent:1];
+		}
+		if(CGColorRef foreground = theme->foreground())
+			values[@"foregroundColor"] = [NSColor colorWithCGColor:foreground];
 	}
+
+	[_lspTheme applyTheme:values];
 	return _lspTheme;
 }
 

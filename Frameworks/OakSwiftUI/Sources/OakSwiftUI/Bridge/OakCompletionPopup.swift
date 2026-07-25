@@ -10,9 +10,14 @@ import Combine
 	private var viewModel: CompletionViewModel?
 	private let theme: OakThemeEnvironment
 	private static let docPanelWidth: CGFloat = 262
+	/// Multi-line items (Copilot suggestions) are whole blocks of code; the
+	/// narrow default wraps almost every line of real, indented source.
+	private static let multilineDocPanelWidth: CGFloat = 460
+	private static let docPanelPadding: CGFloat = 20
 	private static let verticalDocHeight: CGFloat = 200
 	private var cancellables = Set<AnyCancellable>()
 	private var listHeight: CGFloat = 0
+	private var docPanelWidth: CGFloat = OakCompletionPopup.docPanelWidth
 
 	@objc public init(theme: OakThemeEnvironment) {
 		self.theme = theme
@@ -38,6 +43,7 @@ import Combine
 
 		let rowHeight = max(theme.fontSize * 1.8, 22)
 		let hasMultiline = items.contains { $0.multiline }
+		self.docPanelWidth = hasMultiline ? Self.multilineDocPanelWidth : Self.docPanelWidth
 		let maxVisible = hasMultiline ? 6 : 12
 		let computedListHeight = computeListHeight(items: items, rowHeight: rowHeight, maxVisible: maxVisible)
 		self.listHeight = computedListHeight
@@ -53,7 +59,7 @@ import Combine
 
 		var width = listWidth
 		if supportsResolve {
-			let horizontalWidth = listWidth + Self.docPanelWidth
+			let horizontalWidth = listWidth + docPanelWidth
 			if horizontalWidth <= screen.maxX - screenPoint.x {
 				vm.docPanelPosition = .right
 				width = horizontalWidth
@@ -75,7 +81,7 @@ import Combine
 			origin.y = screenPoint.y + 20
 		}
 
-		let listView = CompletionListView(viewModel: vm, showDocPanel: supportsResolve)
+		let listView = CompletionListView(viewModel: vm, showDocPanel: supportsResolve, docPanelWidth: docPanelWidth)
 			.environmentObject(theme)
 		let hostingView = NSHostingView(rootView: listView)
 
@@ -89,6 +95,11 @@ import Combine
 		panel.isOpaque = false
 		panel.backgroundColor = .clear
 		panel.hasShadow = true
+		// Semantic colors inside the panel (row labels, dividers, selection
+		// text) resolve against the appearance they are drawn in. The panel is
+		// painted with the editor theme background, so pin the appearance to
+		// the theme instead of inheriting the system one.
+		panel.appearance = theme.appearance
 		panel.contentView = hostingView
 
 		panel.orderFront(nil)
@@ -174,7 +185,7 @@ import Combine
 		}
 
 		let maxScreenHeight = (NSScreen.main?.visibleFrame.height ?? 800) * 0.4
-		let docWidth = Self.docPanelWidth - 20
+		let docWidth = docPanelWidth - Self.docPanelPadding
 		let boundingRect = docs.boundingRect(
 			with: NSSize(width: docWidth, height: .greatestFiniteMagnitude),
 			options: [.usesLineFragmentOrigin, .usesFontLeading]
