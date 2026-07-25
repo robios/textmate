@@ -21,7 +21,7 @@ NSString* const kUserDefaultsDisableBundleUpdatesKey       = @"disableBundleUpda
 NSString* const kUserDefaultsLastBundleUpdateCheckKey      = @"lastBundleUpdateCheck";
 NSString* const kUserDefaultsBundleUpdateFrequencyKey      = @"bundleUpdateFrequency";
 
-static NSTimeInterval const kDefaultPollInterval = 3*60*60;
+static NSTimeInterval const kDefaultPollInterval = 24*60*60;
 static char const* kBundleAttributeUpdated = "org.textmate.bundle.updated";
 
 static NSString* SafeBasename (NSString* name)
