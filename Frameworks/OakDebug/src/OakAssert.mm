@@ -121,6 +121,8 @@ void OakPrintBadAssertion (char const* lhs, char const* op, char const* rhs, std
 	if([[exception name] isEqualToString:@"FSExecutionErrorException"])
 		return NO;
 	os_log_error(OS_LOG_DEFAULT, "%{public}@: %{public}@\n", exception.name, exception.reason);
+	if([exception.name isEqualToString:NSGenericException] && [exception.reason hasPrefix:@"layout constraints are not satisfiable"])
+		return YES; // AppKit raises this while breaking an unsatisfiable constraint (e.g. inside NSFontPanel) and recovers on its own
 	abort();
 	return YES;
 }
