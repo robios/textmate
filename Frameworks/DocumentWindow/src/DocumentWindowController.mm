@@ -126,7 +126,7 @@ static void show_command_error (std::string const& message, oak::uuid_t const& u
 
 @property (nonatomic) NSString*                   documentPath;
 
-@property (nonatomic) NSArray<Bundle*>*           bundlesAlreadySuggested;
+@property (nonatomic) NSArray*                    bundlesAlreadySuggested; // Bundle or BundleCandidate
 
 @property (nonatomic, readwrite) NSArray<OakDocument*>* documents;
 @property (nonatomic, readwrite) OakDocument*           selectedDocument;
@@ -1147,11 +1147,35 @@ static NSArray* const kObservedKeyPaths = @[ @"arrayController.arrangedObjects.p
 				if(NSArray* excludedGrammars = [NSUserDefaults.standardUserDefaults stringArrayForKey:kUserDefaultsGrammarsToNeverSuggestKey])
 					grammars = [grammars filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"NOT (identifier.UUIDString IN %@)", excludedGrammars]];
 				if(_bundlesAlreadySuggested)
-					grammars = [grammars filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"NOT (bundle IN %@)", _bundlesAlreadySuggested]];
+					grammars = [grammars filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"NOT (source IN %@)", _bundlesAlreadySuggested]];
 
-				if([grammars count] && can_reach_host([[[NSURL URLWithString:@(REST_API)] host] UTF8String]))
+				// Each grammar is judged by the host it would actually come
+				// from: a tap bundle lives on github.com, and whether the signed
+				// index is reachable says nothing about it — or the other way
+				// round, which is why this is not one gate for the whole list.
+				// Asked once per host, and only for a host some grammar needs
+				__block NSInteger gitHubIsReachable = -1, signedHostIsReachable = -1;
+				grammars = [grammars filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(BundleGrammar* grammar, NSDictionary*){
+					if(grammar.candidate)
+					{
+						if(gitHubIsReachable == -1)
+							gitHubIsReachable = can_reach_host("github.com") ? 1 : 0;
+						return gitHubIsReachable == 1;
+					}
+
+					if(signedHostIsReachable == -1)
+						signedHostIsReachable = can_reach_host([[[NSURL URLWithString:@(REST_API)] host] UTF8String]) ? 1 : 0;
+					return signedHostIsReachable == 1;
+				}]];
+
+				if([grammars count])
 				{
-					self.bundlesAlreadySuggested = [(_bundlesAlreadySuggested ?: @[ ]) arrayByAddingObject:[grammars firstObject].bundle];
+					// This is also what keeps the suggested grammar's source
+					// alive while the popup is up: a grammar holds its source
+					// weakly, and a catalogue refresh replaces every candidate
+					// object it published. The popup only ever offers the first
+					// grammar, which is the one whose source is retained here.
+					self.bundlesAlreadySuggested = [(_bundlesAlreadySuggested ?: @[ ]) arrayByAddingObject:[grammars firstObject].source];
 
 					SelectGrammarViewController* installer = [[SelectGrammarViewController alloc] init];
 					installer.documentDisplayName = document.path || document.customName ? document.displayName : nil;
@@ -1162,7 +1186,7 @@ static NSArray* const kObservedKeyPaths = @[ @"arrayController.arrangedObjects.p
 					}];
 
 					[installer showGrammars:grammars forView:_documentView completionHandler:^(SelectGrammarResponse response, BundleGrammar* grammar){
-						if(response == SelectGrammarResponseInstall && grammar.bundle.isInstalled)
+						if(response == SelectGrammarResponseInstall && grammar.isInstalled)
 						{
 							for(OakDocument* doc in _documents)
 							{

@@ -13,6 +13,7 @@
 #import <OakAppKit/NSAlert Additions.h>
 #import <TMFileReference/TMFileReference.h>
 #import <BundlesManager/BundlesManager.h>
+#import <BundlesManager/BundleSubscriptionManager.h>
 #import <authorization/constants.h>
 #import <cf/run_loop.h>
 #import <ns/ns.h>
@@ -1247,9 +1248,18 @@ static void* kDocumentEditedObserverContext = &kDocumentEditedObserverContext;
 	std::string const firstLine = _buffer ? _buffer->substr(_buffer->begin(0), std::min<size_t>(_buffer->eol(0), 2048)) : NULL_STR;
 	std::string const path      = to_s(_virtualPath ?: _path);
 
+	NSMutableArray<NSArray<BundleGrammar*>*>* grammarsBySource = [NSMutableArray array];
 	for(Bundle* bundle in BundlesManager.sharedInstance.bundles)
+		[grammarsBySource addObject:bundle.grammars ?: @[]];
+
+	// A tap that publishes grammars takes part in the same prompt; one that does
+	// not simply never appears in it.
+	for(BundleCandidate* candidate in BundleSubscriptionManager.sharedInstance.candidates)
+		[grammarsBySource addObject:candidate.bundleGrammars];
+
+	for(NSArray<BundleGrammar*>* grammars in grammarsBySource)
 	{
-		for(BundleGrammar* grammar in bundle.grammars)
+		for(BundleGrammar* grammar in grammars)
 		{
 			if(firstLine != NULL_STR && grammar.firstLineMatch && regexp::search(to_s(grammar.firstLineMatch), firstLine))
 			{

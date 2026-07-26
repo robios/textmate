@@ -2,6 +2,7 @@
 #import <OakTextView/OakDocumentView.h>
 #import <OakAppKit/OakUIConstructionFunctions.h>
 #import <BundlesManager/BundlesManager.h>
+#import <BundlesManager/BundleSubscriptionManager.h>
 #import <ns/ns.h>
 
 @interface SelectGrammarViewController ()
@@ -45,9 +46,9 @@ static NSButton* OakSmallButton (NSString* title, SEL action, id target, NSInteg
 - (NSString*)labelString
 {
 	if(_grammar && _documentDisplayName)
-		return [NSString stringWithFormat:@"Would you like to install the “%@” bundle? This improves support for documents like “%@”.", _grammar.bundle.name, _documentDisplayName];
+		return [NSString stringWithFormat:@"Would you like to install the “%@” bundle? This improves support for documents like “%@”.", _grammar.sourceName, _documentDisplayName];
 	else if(_grammar)
-		return [NSString stringWithFormat:@"Would you like to install the “%@” bundle? This improves support for this document.", _grammar.bundle.name];
+		return [NSString stringWithFormat:@"Would you like to install the “%@” bundle? This improves support for this document.", _grammar.sourceName];
 	else
 		return @"Would you like to install additional support for this document?";
 }
@@ -124,20 +125,48 @@ static NSButton* OakSmallButton (NSString* title, SEL action, id target, NSInteg
 	SelectGrammarResponse tag = [sender respondsToSelector:@selector(tag)] ? (SelectGrammarResponse)[sender tag] : SelectGrammarResponseNotNow;
 	if(tag == SelectGrammarResponseInstall)
 	{
-		Bundle* bundle = _grammar.bundle;
-
 		_installButton.hidden = YES;
 		_notNowButton.hidden  = YES;
 		_neverButton.hidden   = YES;
 
-		_label.stringValue = [NSString stringWithFormat:@"Installing ‘%@’…", bundle.name];
+		_label.stringValue = [NSString stringWithFormat:@"Installing ‘%@’…", _grammar.sourceName];
 		[_progressIndicator startAnimation:self];
 
-		[BundlesManager.sharedInstance installBundles:@[ bundle ] completionHandler:^(NSArray<Bundle*>* bundles){
+		void(^didInstall)(void) = ^{
 			[_progressIndicator stopAnimation:self];
 			_callback(tag, _grammar);
 			[self dismiss];
-		}];
+		};
+
+		// An install that failed and a popup that vanishes look exactly like an
+		// install that worked. Some of these failures are certain rather than
+		// unlucky — a candidate colliding with a bundle the user already has is
+		// always refused — so the popup stays up long enough to say so.
+		void(^didFail)(NSError*) = ^(NSError* error){
+			[_progressIndicator stopAnimation:self];
+			_label.stringValue    = error.localizedDescription ?: [NSString stringWithFormat:@"Failed to install ‘%@’.", _grammar.sourceName];
+			_notNowButton.title   = @"OK";
+			_notNowButton.hidden  = NO;
+		};
+
+		// A grammar offered by a tap is installed through the subscription path;
+		// it has no signed archive to download.
+		if(BundleCandidate* candidate = _grammar.candidate)
+		{
+			[BundleSubscriptionManager.sharedInstance installCandidate:candidate completionHandler:^(BundleSubscription* subscription, NSError* error){
+				if(!error)
+					return didInstall();
+
+				os_log_error(OS_LOG_DEFAULT, "Failed to install %{public}@: %{public}@", candidate.name, error.localizedDescription);
+				didFail(error);
+			}];
+		}
+		else
+		{
+			[BundlesManager.sharedInstance installBundles:@[ _grammar.bundle ] completionHandler:^(NSArray<Bundle*>* bundles){
+				didInstall();
+			}];
+		}
 	}
 	else
 	{
