@@ -1,4 +1,5 @@
 @class BundleGrammar;
+@class BundleCandidate;
 
 @interface Bundle : NSObject
 - (instancetype)initWithIdentifier:(NSUUID*)anIdentifier;
@@ -26,15 +27,27 @@
 @property (nonatomic, getter = isDependency) BOOL      dependency; // Another bundle depends on us
 
 // Generated
+@property (nonatomic, readonly)                        NSString* textSummary; // ‘summary’ with its markup and entities resolved
 @property (nonatomic, readonly)                        BOOL hasUpdate;
 @property (nonatomic, getter = isCompatible, readonly) BOOL compatible; // Works with current version of TextMate
 @end
 
 @interface BundleGrammar : NSObject
-@property (nonatomic, weak) Bundle*       bundle;
+@property (nonatomic, weak) Bundle*          bundle;
+// Set instead of ‘bundle’ for a grammar a tap offers. Weak like ‘bundle’, and
+// for the same reason — the candidate owns the grammar — so whoever holds a
+// grammar past the moment it was asked for has to hold its source too: a
+// catalogue refresh replaces every candidate object it published.
+@property (nonatomic, weak) BundleCandidate* candidate;
 @property (nonatomic) NSUUID*             identifier;
 @property (nonatomic) NSString*           name;
 @property (nonatomic) NSString*           fileType;       // E.g. ‘source.ruby’
 @property (nonatomic) NSArray<NSString*>* filePatterns;   // Array of extensions or file globs
 @property (nonatomic) NSString*           firstLineMatch; // E.g. ‘^#!/.*\bruby’
+
+// Whatever offers this grammar, which is what callers de-duplicate on: two
+// grammars from one source should not produce two suggestions.
+@property (nonatomic, readonly) id   source;
+@property (nonatomic, readonly) NSString* sourceName;
+@property (nonatomic, readonly, getter = isInstalled) BOOL installed;
 @end

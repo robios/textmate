@@ -1,5 +1,6 @@
 #import "Bundle.h"
 #import "BundlesManager.h"
+#import "BundleSubscriptionManager.h"
 #import <OakFoundation/OakCompareVersionStrings.h>
 #import <ns/ns.h>
 #import <text/decode.h>
@@ -56,6 +57,23 @@
 @end
 
 @implementation BundleGrammar
+- (id)source
+{
+	return _bundle ?: (id)_candidate;
+}
+
+- (NSString*)sourceName
+{
+	return _bundle ? _bundle.name : _candidate.name;
+}
+
+- (BOOL)isInstalled
+{
+	if(_bundle)
+		return _bundle.isInstalled;
+	return _candidate && [BundleSubscriptionManager.sharedInstance subscriptionWithIdentifier:_candidate.identifier] != nil;
+}
+
 - (NSString*)description
 {
 	return [NSString stringWithFormat:@"<%@: %@ (%@)>", [self class], self.name, self.fileType];

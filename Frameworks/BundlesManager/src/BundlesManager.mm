@@ -1,5 +1,6 @@
 #import "BundlesManager.h"
 #import <bundles/load.h>
+#import "BundleSubscriptionManager.h"
 #import "InstallBundleItems.h"
 #import <OakAppKit/NSAlert Additions.h>
 #import <OakFoundation/OakFoundation.h>
@@ -103,13 +104,29 @@ static NSString* SafeBasename (NSString* name)
 		_updateBundleIndexScheduler.repeats  = YES;
 		[_updateBundleIndexScheduler scheduleWithBlock:^(NSBackgroundActivityCompletionHandler completionHandler){
 			os_activity_initiate("Update bundle index", OS_ACTIVITY_FLAG_DEFAULT, ^(){
-				[self tryUpdateBundleIndexAndCallback:^(BOOL wasUpdated){
-					os_log(OS_LOG_DEFAULT, "Newer bundle index retrieved: %{public}s", wasUpdated ? "YES" : "NO");
+				[self refreshBundlesWithCompletionHandler:^{
 					completionHandler(NSBackgroundActivityResultFinished);
 				}];
 			});
 		}];
 	}
+}
+
+// One scheduler, two independent paths. Subscription polling must not sit
+// inside the ‘wasUpdated’ branch below: the signed index is frozen and normally
+// answers 304, which would mean subscriptions were never polled at all.
+- (void)refreshBundlesWithCompletionHandler:(void(^)(void))completionHandler
+{
+	[self tryUpdateBundleIndexAndCallback:^(BOOL wasUpdated){
+		os_log(OS_LOG_DEFAULT, "Newer bundle index retrieved: %{public}s", wasUpdated ? "YES" : "NO");
+		// The signed path reports 304 and errors straight from the session queue
+		dispatch_async(dispatch_get_main_queue(), ^{
+			[BundleSubscriptionManager.sharedInstance pollSubscriptionsWithCompletionHandler:^{
+				if(completionHandler)
+					completionHandler();
+			}];
+		});
+	}];
 }
 
 - (void)tryUpdateBundleIndexAndCallback:(void(^)(BOOL wasUpdated))completionHandler
@@ -288,6 +305,28 @@ static NSString* SafeBasename (NSString* name)
 		callback(bundles);
 	});
 	return progress;
+}
+
+- (Bundle*)bundleWithIdentifier:(NSUUID*)anIdentifier
+{
+	for(Bundle* bundle in self.bundles)
+	{
+		if([bundle.identifier isEqual:anIdentifier])
+			return bundle;
+	}
+	return nil;
+}
+
+- (void)markBundleUninstalled:(Bundle*)bundle
+{
+	if(NSString* path = bundle.path)
+		[self erasePath:path];
+
+	bundle.installed   = NO;
+	bundle.path        = nil;
+	bundle.lastUpdated = nil;
+
+	[self saveLocalIndex];
 }
 
 - (void)uninstallBundle:(Bundle*)bundle
@@ -514,6 +553,10 @@ namespace
 {
 	// LEGACY locations used by 2.0-beta.12.22 and earlier
 	[self moveAvianBundles];
+
+	// Before the first index is built, so that an interrupted replacement is
+	// resolved to one complete source rather than indexed mid-transaction
+	[BundleSubscriptionManager.sharedInstance loadRegistry];
 
 	for(auto path : bundles::locations())
 		bundlesPaths.push_back(path::join(path, "Bundles"));
