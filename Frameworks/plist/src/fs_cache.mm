@@ -303,7 +303,7 @@ namespace plist
 	// = Private Member Functions =
 	// ============================
 
-	cache_t::entry_t& cache_t::resolved (std::string const& path, std::string const& globString)
+	cache_t::entry_t& cache_t::resolved (std::string const& path, std::string const& globString, size_t depth)
 	{
 		auto it = _cache.find(path);
 		if(it == _cache.end())
@@ -343,7 +343,22 @@ namespace plist
 			it = _cache.emplace(path, entry).first;
 			_dirty = true;
 		}
-		return it->second.is_link() ? resolved(it->second.resolved(), globString) : it->second;
+
+		if(!it->second.is_link())
+			return it->second;
+
+		// A link that leads back to itself is one mistyped ‘ln -s’ away, and
+		// following it recurses until the stack is gone — which for the bundle
+		// index means the crash happens at launch, every launch. Beyond the
+		// ceiling the chain is left as the link it is: no content, no entries,
+		// so whatever it pointed at is simply not there.
+		if(depth == kMaxSymlinkDepth)
+		{
+			os_log_error(OS_LOG_DEFAULT, "Not following ‘%{public}s’: more than %zu links deep, so the chain does not end.", path.c_str(), kMaxSymlinkDepth);
+			return it->second;
+		}
+
+		return resolved(it->second.resolved(), globString, depth + 1);
 	}
 
 	void cache_t::update_entries (entry_t& entry, std::string const& globString)

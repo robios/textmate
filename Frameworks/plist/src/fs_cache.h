@@ -31,6 +31,12 @@ namespace plist
 			return copy_links(_cache.find(path), out);
 		}
 
+		// How many links we follow before deciding that the chain does not end.
+		// POSIX gives symlink resolution the same kind of ceiling (SYMLOOP_MAX,
+		// 32 on this platform) because the alternative is looping until
+		// something breaks — and here that something is the stack.
+		static size_t const kMaxSymlinkDepth = 32;
+
 		void set_content_filter (plist::dictionary_t (*f)(plist::dictionary_t const&)) { _prune_dictionary = f; }
 		plist::dictionary_t (*content_filter () const)(plist::dictionary_t const&)     { return _prune_dictionary; }
 
@@ -83,11 +89,11 @@ namespace plist
 		std::map<std::string, entry_t> _cache;
 		bool _dirty = false;
 
-		entry_t& resolved (std::string const& path, std::string const& globString = NULL_STR);
+		entry_t& resolved (std::string const& path, std::string const& globString = NULL_STR, size_t depth = 0);
 		static void update_entries (entry_t& entry, std::string const& globString);
 
 		template <typename _InputIter, typename _OutputIter>
-		_OutputIter copy_links (_InputIter entryIter, _OutputIter out)
+		_OutputIter copy_links (_InputIter entryIter, _OutputIter out, size_t depth = 0)
 		{
 			if(entryIter == _cache.end())
 				return out;
@@ -95,19 +101,24 @@ namespace plist
 			entry_t const& entry = entryIter->second;
 			if(entry.is_link())
 			{
+				// Same ceiling as resolved(): a link that leads back to itself
+				// is watched as far as we follow it and no further.
+				if(depth == kMaxSymlinkDepth)
+					return out;
+
 				*out++ = entry.resolved();
-				out = copy_links(_cache.find(entry.resolved()), out);
+				out = copy_links(_cache.find(entry.resolved()), out, depth + 1);
 			}
 			else if(entry.is_directory())
 			{
 				for(auto path : entries(entry.path(), entry.glob_string()))
-					out = copy_links(_cache.find(path), out);
+					out = copy_links(_cache.find(path), out, depth);
 			}
 			return out;
 		}
 
 		template <typename _OutputIter>
-		_OutputIter copy_all (std::string const& path, _OutputIter out)
+		_OutputIter copy_all (std::string const& path, _OutputIter out, size_t depth = 0)
 		{
 			auto it = _cache.find(path);
 			if(it != _cache.end())
@@ -116,11 +127,14 @@ namespace plist
 				if(it->second.is_directory())
 				{
 					for(auto child : entries(it->second.path(), it->second.glob_string()))
-						out = copy_all(child, out);
+						out = copy_all(child, out, depth);
 				}
-				else if(it->second.is_link())
+				else if(it->second.is_link() && depth < kMaxSymlinkDepth)
 				{
-					out = copy_all(it->second.resolved(), out);
+					// Reachability decides what cleanup() keeps, and it walks
+					// links to get there — so a link that leads back to itself
+					// would keep it walking.
+					out = copy_all(it->second.resolved(), out, depth + 1);
 				}
 			}
 			return out;
