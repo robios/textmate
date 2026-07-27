@@ -1,6 +1,9 @@
 #import "TerminalGridView.h"
 #import "link_detect.h"
 #import <Carbon/Carbon.h> // kVK_* virtual key codes only, nothing is linked
+#include <io/path.h>
+#include <ns/ns.h>
+#include <text/format.h>
 #include <atomic>
 #include <map>
 #include <string>
@@ -213,6 +216,8 @@ struct link_span_t // one viewport row’s stretch of a ⌘-hovered file link
 	BOOL _linkClickPending;  // swallow the mouseUp of a handled ⌘-click
 	id _flagsChangedMonitor;
 	NSTrackingArea* _linkTrackingArea;
+
+	NSOperationQueue* _filePromiseQueue;
 }
 
 - (instancetype)initWithEmulator:(TerminalEmulator*)emulator
@@ -229,6 +234,8 @@ struct link_span_t // one viewport row’s stretch of a ⌘-hovered file link
 		};
 
 		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(userDefaultsDidChange:) name:NSUserDefaultsDidChangeNotification object:nil];
+
+		[self registerForDraggedTypes:[NSFilePromiseReceiver.readableDraggedTypes arrayByAddingObjectsFromArray:@[ NSPasteboardTypeFileURL, NSPasteboardTypeString ]]];
 	}
 	return self;
 }
@@ -1370,5 +1377,90 @@ static BOOL EventMatchesTerminalMenuItem (NSEvent* event, NSMenu* menu)
 	if(menuItem.action == @selector(selectAll:))
 		return YES;
 	return YES;
+}
+
+// ===============
+// = Drag & drop =
+// ===============
+
+- (NSDragOperation)dragOperationForInfo:(id <NSDraggingInfo>)info
+{
+	NSPasteboard* pboard = info.draggingPasteboard;
+	if([pboard canReadObjectForClasses:@[ [NSURL class] ] options:@{ NSPasteboardURLReadingFileURLsOnlyKey: @YES }])
+		return NSDragOperationCopy;
+	if([pboard canReadObjectForClasses:@[ [NSFilePromiseReceiver class] ] options:nil])
+		return NSDragOperationCopy;
+	if([pboard stringForType:NSPasteboardTypeString].length)
+		return NSDragOperationCopy;
+	return NSDragOperationNone;
+}
+
+- (NSDragOperation)draggingEntered:(id <NSDraggingInfo>)info
+{
+	return [self dragOperationForInfo:info];
+}
+
+- (NSDragOperation)draggingUpdated:(id <NSDraggingInfo>)info
+{
+	return [self dragOperationForInfo:info];
+}
+
+- (void)pasteDroppedPaths:(NSArray<NSString*>*)paths
+{
+	std::vector<std::string> escaped;
+	for(NSString* path in paths)
+		escaped.push_back(path::escape(to_s(path)));
+	if(!escaped.empty())
+		[self writeToPTY:[_emulator encodePaste:to_ns(text::join(escaped, " ") + " ")] snapToBottom:YES];
+}
+
+- (BOOL)performDragOperation:(id <NSDraggingInfo>)info
+{
+	NSPasteboard* pboard = info.draggingPasteboard;
+
+	NSArray<NSURL*>* fileURLs = [pboard readObjectsForClasses:@[ [NSURL class] ] options:@{ NSPasteboardURLReadingFileURLsOnlyKey: @YES }];
+	if(fileURLs.count)
+	{
+		NSMutableArray<NSString*>* paths = [NSMutableArray arrayWithCapacity:fileURLs.count];
+		for(NSURL* url in fileURLs)
+			[paths addObject:url.path];
+		[self pasteDroppedPaths:paths];
+		return YES;
+	}
+
+	// Promise-only drags (screenshot thumbnail, images from browsers): no file
+	// exists yet, so receive into a temporary directory and paste that path.
+	NSArray<NSFilePromiseReceiver*>* promises = [pboard readObjectsForClasses:@[ [NSFilePromiseReceiver class] ] options:nil];
+	if(promises.count)
+	{
+		NSString* dropDirectory = [NSTemporaryDirectory() stringByAppendingPathComponent:[@"TextMate Dropped Files/" stringByAppendingString:NSUUID.UUID.UUIDString]];
+		if(![NSFileManager.defaultManager createDirectoryAtPath:dropDirectory withIntermediateDirectories:YES attributes:nil error:nil])
+			return NO;
+
+		if(!_filePromiseQueue)
+			_filePromiseQueue = [NSOperationQueue new];
+
+		__weak TerminalGridView* weakSelf = self;
+		for(NSFilePromiseReceiver* receiver in promises)
+		{
+			[receiver receivePromisedFilesAtDestination:[NSURL fileURLWithPath:dropDirectory isDirectory:YES] options:@{ } operationQueue:_filePromiseQueue reader:^(NSURL* fileURL, NSError* error){
+				if(error)
+					return;
+				dispatch_async(dispatch_get_main_queue(), ^{
+					[weakSelf pasteDroppedPaths:@[ fileURL.path ]];
+				});
+			}];
+		}
+		return YES;
+	}
+
+	NSString* string = [pboard stringForType:NSPasteboardTypeString];
+	if(string.length)
+	{
+		[self writeToPTY:[_emulator encodePaste:string] snapToBottom:YES];
+		return YES;
+	}
+
+	return NO;
 }
 @end
