@@ -275,6 +275,12 @@ static NSArray* const kObservedKeyPaths = @[ @"arrayController.arrangedObjects.p
 	NSRect res = [self.window frame];
 	if(self.fileBrowserVisible && !self.disableFileBrowserWindowResize)
 		res.size.width -= self.fileBrowserWidth;
+	// New windows open without the terminal and Markdown preview panes; both
+	// grew this window outward, so shrink by the panes’ own hide math.
+	if(self.terminalVisible)
+		res = [self windowFrame:res adjustedForTerminalPaneVisible:NO];
+	if(self.markdownPreviewVisible)
+		res = [self windowFrame:res adjustedForMarkdownPreviewPaneVisible:NO];
 	return res;
 }
 
@@ -2437,16 +2443,16 @@ static NSArray* const kObservedKeyPaths = @[ @"arrayController.arrangedObjects.p
 
 // Like the terminal, showing the preview grows the window outward on the
 // pane’s edge (and hiding shrinks it back) instead of squeezing the editor,
-// screen space permitting.
-- (void)adjustWindowFrameForMarkdownPreviewPane:(BOOL)makeVisibleFlag
+// screen space permitting. The frame math lives in its own method because
+// new-window frames must apply the exact same shrink (see windowFrame).
+- (NSRect)windowFrame:(NSRect)windowFrame adjustedForMarkdownPreviewPaneVisible:(BOOL)makeVisibleFlag
 {
 	if(self.disableFileBrowserWindowResize || ([self.window styleMask] & NSWindowStyleMaskFullScreen) == NSWindowStyleMaskFullScreen)
-		return;
+		return windowFrame;
 
 	BOOL bottom = [self.layoutView.markdownPreviewPlacement isEqualToString:@"bottom"];
 	CGFloat delta = (bottom ? self.markdownPreviewSize.height : self.markdownPreviewSize.width) + 1;
 
-	NSRect windowFrame = self.window.frame;
 	NSRect screenFrame = [[self.window screen] visibleFrame];
 
 	if(makeVisibleFlag)
@@ -2484,7 +2490,14 @@ static NSArray* const kObservedKeyPaths = @[ @"arrayController.arrangedObjects.p
 		}
 	}
 
-	[self.window setFrame:windowFrame display:YES];
+	return windowFrame;
+}
+
+- (void)adjustWindowFrameForMarkdownPreviewPane:(BOOL)makeVisibleFlag
+{
+	NSRect windowFrame = [self windowFrame:self.window.frame adjustedForMarkdownPreviewPaneVisible:makeVisibleFlag];
+	if(!NSEqualRects(windowFrame, self.window.frame))
+		[self.window setFrame:windowFrame display:YES];
 }
 
 - (void)setMarkdownPreviewVisible:(BOOL)makeVisibleFlag
