@@ -75,6 +75,7 @@
 	NSString* const trimmed = [value stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
 	int32_t const limit = trimmed.length ? std::clamp<int>(trimmed.intValue, 0, kReviewBaseCommitLimitMax) : kReviewBaseCommitLimitDefault;
 	settings_t::set(kSettingsReviewBaseCommitLimitKey, limit);
+	[NSNotificationCenter.defaultCenter postNotificationName:kReviewBaseCommitLimitDidChangeNotification object:nil];
 }
 
 - (NSString*)grammarsToNeverSuggest

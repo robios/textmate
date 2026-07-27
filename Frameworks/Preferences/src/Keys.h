@@ -97,6 +97,13 @@ extern char const* const kSettingsReviewBaseCommitLimitKey;
 extern int32_t const kReviewBaseCommitLimitDefault;
 extern int32_t const kReviewBaseCommitLimitMax;
 
+// Posted after the preferences pane rewrites the global limit. The
+// settings system has no change notification of its own, and the diff
+// service only re-reads settings when something else (an edit, a save, a
+// repository event) makes it recompute — without this, a new limit sits
+// unread until then, which reads as "requires restart".
+extern NSString* const kReviewBaseCommitLimitDidChangeNotification;
+
 // ==============
 // = Formatters =
 // ==============

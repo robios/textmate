@@ -103,8 +103,21 @@ static size_t const kBufferDiffMaxBytes = 2 * 1024 * 1024;
 		_cachedBranch = NULL_STR;
 		_previousHead = NULL_STR;
 		_cachedRelativeSha = NULL_STR;
+
+		// The commit limit lives in the settings system, which has no change
+		// notification — the preferences pane announces its write instead.
+		// Recomputing is enough: the update samples settings afresh, and the
+		// cached-state check treats a changed limit as reason to re-run
+		// `git log` without a full repository refresh.
+		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(reviewBaseCommitLimitDidChange:) name:kReviewBaseCommitLimitDidChangeNotification object:nil];
 	}
 	return self;
+}
+
+- (void)reviewBaseCommitLimitDidChange:(NSNotification*)aNotification
+{
+	if(_document)
+		[self updateNow];
 }
 
 - (void)dealloc

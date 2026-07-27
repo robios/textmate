@@ -139,6 +139,8 @@ char const* const kSettingsReviewBaseCommitLimitKey = "reviewBaseCommitLimit";
 int32_t const kReviewBaseCommitLimitDefault = 20;
 int32_t const kReviewBaseCommitLimitMax     = 1000;
 
+NSString* const kReviewBaseCommitLimitDidChangeNotification = @"ReviewBaseCommitLimitDidChangeNotification";
+
 // ==============
 // = Formatters =
 // ==============
