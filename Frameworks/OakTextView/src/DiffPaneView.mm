@@ -1555,7 +1555,23 @@ struct diff_row_t
 			if(NSColor* color = [NSColor colorWithCGColor:styles.foreground()])
 				attrs[NSForegroundColorAttributeName] = color;
 			if(NSFont* runFont = (__bridge NSFont*)styles.font()) // theme font — bold/italic variants of the editor font
+			{
+				// Every row is pinned to the same height and the gutter
+				// assumes one metric, so a scope's own font (a Markdown
+				// heading's size, or a proportional face) cannot be honoured
+				// here — the diff reads line for line in the editor font,
+				// and only the theme's bold/italic carry over. Colour and
+				// underline still mark a heading as one.
+				NSFont* baseFont = baseAttributes[NSFontAttributeName];
+				if(baseFont)
+				{
+					NSFontDescriptorSymbolicTraits const traits = runFont.fontDescriptor.symbolicTraits & (NSFontDescriptorTraitBold | NSFontDescriptorTraitItalic);
+					runFont = baseFont;
+					if(traits)
+						runFont = [NSFont fontWithDescriptor:[baseFont.fontDescriptor fontDescriptorWithSymbolicTraits:baseFont.fontDescriptor.symbolicTraits | traits] size:baseFont.pointSize] ?: baseFont;
+				}
 				attrs[NSFontAttributeName] = runFont;
+			}
 			if(styles.underlined())
 				attrs[NSUnderlineStyleAttributeName] = @(NSUnderlineStyleSingle);
 		}
