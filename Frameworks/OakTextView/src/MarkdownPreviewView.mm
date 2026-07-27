@@ -7,6 +7,8 @@
 #import <document/OakDocument Private.h>
 #import <HTMLOutput/helpers/OakFileURLSchemeHandler.h>
 #import <buffer/buffer.h>
+#import <bundles/bundles.h>
+#import <theme/theme.h>
 #import <ns/ns.h>
 
 static CGFloat const kMarkdownPreviewMinWidth = 150;
@@ -306,6 +308,12 @@ static NSString* CSSColorString (NSColor* aColor)
 	NSTimer* _scrollSyncTimer;
 	NSUInteger _renderGeneration;
 	dispatch_queue_t _renderQueue;
+
+	// View → Markdown Preview Theme: when set, these override the editor theme
+	// colors pushed via themeBackgroundColor/themeForegroundColor.
+	NSString* _customThemeUUID;
+	NSColor* _customBackgroundColor;
+	NSColor* _customForegroundColor;
 }
 
 - (id)initWithFrame:(NSRect)aRect
@@ -313,6 +321,12 @@ static NSString* CSSColorString (NSColor* aColor)
 	if(self = [super initWithFrame:aRect])
 	{
 		_renderQueue = dispatch_queue_create("com.macromates.markdown-preview.render", DISPATCH_QUEUE_SERIAL);
+
+		// The preview theme defaults keys live app-wide (View → Markdown
+		// Preview Theme); the pane resolves them itself so the window
+		// controller only ever pushes the editor’s colors.
+		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(userDefaultsDidChange:) name:NSUserDefaultsDidChangeNotification object:nil];
+		[self updateCustomThemeColors];
 
 		// The layer background shows through the transparent web view until
 		// the shell’s first themed paint — this is what avoids the white flash.
@@ -506,6 +520,11 @@ static NSString* CSSColorString (NSColor* aColor)
 	}
 
 	[self updateHeader];
+
+	// The custom theme colors are looked up for the document’s scope — a new
+	// document may mean a new file type, so force re-resolution.
+	_customThemeUUID = nil;
+	[self updateCustomThemeColors];
 
 	if(_active)
 	{
@@ -716,6 +735,69 @@ static NSString* CSSColorString (NSColor* aColor)
 // = Theme =
 // =========
 
+// The pane may use its own theme (View → Markdown Preview Theme): when any of
+// the markdownPreview… defaults keys is set, the theme resolved from them
+// overrides the editor colors the window controller pushes. Keys that are
+// unset fall back to the editor’s counterpart, so forcing just the appearance
+// still picks a sensible theme.
+
+- (NSString*)customThemeUUID
+{
+	NSUserDefaults* defaults = NSUserDefaults.standardUserDefaults;
+	NSString* appearance = [defaults stringForKey:@"markdownPreviewThemeAppearance"];
+	NSString* lightUUID  = [defaults stringForKey:@"markdownPreviewUniversalThemeUUID"];
+	NSString* darkUUID   = [defaults stringForKey:@"markdownPreviewDarkModeThemeUUID"];
+	if(!appearance && !lightUUID && !darkUUID)
+		return nil; // follow the editor theme
+
+	appearance = appearance ?: [defaults stringForKey:@"themeAppearance"];
+	BOOL darkMode = [appearance isEqualToString:@"dark"];
+	if(!darkMode && ![appearance isEqualToString:@"light"]) // anything else is ‘auto’
+		darkMode = [[self.effectiveAppearance bestMatchFromAppearancesWithNames:@[ NSAppearanceNameAqua, NSAppearanceNameDarkAqua ]] isEqualToString:NSAppearanceNameDarkAqua];
+
+	NSString* uuid = darkMode ? darkUUID : lightUUID;
+	return uuid ?: [defaults stringForKey:darkMode ? @"darkModeThemeUUID" : @"universalThemeUUID"];
+}
+
+- (void)updateCustomThemeColors
+{
+	NSString* uuid = [self customThemeUUID];
+	if(uuid == _customThemeUUID || [uuid isEqualToString:_customThemeUUID])
+		return;
+	_customThemeUUID = uuid;
+
+	NSColor* background = nil;
+	NSColor* foreground = nil;
+	if(bundles::item_ptr themeItem = bundles::lookup(to_s(uuid)))
+	{
+		if(theme_ptr theme = parse_theme(themeItem))
+		{
+			std::string const scope = to_s(_document.fileType ?: @"text.html.markdown");
+			background = [NSColor colorWithCGColor:theme->background(scope)];
+			foreground = [NSColor colorWithCGColor:theme->styles_for_scope(scope).foreground()];
+		}
+	}
+	_customBackgroundColor = background;
+	_customForegroundColor = foreground;
+
+	[self applyLayerBackground];
+	[self applyHeaderColors];
+	[self applyThemeVariables];
+}
+
+- (void)userDefaultsDidChange:(NSNotification*)aNotification
+{
+	[self updateCustomThemeColors];
+}
+
+- (void)viewDidChangeEffectiveAppearance
+{
+	[self updateCustomThemeColors]; // ‘auto’ appearance resolves against effectiveAppearance
+}
+
+- (NSColor*)effectiveThemeBackgroundColor { return _customBackgroundColor ?: _themeBackgroundColor; }
+- (NSColor*)effectiveThemeForegroundColor { return _customForegroundColor ?: _themeForegroundColor; }
+
 - (void)setThemeBackgroundColor:(NSColor*)aColor
 {
 	_themeBackgroundColor = aColor;
@@ -728,8 +810,8 @@ static NSString* CSSColorString (NSColor* aColor)
 // colors the page gets as CSS variables.
 - (void)applyHeaderColors
 {
-	NSColor* background = _themeBackgroundColor ?: NSColor.textBackgroundColor;
-	NSColor* foreground = _themeForegroundColor ?: NSColor.textColor;
+	NSColor* background = self.effectiveThemeBackgroundColor ?: NSColor.textBackgroundColor;
+	NSColor* foreground = self.effectiveThemeForegroundColor ?: NSColor.textColor;
 
 	_headerView.backgroundColor              = background;
 	_headerView.separatorColor               = BlendedColor(foreground, background, 0.85);
@@ -741,7 +823,7 @@ static NSString* CSSColorString (NSColor* aColor)
 {
 	[CATransaction begin];
 	[CATransaction setDisableActions:YES];
-	self.layer.backgroundColor = (_themeBackgroundColor ?: NSColor.textBackgroundColor).CGColor;
+	self.layer.backgroundColor = (self.effectiveThemeBackgroundColor ?: NSColor.textBackgroundColor).CGColor;
 	[CATransaction commit];
 }
 
@@ -755,9 +837,9 @@ static NSString* CSSColorString (NSColor* aColor)
 - (NSString*)themeVariablesJS
 {
 	NSMutableString* js = [NSMutableString string];
-	if(NSString* background = CSSColorString(_themeBackgroundColor))
+	if(NSString* background = CSSColorString(self.effectiveThemeBackgroundColor))
 		[js appendFormat:@"document.documentElement.style.setProperty('--tm-bg', '%@');", background];
-	if(NSString* foreground = CSSColorString(_themeForegroundColor))
+	if(NSString* foreground = CSSColorString(self.effectiveThemeForegroundColor))
 		[js appendFormat:@"document.documentElement.style.setProperty('--tm-fg', '%@');", foreground];
 	return js.length ? js : nil;
 }

@@ -283,6 +283,7 @@ BOOL HasDocumentWindow (NSArray* windows)
 					}
 				},
 				{ @"Theme",                  .submenuRef = &themesMenu                },
+				{ @"Markdown Preview Theme", .submenuRef = &markdownPreviewThemesMenu },
 				{ /* -------- */ },
 				{ @"Fold Current Block",     @selector(toggleCurrentFolding:), .modifierFlags = 0, .key = NSF1FunctionKey },
 				{ @"Toggle Foldings at Level",
@@ -467,6 +468,7 @@ BOOL HasDocumentWindow (NSArray* windows)
 	NSMenu* menu = MBCreateMenu(items, [[OakMainMenu alloc] initWithTitle:@"AMainMenu"]);
 	bundlesMenu.delegate    = self;
 	themesMenu.delegate     = self;
+	markdownPreviewThemesMenu.delegate = self;
 	spellingMenu.delegate   = self;
 	wrapColumnMenu.delegate = self;
 	return menu;

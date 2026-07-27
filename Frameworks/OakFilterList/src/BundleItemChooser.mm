@@ -218,6 +218,9 @@ _OutputIter copy_menu_items (NSMenu* menu, _OutputIter out, NSArray* parentNames
 			@selector(takeThemeAppearanceFrom:),
 			@selector(takeUniversalThemeUUIDFrom:),
 			@selector(takeDarkThemeUUIDFrom:),
+			@selector(takeMarkdownPreviewThemeAppearanceFrom:),
+			@selector(takeMarkdownPreviewUniversalThemeUUIDFrom:),
+			@selector(takeMarkdownPreviewDarkThemeUUIDFrom:),
 		};
 
 		if(excludeItemsWithActions.find(item.action) != excludeItemsWithActions.end())

@@ -110,6 +110,32 @@ static NSString* NameForLocaleIdentifier (NSString* languageCode)
 	[NSUserDefaults.standardUserDefaults setObject:[sender representedObject] forKey:@"darkModeThemeUUID"];
 }
 
+// The Markdown preview follows the editor theme until any of these three keys
+// is set; “Use Editor Theme” returns to that state by clearing all of them.
+// Unset keys fall back to the editor’s counterpart, so forcing just the
+// appearance (say, light preview against a dark editor) is a single click.
+
+- (void)selectMarkdownPreviewEditorTheme:(id)sender
+{
+	for(NSString* key in @[ @"markdownPreviewThemeAppearance", @"markdownPreviewUniversalThemeUUID", @"markdownPreviewDarkModeThemeUUID" ])
+		[NSUserDefaults.standardUserDefaults removeObjectForKey:key];
+}
+
+- (void)takeMarkdownPreviewThemeAppearanceFrom:(id)sender
+{
+	[NSUserDefaults.standardUserDefaults setObject:[sender representedObject] forKey:@"markdownPreviewThemeAppearance"];
+}
+
+- (void)takeMarkdownPreviewUniversalThemeUUIDFrom:(id)sender
+{
+	[NSUserDefaults.standardUserDefaults setObject:[sender representedObject] forKey:@"markdownPreviewUniversalThemeUUID"];
+}
+
+- (void)takeMarkdownPreviewDarkThemeUUIDFrom:(id)sender
+{
+	[NSUserDefaults.standardUserDefaults setObject:[sender representedObject] forKey:@"markdownPreviewDarkModeThemeUUID"];
+}
+
 - (BOOL)validateThemeMenuItem:(NSMenuItem*)item
 {
 	if(item.action == @selector(takeThemeAppearanceFrom:))
@@ -141,10 +167,63 @@ static NSString* NameForLocaleIdentifier (NSString* languageCode)
 		item.state = [item.representedObject isEqualToString:[NSUserDefaults.standardUserDefaults stringForKey:@"universalThemeUUID"]] ? NSControlStateValueOn : NSControlStateValueOff;
 	else if(item.action == @selector(takeDarkThemeUUIDFrom:))
 		item.state = [item.representedObject isEqualToString:[NSUserDefaults.standardUserDefaults stringForKey:@"darkModeThemeUUID"]] ? NSControlStateValueOn : NSControlStateValueOff;
+	else if(item.action == @selector(selectMarkdownPreviewEditorTheme:))
+	{
+		NSUserDefaults* defaults = NSUserDefaults.standardUserDefaults;
+		BOOL custom = [defaults objectForKey:@"markdownPreviewThemeAppearance"] || [defaults objectForKey:@"markdownPreviewUniversalThemeUUID"] || [defaults objectForKey:@"markdownPreviewDarkModeThemeUUID"];
+		item.state = custom ? NSControlStateValueOff : NSControlStateValueOn;
+	}
+	else if(item.action == @selector(takeMarkdownPreviewThemeAppearanceFrom:))
+	{
+		// Checkmarks and labels show the effective value, i.e. the editor’s
+		// setting whenever the preview’s own key is unset.
+		NSUserDefaults* defaults = NSUserDefaults.standardUserDefaults;
+		NSString* effective = [defaults stringForKey:@"markdownPreviewThemeAppearance"] ?: [defaults stringForKey:@"themeAppearance"] ?: @"auto";
+		item.state = [item.representedObject isEqualToString:effective] ? NSControlStateValueOn : NSControlStateValueOff;
+
+		NSString* label;
+		NSString* previewKey, *editorKey;
+		if([item.representedObject isEqualToString:@"light"])
+		{
+			label      = @"Light Theme";
+			previewKey = @"markdownPreviewUniversalThemeUUID";
+			editorKey  = @"universalThemeUUID";
+		}
+		else if([item.representedObject isEqualToString:@"dark"])
+		{
+			label      = @"Dark Theme";
+			previewKey = @"markdownPreviewDarkModeThemeUUID";
+			editorKey  = @"darkModeThemeUUID";
+		}
+
+		if(previewKey)
+		{
+			NSString* themeUUID = [defaults stringForKey:previewKey] ?: [defaults stringForKey:editorKey];
+			if(bundles::item_ptr themeItem = bundles::lookup(to_s(themeUUID)))
+				item.title = [NSString stringWithFormat:@"%@ (%@)", label, to_ns(themeItem->name())];
+		}
+	}
+	else if(item.action == @selector(takeMarkdownPreviewUniversalThemeUUIDFrom:))
+	{
+		NSUserDefaults* defaults = NSUserDefaults.standardUserDefaults;
+		NSString* effective = [defaults stringForKey:@"markdownPreviewUniversalThemeUUID"] ?: [defaults stringForKey:@"universalThemeUUID"];
+		item.state = [item.representedObject isEqualToString:effective] ? NSControlStateValueOn : NSControlStateValueOff;
+	}
+	else if(item.action == @selector(takeMarkdownPreviewDarkThemeUUIDFrom:))
+	{
+		NSUserDefaults* defaults = NSUserDefaults.standardUserDefaults;
+		NSString* effective = [defaults stringForKey:@"markdownPreviewDarkModeThemeUUID"] ?: [defaults stringForKey:@"darkModeThemeUUID"];
+		item.state = [item.representedObject isEqualToString:effective] ? NSControlStateValueOn : NSControlStateValueOff;
+	}
 	return YES;
 }
 
-- (void)themesMenuNeedsUpdate:(NSMenu*)aMenu
+// Shared by the editor’s Theme menu and the Markdown Preview Theme menu: same
+// appearance section and light/dark theme submenus, differing only in the
+// actions (and thereby the defaults keys) they drive. The preview variant adds
+// a “Use Editor Theme” item and skips the themes’ key equivalents, which
+// belong to the editor menu alone.
+- (void)buildThemesMenu:(NSMenu*)aMenu forMarkdownPreview:(BOOL)forMarkdownPreview
 {
 	[aMenu removeAllItems];
 
@@ -165,24 +244,38 @@ static NSString* NameForLocaleIdentifier (NSString* languageCode)
 		return;
 	}
 
+	SEL const appearanceAction = forMarkdownPreview ? @selector(takeMarkdownPreviewThemeAppearanceFrom:)   : @selector(takeThemeAppearanceFrom:);
+	SEL const lightAction      = forMarkdownPreview ? @selector(takeMarkdownPreviewUniversalThemeUUIDFrom:) : @selector(takeUniversalThemeUUIDFrom:);
+	SEL const darkAction       = forMarkdownPreview ? @selector(takeMarkdownPreviewDarkThemeUUIDFrom:)      : @selector(takeDarkThemeUUIDFrom:);
+
 	NSMenu* lightMenu;
 	NSMenu* darkMenu;
 
-	MBMenu const items = {
-		{ @"Appearance",       @selector(nop:),                                                                          },
-		{ @"Light",            @selector(takeThemeAppearanceFrom:), .indent = 1, .target = self, .representedObject = @"light" },
-		{ @"Dark",             @selector(takeThemeAppearanceFrom:), .indent = 1, .target = self, .representedObject = @"dark"  },
-		{ @"Auto",             @selector(takeThemeAppearanceFrom:), .indent = 1, .target = self, .representedObject = nil      },
+	// The editor menu’s Auto stores nil (key removed); the preview’s stores an
+	// explicit "auto", since for the preview an absent key means something
+	// else — follow the editor’s appearance setting.
+	MBMenu items = {
+		{ @"Appearance",       @selector(nop:),                                                                    },
+		{ @"Light",            appearanceAction, .indent = 1, .target = self, .representedObject = @"light"        },
+		{ @"Dark",             appearanceAction, .indent = 1, .target = self, .representedObject = @"dark"         },
+		{ @"Auto",             appearanceAction, .indent = 1, .target = self, .representedObject = forMarkdownPreview ? @"auto" : nil },
 		{ /* -------- */ },
 		{ @"Theme for Light Appearance", .submenuRef = &lightMenu },
 		{ @"Theme for Dark Appearance",  .submenuRef = &darkMenu  },
 	};
+	if(forMarkdownPreview)
+	{
+		items.insert(items.begin(), {
+			{ @"Use Editor Theme", @selector(selectMarkdownPreviewEditorTheme:), .target = self },
+			{ /* -------- */ },
+		});
+	}
 	MBCreateMenu(items, aMenu);
 
 	for(NSMenu* submenu : { lightMenu, darkMenu })
 	{
 		std::string skipThemeClass = submenu == lightMenu ? "dark" : "light";
-		SEL action = submenu == lightMenu ? @selector(takeUniversalThemeUUIDFrom:) : @selector(takeDarkThemeUUIDFrom:);
+		SEL action = submenu == lightMenu ? lightAction : darkAction;
 
 		for(auto const& themeClasses : ordered)
 		{
@@ -195,11 +288,22 @@ static NSString* NameForLocaleIdentifier (NSString* languageCode)
 			for(auto const& pair : themeClasses.second)
 			{
 				NSMenuItem* menuItem = [submenu addItemWithTitle:[NSString stringWithCxxString:pair.first] action:action keyEquivalent:@""];
-				[menuItem setKeyEquivalentCxxString:key_equivalent(pair.second)];
+				if(!forMarkdownPreview)
+					[menuItem setKeyEquivalentCxxString:key_equivalent(pair.second)];
 				[menuItem setRepresentedObject:[NSString stringWithCxxString:pair.second->uuid()]];
 			}
 		}
 	}
+}
+
+- (void)themesMenuNeedsUpdate:(NSMenu*)aMenu
+{
+	[self buildThemesMenu:aMenu forMarkdownPreview:NO];
+}
+
+- (void)markdownPreviewThemesMenuNeedsUpdate:(NSMenu*)aMenu
+{
+	[self buildThemesMenu:aMenu forMarkdownPreview:YES];
 }
 
 - (void)spellingMenuNeedsUpdate:(NSMenu*)aMenu
@@ -257,6 +361,8 @@ static NSString* NameForLocaleIdentifier (NSString* languageCode)
 		[self bundlesMenuNeedsUpdate:aMenu];
 	else if(aMenu == themesMenu)
 		[self themesMenuNeedsUpdate:aMenu];
+	else if(aMenu == markdownPreviewThemesMenu)
+		[self markdownPreviewThemesMenuNeedsUpdate:aMenu];
 	else if(aMenu == spellingMenu)
 		[self spellingMenuNeedsUpdate:aMenu];
 	else if(aMenu == wrapColumnMenu)
