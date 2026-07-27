@@ -880,6 +880,17 @@ static NSString* CSSColorString (NSColor* aColor)
 
 - (void)webView:(WKWebView*)webView decidePolicyForNavigationAction:(WKNavigationAction*)navigationAction decisionHandler:(void(^)(WKNavigationActionPolicy))decisionHandler
 {
+	// The context menu’s Reload asks WebKit to re-request the current URL —
+	// which for a loadHTMLString: page is the baseURL, a tm-file directory
+	// the scheme handler answers with its not-found page. Reloading the
+	// shell is what the reader meant.
+	if(navigationAction.navigationType == WKNavigationTypeReload)
+	{
+		decisionHandler(WKNavigationActionPolicyCancel);
+		[self loadShell];
+		return;
+	}
+
 	// The shell page never navigates; clicked links open in the default
 	// browser so the preview (and its scroll position) stays put.
 	if(navigationAction.navigationType == WKNavigationTypeLinkActivated)
