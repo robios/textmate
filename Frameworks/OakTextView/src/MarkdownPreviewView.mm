@@ -247,8 +247,14 @@ static NSString* const kMarkdownPreviewShell =
 	 "pre { background: var(--code-bg); border-radius: 6px; padding: 1em; overflow-x: auto; }"
 	 "pre code { background: none; padding: 0; }"
 	 "blockquote { margin: 0; padding-left: 1em; border-left: 0.25em solid var(--border); color: var(--muted); }"
-	 "table { border-collapse: collapse; display: block; overflow-x: auto; }"
-	 "th, td { border: 1px solid var(--border); padding: 0.35em 0.8em; }"
+	 "table { display: block; width: max-content; max-width: 100%; overflow-x: auto;"
+	 "  border-collapse: collapse; margin: 1em 0; }"
+	 "th, td { padding: 0.55em 1.75em 0.55em 0; border-bottom: 1px solid var(--border); }"
+	 "th:last-child, td:last-child { padding-right: 0; }"
+	 "tbody tr:last-child td { border-bottom: none; }"
+	 "th { font-weight: 600; border-bottom-width: 2px; }"
+	 "th:not([align]) { text-align: left; }" // author CSS would override cmark’s align="…" hints, so only style unaligned headers
+	 "thead:not(:has(th:not(:empty))) { display: none; }" // an all-empty header row is GFM’s headerless-table workaround, so drop its empty band
 	 "img { max-width: 100%; }"
 	 "hr { border: none; border-top: 1px solid var(--border); }"
 	 "ul.contains-task-list { list-style: none; padding-left: 1em; }"
