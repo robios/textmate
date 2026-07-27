@@ -1,6 +1,6 @@
 #import "MarkdownPreviewView.h"
 #import "OakTextView.h"
-#import "markdown_render.h"
+#import <markdown/markdown_render.h>
 #import <WebKit/WebKit.h>
 #import <QuartzCore/QuartzCore.h>
 #import <document/OakDocument.h>

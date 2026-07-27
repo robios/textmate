@@ -15,6 +15,7 @@ TM_APP_PATH          = "${CWD/\/Contents\/Resources$//}"
 TM_MATE              = "${TM_APP_PATH}/Contents/MacOS/mate"
 MATEFLAGS            = "--no-recent"
 TM_QUERY             = "${TM_APP_PATH}/Contents/MacOS/tm_query"
+TM_MARKDOWN          = "${TM_APP_PATH}/Contents/MacOS/tm_markdown"
 TM_SCM_COMMIT_WINDOW = "${TM_APP_PATH}/Contents/MacOS/CommitWindowTool"
 
 [ attr.untitled ]

@@ -142,6 +142,7 @@ set_source_files_properties(${_about_js} PROPERTIES
 textmate_embed(TextMate mate "MacOS")
 textmate_embed(TextMate tm_query "MacOS")
 textmate_embed(TextMate tm_agent "MacOS")
+textmate_embed(TextMate tm_markdown "MacOS")
 textmate_embed(TextMate PrivilegedTool "Resources")
 
 # Embedded plugins (.tmplugin bundles from submodules)
@@ -168,6 +169,8 @@ textmate_codesign_file(TextMate "${CS_IDENTITY}"
   "$<TARGET_BUNDLE_DIR:TextMate>/Contents/MacOS/tm_query")
 textmate_codesign_file(TextMate "${CS_IDENTITY}"
   "$<TARGET_BUNDLE_DIR:TextMate>/Contents/MacOS/tm_agent")
+textmate_codesign_file(TextMate "${CS_IDENTITY}"
+  "$<TARGET_BUNDLE_DIR:TextMate>/Contents/MacOS/tm_markdown")
 textmate_codesign_file(TextMate "${CS_IDENTITY}"
   "$<TARGET_BUNDLE_DIR:TextMate>/Contents/Resources/PrivilegedTool")
 if(OakSwiftUI_LIB)

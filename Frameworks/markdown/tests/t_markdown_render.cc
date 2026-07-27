@@ -1,4 +1,4 @@
-#include <OakTextView/markdown_render.h>
+#include <markdown/markdown_render.h>
 
 void test_basic_paragraph ()
 {
@@ -12,6 +12,13 @@ void test_sourcepos_attributes ()
 	std::string const html = markdown::to_html("first\n\nsecond\n");
 	OAK_ASSERT(html.find("data-sourcepos=\"1:1-1:5\"") != std::string::npos);
 	OAK_ASSERT(html.find("data-sourcepos=\"3:1-3:6\"") != std::string::npos);
+}
+
+void test_without_sourcepos ()
+{
+	std::string const html = markdown::to_html("first\n\nsecond\n", false);
+	OAK_ASSERT(html.find("data-sourcepos") == std::string::npos);
+	OAK_ASSERT(html.find("<p>first</p>") != std::string::npos);
 }
 
 void test_gfm_table ()

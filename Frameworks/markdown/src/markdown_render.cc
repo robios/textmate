@@ -7,11 +7,11 @@
 
 namespace markdown
 {
-	std::string to_html (std::string const& markdown)
+	std::string to_html (std::string const& markdown, bool sourcePositions)
 	{
 		// UNSAFE passes raw HTML through, mirroring GitHub’s pipeline where the
 		// tagfilter extension then neuters the dangerous tags.
-		int const options = CMARK_OPT_SOURCEPOS | CMARK_OPT_UNSAFE;
+		int const options = CMARK_OPT_UNSAFE | (sourcePositions ? CMARK_OPT_SOURCEPOS : 0);
 
 		// cmark-gfm is not thread-safe here: registration mutates a global
 		// registry, and the registry hands every parser the same extension
