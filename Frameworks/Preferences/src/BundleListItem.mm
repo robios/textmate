@@ -168,6 +168,8 @@ static NSString* ShortSHA (NSString* sha)
 			return _tapName;
 		}
 		default:
+			if(_bundle.isBuiltIn)
+				return @"Built-in";
 			return _bundle.downloadURL ? @"Official" : @"Local";
 	}
 }
@@ -212,7 +214,10 @@ static NSString* ShortSHA (NSString* sha)
 	{
 		case BundleListItemKindSubscription: return _subscription.hasUpdate;
 		case BundleListItemKindCandidate:    return NO;
-		default:                             return _bundle.isInstalled && _bundle.hasUpdate && _bundle.isCompatible;
+		// A built-in bundle updates with the application, so there is nothing
+		// here to offer — and what the index says about the Managed copy
+		// describes a copy that is never loaded.
+		default:                             return !_bundle.isBuiltIn && _bundle.isInstalled && _bundle.hasUpdate && _bundle.isCompatible;
 	}
 }
 
@@ -234,7 +239,10 @@ static NSString* ShortSHA (NSString* sha)
 	{
 		case BundleListItemKindSubscription: return YES;
 		case BundleListItemKindCandidate:    return !_installedFromAnotherTap;
-		default:                             return !_bundle.isMandatory || !_bundle.isInstalled;
+		// Mandatory already fixes the checkbox on; built-in fixes it on and
+		// takes the install path away too, since the app is the only thing
+		// that puts this bundle there or removes it.
+		default:                             return !_bundle.isBuiltIn && (!_bundle.isMandatory || !_bundle.isInstalled);
 	}
 }
 

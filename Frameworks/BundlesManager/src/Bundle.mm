@@ -13,7 +13,12 @@
 
 + (NSSet*)keyPathsForValuesAffectingHasUpdate
 {
-	return [NSSet setWithObjects:@"downloadLastUpdated", @"lastUpdated", nil];
+	return [NSSet setWithObjects:@"downloadLastUpdated", @"lastUpdated", @"builtIn", nil];
+}
+
++ (NSSet*)keyPathsForValuesAffectingInstalled
+{
+	return [NSSet setWithObject:@"builtIn"];
 }
 
 + (NSSet*)keyPathsForValuesAffectingCompatible
@@ -44,8 +49,20 @@
 	return to_ns(str);
 }
 
+// A built-in bundle is installed by virtue of being inside the app: its Managed
+// copy may be absent, stale, or on its way out, and none of that says anything
+// about whether the bundle is available.
+- (BOOL)isInstalled
+{
+	return _builtIn || _installed;
+}
+
 - (BOOL)hasUpdate
 {
+	// The Managed copy’s dates describe a copy that is eclipsed and never
+	// loaded, so an update to it is not an update to what is running.
+	if(_builtIn)
+		return NO;
 	return _downloadLastUpdated && _lastUpdated && [_downloadLastUpdated laterDate:_lastUpdated] != _lastUpdated;
 }
 

@@ -20,7 +20,17 @@
 @property (nonatomic) NSArray<BundleGrammar*>*      grammars;
 @property (nonatomic) NSArray<Bundle*>*             dependencies;
 
-// From local index
+// Shipped inside the application, in Contents/SharedSupport/Bundles. Such a
+// bundle outranks anything an index or a subscription distributes for the same
+// UUID (see bundles::locations), so it is always the copy in use and the app is
+// its only updater: nothing here can install, update or remove it. It is
+// deliberately not a value read back from the local index — the identity comes
+// from what is inside the app right now.
+@property (nonatomic, getter = isBuiltIn) BOOL builtIn;
+
+// From local index. ‘installed’ is also YES for a built-in bundle regardless of
+// what the index says, while ‘path’ keeps describing the Managed copy — the
+// in-app path is never written there, so it cannot end up in the local index.
 @property (nonatomic, getter = isInstalled)  BOOL      installed;
 @property (nonatomic)                        NSString* path;
 @property (nonatomic)                        NSDate*   lastUpdated;

@@ -8,6 +8,7 @@
 #import "OakDownloadManager.h"
 #import <bundles/locations.h>
 #import <bundles/query.h> // set_index
+#import <OakSystem/application.h>
 #import <regexp/format_string.h>
 #import <text/ctype.h>
 #import <text/decode.h>
@@ -28,6 +29,48 @@ static char const* kBundleAttributeUpdated = "org.textmate.bundle.updated";
 static NSString* SafeBasename (NSString* name)
 {
 	return [[name stringByReplacingOccurrencesOfString:@"/" withString:@":"] stringByReplacingOccurrencesOfString:@"." withString:@"_"];
+}
+
+// The UUIDs of the bundles shipped inside the app. Read from the info.plist of
+// each bundle in Contents/SharedSupport/Bundles rather than inferred from the
+// local index or from a path, so that ‘built-in’ means what is in the app now
+// and cannot be faked by a copy elsewhere. The set cannot change while we run.
+static NSSet<NSUUID*>* BuiltInBundleIdentifiers ()
+{
+	static NSSet<NSUUID*>* const res = ^{
+		NSMutableSet<NSUUID*>* set = [NSMutableSet set];
+		std::string const dir = oak::application_t::path("Contents/SharedSupport/Bundles");
+		for(auto const& entry : path::entries(dir, "*.tm[Bb]undle"))
+		{
+			std::string const infoPath = path::join(path::join(dir, entry->d_name), "info.plist");
+			if(NSDictionary* info = [NSDictionary dictionaryWithContentsOfFile:to_ns(infoPath)])
+			{
+				if(NSUUID* identifier = [[NSUUID alloc] initWithUUIDString:info[@"uuid"]])
+					[set addObject:identifier];
+			}
+		}
+		return [set copy];
+	}();
+	return res;
+}
+
+// When a bundle we ship last changed, as far as anyone can tell from outside:
+// it changes when the application does. The files inside the app carry the
+// modification dates they happened to have when they were imported — 2023, for
+// Bundle Support — so their own timestamps say nothing about which version this
+// is. The executable’s date is the build, which is what a built-in bundle is
+// versioned with.
+static NSDate* BuiltInBundleDate ()
+{
+	static NSDate* const res = ^NSDate* {
+		NSURL* url = NSBundle.mainBundle.executableURL ?: NSBundle.mainBundle.bundleURL;
+
+		NSDate* date;
+		if(url && [url getResourceValue:&date forKey:NSURLContentModificationDateKey error:nil])
+			return date;
+		return nil;
+	}();
+	return res;
 }
 
 @interface BundlesManager () <OakUserDefaultsObserver>
@@ -143,7 +186,10 @@ static NSString* SafeBasename (NSString* name)
 				{
 					NSSet* oldRecommendations = [NSSet setWithArray:[self.bundles filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"isRecommended == YES"]]];
 					self.bundles = newBundles;
-					NSArray* bundlesToUpdate = [newBundles filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"(hasUpdate == YES AND isCompatible == YES) OR (isInstalled == NO AND (isMandatory == YES OR (isRecommended == YES AND isCompatible == YES AND NOT (SELF IN %@))))", oldRecommendations]];
+					// isBuiltIn is stated rather than left to follow from the
+					// other terms: a bundle we ship must not be downloaded even
+					// if it is mandatory, and that has to survive edits here.
+					NSArray* bundlesToUpdate = [newBundles filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"isBuiltIn == NO AND ((hasUpdate == YES AND isCompatible == YES) OR (isInstalled == NO AND (isMandatory == YES OR (isRecommended == YES AND isCompatible == YES AND NOT (SELF IN %@)))))", oldRecommendations]];
 					[self installBundles:bundlesToUpdate completionHandler:^(NSArray<Bundle*>* updatedBundles){
 						for(Bundle* bundle in updatedBundles)
 							os_log(OS_LOG_DEFAULT, "%{public}@ bundle updated: %{public}@", bundle.name, bundle.path);
@@ -237,6 +283,18 @@ static NSString* SafeBasename (NSString* name)
 		[queue replaceObjectsInRange:NSMakeRange(queue.count-1, 1) withObjectsFromArray:dependencies];
 	}
 
+	// After the dependency walk, so that a bundle we ship cannot be pulled in
+	// as somebody else’s requirement either. The app is its only updater;
+	// downloading over it would install a copy that is never loaded.
+	for(Bundle* bundle in [bundlesToInstall copy])
+	{
+		if(bundle.isBuiltIn)
+		{
+			os_log(OS_LOG_DEFAULT, "Refusing to install %{public}@: shipped with the application", bundle.name);
+			[bundlesToInstall removeObject:bundle];
+		}
+	}
+
 	if([bundlesToInstall count] == 0)
 		return callback(nil), nil;
 
@@ -319,6 +377,12 @@ static NSString* SafeBasename (NSString* name)
 
 - (void)markBundleUninstalled:(Bundle*)bundle
 {
+	if(bundle.isBuiltIn)
+	{
+		os_log(OS_LOG_DEFAULT, "Refusing to mark %{public}@ uninstalled: shipped with the application", bundle.name);
+		return;
+	}
+
 	if(NSString* path = bundle.path)
 		[self erasePath:path];
 
@@ -331,6 +395,12 @@ static NSString* SafeBasename (NSString* name)
 
 - (void)uninstallBundle:(Bundle*)bundle
 {
+	if(bundle.isBuiltIn)
+	{
+		os_log(OS_LOG_DEFAULT, "Refusing to uninstall %{public}@: shipped with the application", bundle.name);
+		return;
+	}
+
 	bundle.installed = NO;
 	if(!bundle.path || ![NSFileManager.defaultManager removeItemAtPath:bundle.path error:nil])
 		return;
@@ -727,6 +797,31 @@ namespace
 		{
 			bundle.installed = NO;
 			NSLog(@"Missing: ‘%@’ not on disk.", bundle.name);
+		}
+
+		// ==========================
+		// = Mark Built-in Bundles  =
+		// ==========================
+
+		// Last, so that nothing above can talk a built-in bundle out of being
+		// installed. Only rows that already exist are marked: the catalogue is
+		// what this list is made of, and a bundle we ship that no index lists
+		// has no row to change.
+		for(NSUUID* identifier in BuiltInBundleIdentifiers())
+		{
+			if(Bundle* bundle = res[identifier])
+			{
+				bundle.builtIn = YES;
+
+				// The ‘Updated’ column asks when the source last changed this
+				// bundle, and for a built-in the source is the application. The
+				// index’s date describes the Managed copy, which is eclipsed and
+				// never loaded — showing it would date the wrong copy. Only the
+				// download date is replaced: ‘lastUpdated’ still describes the
+				// Managed copy on disk, and is what reaches the local index.
+				if(NSDate* date = BuiltInBundleDate())
+					bundle.downloadLastUpdated = date;
+			}
 		}
 
 		return [[res allValues] sortedArrayUsingDescriptors:@[ [NSSortDescriptor sortDescriptorWithKey:@"name" ascending:YES selector:@selector(localizedCompare:)] ]];
