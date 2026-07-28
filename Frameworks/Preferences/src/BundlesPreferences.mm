@@ -523,7 +523,10 @@ static NSImage* AttentionToolbarImage (NSImage* base)
 		[NSSortDescriptor sortDescriptorWithKey:@"name" ascending:YES selector:@selector(localizedCompare:)],
 		[NSSortDescriptor sortDescriptorWithKey:@"installed" ascending:YES],
 		[NSSortDescriptor sortDescriptorWithKey:@"downloadLastUpdated" ascending:YES],
-		[NSSortDescriptor sortDescriptorWithKey:@"textSummary" ascending:YES selector:@selector(localizedCompare:)]
+		[NSSortDescriptor sortDescriptorWithKey:@"textSummary" ascending:YES selector:@selector(localizedCompare:)],
+		// Sorted on the same string the cell shows, so “Built-in”, “Official” and
+		// a tap’s name group by exactly what is read in the column.
+		[NSSortDescriptor sortDescriptorWithKey:@"source" ascending:YES selector:@selector(localizedCaseInsensitiveCompare:)]
 	];
 
 	NSTableColumn* installedTableColumn   = [self columnWithIdentifier:kTableColumnIdentifierInstalled   title:@""            editable:YES width:16  resizingMask:NSTableColumnNoResizing];
@@ -1192,9 +1195,13 @@ static NSImage* AttentionToolbarImage (NSImage* base)
 
 - (void)tableView:(NSTableView*)aTableView didClickTableColumn:(NSTableColumn*)aTableColumn
 {
+	if(aTableView != _bundlesTableView)
+		return;
+
 	NSDictionary* map = @{
 		kTableColumnIdentifierInstalled:   @"installed",
 		kTableColumnIdentifierBundleName:  @"name",
+		kTableColumnIdentifierSource:      @"source",
 		kTableColumnIdentifierUpdated:     @"downloadLastUpdated",
 		kTableColumnIdentifierDescription: @"textSummary"
 	};
@@ -1216,6 +1223,24 @@ static NSImage* AttentionToolbarImage (NSImage* base)
 	descriptor = i == 0 || !descriptor.ascending ? [descriptor reversedSortDescriptor] : descriptor;
 	[descriptors removeObjectAtIndex:i];
 	[descriptors insertObject:descriptor atIndex:0];
+
+	// Every other column ties in bulk — dozens of bundles share one source, and
+	// a whole install shares one date — so the name is made the second key
+	// rather than left wherever earlier clicks pushed it: within a group the
+	// rows then read alphabetically, which is the only order worth having there.
+	if(![key isEqualToString:@"name"])
+	{
+		NSUInteger nameIndex = [descriptors indexOfObjectPassingTest:^BOOL(NSSortDescriptor* candidate, NSUInteger, BOOL*){
+			return [candidate.key isEqualToString:@"name"];
+		}];
+
+		if(nameIndex != NSNotFound && nameIndex != 1)
+		{
+			NSSortDescriptor* nameDescriptor = descriptors[nameIndex];
+			[descriptors removeObjectAtIndex:nameIndex];
+			[descriptors insertObject:nameDescriptor atIndex:1];
+		}
+	}
 
 	_arrayController.sortDescriptors = descriptors;
 
