@@ -160,9 +160,12 @@ add_custom_command(TARGET TextMate POST_BUILD
     "$<TARGET_BUNDLE_DIR:TextMate>/Contents/SharedSupport/Bundles"
   COMMAND rsync -a --delete
     "${CMAKE_SOURCE_DIR}/Bundles/Claude Code.tmbundle"
+    "${CMAKE_SOURCE_DIR}/Bundles/Bundle Support.tmbundle"
     "$<TARGET_BUNDLE_DIR:TextMate>/Contents/SharedSupport/Bundles/")
 
 # Sign embedded binaries (inner-to-outer, before app signature)
+textmate_codesign_file(TextMate "${CS_IDENTITY}"
+  "$<TARGET_BUNDLE_DIR:TextMate>/Contents/SharedSupport/Bundles/Bundle Support.tmbundle/Support/shared/bin/find_app")
 textmate_codesign_file(TextMate "${CS_IDENTITY}"
   "$<TARGET_BUNDLE_DIR:TextMate>/Contents/MacOS/mate")
 textmate_codesign_file(TextMate "${CS_IDENTITY}"
