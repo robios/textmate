@@ -474,16 +474,29 @@ static NSDate* BuiltInBundleDate ()
 	_needsSaveBundlesIndex = NO;
 }
 
+// Scheduled on the main queue rather than with performSelector:afterDelay:,
+// which arms a timer on the calling thread’s run loop: a caller without a
+// running run loop loses the timer, and the guard flag then blocks every
+// future rebuild — index saves keep working while the index itself is frozen
+// until relaunch. A queued block always runs, whoever set the flag.
 - (void)setNeedsCreateBundlesIndex:(BOOL)flag
 {
 	if(_needsCreateBundlesIndex != flag && (_needsCreateBundlesIndex = flag))
-		[self performSelector:@selector(createBundlesIndex:) withObject:self afterDelay:0];
+	{
+		dispatch_async(dispatch_get_main_queue(), ^{
+			[self createBundlesIndex:self];
+		});
+	}
 }
 
 - (void)setNeedsSaveBundlesIndex:(BOOL)flag
 {
 	if(_needsSaveBundlesIndex != flag && (_needsSaveBundlesIndex = flag))
-		[self performSelector:@selector(saveBundlesIndex:) withObject:self afterDelay:5];
+	{
+		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+			[self saveBundlesIndex:self];
+		});
+	}
 }
 
 - (void)setEventId:(uint64_t)anEventId forPath:(NSString*)aPath
