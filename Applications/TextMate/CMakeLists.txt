@@ -161,6 +161,7 @@ add_custom_command(TARGET TextMate POST_BUILD
   COMMAND rsync -a --delete
     "${CMAKE_SOURCE_DIR}/Bundles/Claude Code.tmbundle"
     "${CMAKE_SOURCE_DIR}/Bundles/Bundle Support.tmbundle"
+    "${CMAKE_SOURCE_DIR}/Bundles/Source.tmbundle"
     "${CMAKE_SOURCE_DIR}/Bundles/Text.tmbundle"
     "$<TARGET_BUNDLE_DIR:TextMate>/Contents/SharedSupport/Bundles/")
 
