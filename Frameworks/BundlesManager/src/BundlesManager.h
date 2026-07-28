@@ -10,6 +10,15 @@ extern NSString* const kUserDefaultsLastBundleUpdateCheckKey;
 @property (nonatomic, readonly) NSArray<Bundle*>* bundles;
 
 - (NSProgress*)installBundles:(NSArray<Bundle*>*)someBundles completionHandler:(void(^)(NSArray<Bundle*>*))callback;
+
+// A bundle whose UUID an active subscription owns is refused by the method
+// above: Managed precedes Subscribed, so the downloaded copy would silently
+// eclipse the subscribed one — the way back to the signed bundle is Restore.
+// Restore itself is that exception: it verifies the signed download while the
+// subscription still exists, and passes the restored bundle’s UUID here to be
+// allowed to. The exception is per UUID, never blanket — the dependency walk
+// can pull in other subscribed bundles, and those stay refused.
+- (NSProgress*)installBundles:(NSArray<Bundle*>*)someBundles displacingSubscriptionsFor:(NSSet<NSUUID*>*)identifiers completionHandler:(void(^)(NSArray<Bundle*>*))callback;
 - (void)uninstallBundle:(Bundle*)aBundle;
 - (void)loadBundlesIndex;
 - (void)installBundleItemsAtPaths:(NSArray*)somePaths;

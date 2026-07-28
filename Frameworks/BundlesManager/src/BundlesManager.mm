@@ -272,6 +272,13 @@ static NSDate* BuiltInBundleDate ()
 
 - (NSProgress*)installBundles:(NSArray<Bundle*>*)someBundles completionHandler:(void(^)(NSArray<Bundle*>*))callback
 {
+	return [self installBundles:someBundles displacingSubscriptionsFor:nil completionHandler:callback];
+}
+
+// The dependency walk and the refusal policy, apart from the download so the
+// policy is testable without a network or the live registry.
+- (NSMutableSet<Bundle*>*)bundlesToInstallForBundles:(NSArray<Bundle*>*)someBundles displacingSubscriptionsFor:(NSSet<NSUUID*>*)identifiers subscriptionTest:(BOOL(^)(NSUUID*))subscriptionOwnsIdentifier
+{
 	NSMutableSet* bundlesToInstall = [NSMutableSet set];
 
 	NSMutableArray* queue = [someBundles mutableCopy];
@@ -286,6 +293,14 @@ static NSDate* BuiltInBundleDate ()
 	// After the dependency walk, so that a bundle we ship cannot be pulled in
 	// as somebody else’s requirement either. The app is its only updater;
 	// downloading over it would install a copy that is never loaded.
+	//
+	// A subscription owning the UUID is refused for the mirrored reason: the
+	// signed copy would land in Managed, ahead of Subscribed, and silently
+	// displace what the user explicitly installed — which is how a dependency
+	// on a grammar the subscription already provides used to undo a Replace on
+	// the next index update. Restore is the sanctioned way back, and the
+	// exception is per UUID — only the subscription being restored, never a
+	// subscribed dependency the walk happens to pull in.
 	for(Bundle* bundle in [bundlesToInstall copy])
 	{
 		if(bundle.isBuiltIn)
@@ -293,7 +308,21 @@ static NSDate* BuiltInBundleDate ()
 			os_log(OS_LOG_DEFAULT, "Refusing to install %{public}@: shipped with the application", bundle.name);
 			[bundlesToInstall removeObject:bundle];
 		}
+		else if(![identifiers containsObject:bundle.identifier] && subscriptionOwnsIdentifier(bundle.identifier))
+		{
+			os_log(OS_LOG_DEFAULT, "Refusing to install %{public}@: a subscription owns this bundle", bundle.name);
+			[bundlesToInstall removeObject:bundle];
+		}
 	}
+
+	return bundlesToInstall;
+}
+
+- (NSProgress*)installBundles:(NSArray<Bundle*>*)someBundles displacingSubscriptionsFor:(NSSet<NSUUID*>*)identifiers completionHandler:(void(^)(NSArray<Bundle*>*))callback
+{
+	NSMutableSet* bundlesToInstall = [self bundlesToInstallForBundles:someBundles displacingSubscriptionsFor:identifiers subscriptionTest:^BOOL(NSUUID* identifier){
+		return [BundleSubscriptionManager.sharedInstance subscriptionWithIdentifier:identifier] ? YES : NO;
+	}];
 
 	if([bundlesToInstall count] == 0)
 		return callback(nil), nil;

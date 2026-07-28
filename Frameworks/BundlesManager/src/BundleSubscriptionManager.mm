@@ -2105,8 +2105,13 @@ static void DownloadTarball (std::string const& urlString, NSString* directory, 
 
 		// Symmetric discipline: the signed archive is downloaded and its
 		// signature verified before anything is given up. While both copies
-		// exist, Managed precedence already makes the signed one active.
-		[BundlesManager.sharedInstance installBundles:@[ signedBundle ] completionHandler:^(NSArray<Bundle*>* installedBundles){
+		// exist, Managed precedence already makes the signed one active —
+		// which is the displacement installBundles: refuses on our behalf
+		// everywhere else, and the reason this call opts out of the guard.
+		// The opt-out names this one UUID: a dependency of the signed bundle
+		// that another subscription owns must stay refused, or restoring A
+		// would silently eclipse subscribed B.
+		[BundlesManager.sharedInstance installBundles:@[ signedBundle ] displacingSubscriptionsFor:[NSSet setWithObject:signedBundle.identifier] completionHandler:^(NSArray<Bundle*>* installedBundles){
 			if(!signedBundle.isInstalled)
 			{
 				// Nothing was given up, so the journal is all there is to undo
