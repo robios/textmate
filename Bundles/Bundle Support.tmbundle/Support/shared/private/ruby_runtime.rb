@@ -1,4 +1,4 @@
-# Loaded with -r by bin/ruby18 so the version gate costs no extra process.
+# Loaded with -r by bin/tm_ruby so the version gate costs no extra process.
 #
 # The shim used to guarantee ruby 1.8.7 by downloading it; it now runs whatever
 # ruby it resolved. Refusing to start is better than failing somewhere deep

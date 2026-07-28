@@ -3,7 +3,7 @@
 # here is the test for the one piece of them we wrote: the plist shim that
 # replaced Bundle Support's CoreFoundation C extension.
 #
-# --disable-gems matches how bin/ruby18 runs bundle commands, so the test sees
+# --disable-gems matches how bin/tm_ruby runs bundle commands, so the test sees
 # the same interpreter setup the shim has to work under.
 add_test(NAME plist_shim
   COMMAND /usr/bin/ruby --disable-gems "${CMAKE_CURRENT_SOURCE_DIR}/tests/t_plist_shim.rb")
@@ -14,9 +14,10 @@ add_test(NAME plist_shim
 set_tests_properties(plist_shim PROPERTIES ENVIRONMENT "TM_SUPPORT_PATH=")
 
 # bin/ruby18 is on the path of every command with a ruby18 shebang — 43 bundles'
-# worth — so the ways it can be invoked are worth pinning down.
-add_test(NAME ruby18_shim
-  COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/t_ruby18_shim.sh")
+# worth — and bin/tm_ruby behind it decides which ruby that is, so the ways they
+# can be invoked are worth pinning down.
+add_test(NAME ruby_shims
+  COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/t_ruby_shims.sh")
 
 # The file panel replaced a CocoaDialog call. $DIALOG is stubbed, so this checks
 # the option mapping and the shape of the answer without a running TextMate —
