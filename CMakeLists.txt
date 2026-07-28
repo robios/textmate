@@ -162,6 +162,9 @@ add_subdirectory(Frameworks/Terminal)
 add_subdirectory(Frameworks/DocumentWindow)
 add_subdirectory(Frameworks/CommitWindow)
 
+# === In-repo bundles (content + the plist shim's tests) ===
+add_subdirectory(Bundles)
+
 # === Applications ===
 add_subdirectory(Applications/mate)
 add_subdirectory(Applications/gtm)
