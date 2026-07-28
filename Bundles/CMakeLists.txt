@@ -14,8 +14,8 @@ add_test(NAME plist_shim
 set_tests_properties(plist_shim PROPERTIES ENVIRONMENT "TM_SUPPORT_PATH=")
 
 # bin/ruby18 is on the path of every command with a ruby18 shebang — 43 bundles'
-# worth — and bin/tm_ruby behind it decides which ruby that is, so the ways they
-# can be invoked are worth pinning down.
+# worth — and it, bin/ruby20 and bin/tm_ruby behind them decide which ruby that
+# is, so the ways they can be invoked are worth pinning down.
 add_test(NAME ruby_shims
   COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/t_ruby_shims.sh")
 

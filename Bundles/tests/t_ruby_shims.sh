@@ -1,11 +1,10 @@
 #!/bin/bash
 #
 # Bundle Support's bin/tm_ruby decides which ruby every bundle item runs under,
-# and bin/ruby18 — the name the shebangs actually say — is a forward to it. It
-# stands in for the ruby 1.8.7 build that used to be downloaded from
-# archive.textmate.org, and every command with a ruby18 shebang goes through it,
-# so a shim that only works when invoked one particular way breaks 43 bundles at
-# once.
+# and bin/ruby18 and bin/ruby20 — the names the shebangs actually say — are
+# forwards to it. ruby18 alone stands in for the ruby 1.8.7 build that used to
+# be downloaded from archive.textmate.org, so a shim that only works when
+# invoked one particular way breaks 43 bundles at once.
 
 set -u
 
@@ -168,5 +167,24 @@ case "$missing_out" in
 	*)                                                         said="$missing_out" ;;
 esac
 check "missing ruby explains" "explained" "$said"
+
+# ruby20 used to find the system ruby by globbing the framework itself. It now
+# forwards like ruby18 does, so the two names have to mean the same interpreter
+# with the same treatment — the -K filtering included, since a third-party
+# bundle is free to write -KU above either name.
+#
+# Rubygems is where they part. ruby20 has always had it, and it is a name
+# bundles we do not ship can use, so taking it away would be a LoadError in
+# something we never see. The sanitising is common to both: a custom GEM_HOME
+# still goes, though the paths gem(1) installs to by default do not depend on it.
+ruby20="$bin/ruby20"
+check "ruby20 runs"            "ok"      "$("$ruby20" -e 'print "ok"' 2>&1)"
+check "ruby20 strips -KU"      "clean"   "$("$ruby20" -KU -e 'print "clean"' 2>&1)"
+check "ruby20 keeps rubygems"  "on"      "$("$ruby20" -e 'print defined?(Gem) ? "on" : "off"' 2>&1)"
+check "ruby20 finds user gems" "yes"     "$("$ruby20" -e 'print Gem.path.any? { |p| p.start_with?(Dir.home) } ? "yes" : "no"' 2>&1)"
+check "ruby20 sanitises RUBYLIB" "nil"   "$(RUBYLIB=/tmp "$ruby20" -e 'print ENV["RUBYLIB"].inspect' 2>&1)"
+check "ruby20 loads the gate"  "loaded"  "$("$ruby20" -e 'print $LOADED_FEATURES.grep(/ruby_runtime/).empty? ? "missing" : "loaded"' 2>&1)"
+check "ruby20 honours TM_RUBY" "mine:ok" "$(TM_RUBY="$fake_ruby" "$ruby20" -e 'print "ok"' 2>&1)"
+check "shims agree on ruby"    "$("$shim" -e 'print RUBY_DESCRIPTION' 2>&1)" "$("$ruby20" -e 'print RUBY_DESCRIPTION' 2>&1)"
 
 exit $(( failures > 0 ))
