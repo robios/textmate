@@ -17,3 +17,9 @@ set_tests_properties(plist_shim PROPERTIES ENVIRONMENT "TM_SUPPORT_PATH=")
 # worth — so the ways it can be invoked are worth pinning down.
 add_test(NAME ruby18_shim
   COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/t_ruby18_shim.sh")
+
+# The file panel replaced a CocoaDialog call. $DIALOG is stubbed, so this checks
+# the option mapping and the shape of the answer without a running TextMate —
+# which is the part a live run would otherwise be the only way to see.
+add_test(NAME file_panel
+  COMMAND /usr/bin/ruby --disable-gems "${CMAKE_CURRENT_SOURCE_DIR}/tests/t_file_panel.rb")

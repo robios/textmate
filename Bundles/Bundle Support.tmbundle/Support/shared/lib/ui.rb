@@ -184,25 +184,12 @@ module TextMate
 
       # show a standard open file dialog
       def request_file(options = Hash.new,&block)
-        _options = default_options_for_cocoa_dialog(options)
-        _options["title"] = options[:title] || "Select File"
-        _options["informative-text"] = options[:prompt] || ""
-        _options["text"] = options[:default] || ""
-        _options["select-only-directories"] = "" if options[:only_directories]
-        _options["with-directory"] = options[:directory] if options[:directory]
-        cocoa_dialog("fileselect", _options,&block)
+        file_panel(options, "Select File", false, &block)
       end
 
       # show a standard open file dialog, allowing multiple selections
       def request_files(options = Hash.new,&block)
-        _options = default_options_for_cocoa_dialog(options)
-        _options["title"] = options[:title] || "Select File(s)"
-        _options["informative-text"] = options[:prompt] || ""
-        _options["text"] = options[:default] || ""
-        _options["select-only-directories"] = "" if options[:only_directories]
-        _options["with-directory"] = options[:directory] if options[:directory]
-        _options["select-multiple"] = ""
-        cocoa_dialog("fileselect", _options,&block)
+        file_panel(options, "Select File(s)", true, &block)
       end
 
       # Request an item from a list of items
@@ -354,41 +341,34 @@ module TextMate
         end
       end
 
-      def cocoa_dialog(type, options)
-        str = ""
-        options.each_pair do |key, value|
-          unless value.nil?
-            str << " --#{key.shellescape} "
-            str << Array(value).shelljoin
-          end
-        end
-        result = %x{"$TM_SUPPORT_PATH/bin/CocoaDialog.app/Contents/MacOS/CocoaDialog" 2>/dev/console #{type.shellescape} #{str} --float}
-        result = result.to_a.map{|line| line.chomp}
-        if (type == "fileselect")
-          if result.length == 0
-            return_value = options['button2'] # simulate cancel
-          end
-        else
-          return_value, result = *result
-        end
-        if return_value == options["button2"] then
+      # request_file and request_files used to run CocoaDialog’s ‘fileselect’.
+      # That binary was i386/x86_64 only and is no longer shipped, so this uses
+      # the panel the application itself provides, which answers with a property
+      # list rather than lines of text.
+      #
+      # The answer stays an array of paths even for a single selection: that is
+      # what the CocoaDialog version returned, and callers index into it.
+      #
+      # :button2 is accepted and ignored. AppKit has no API for the title of a
+      # save/open panel’s cancel button — NSSavePanel exposes prompt, message,
+      # title and nameFieldLabel, and nothing for the other button — so this is
+      # not something the dialog command could be extended to honour. No bundle
+      # we ship passes it.
+      def file_panel(options, default_title, multiple)
+        args  = [ '--title', options[:title] || default_title ]
+        args += [ '--message', options[:prompt] ] if options[:prompt]
+        args += [ '--prompt', options[:button1] ] if options[:button1] # action button
+        args += [ '--defaultDirectory', options[:directory].to_s ] if options[:directory]
+        args += [ '--canChooseFiles', '0', '--canChooseDirectories', '1' ] if options[:only_directories]
+        args += [ '--allowsMultipleSelection', '1' ] if multiple
+
+        paths = (run_dialog('filepanel', *args) || {})['paths'] || []
+
+        if paths.empty? # cancelled
           block_given? ? raise(SystemExit) : nil
         else
-          block_given? ? yield(result) : result
+          block_given? ? yield(paths) : paths
         end
-      end
-
-      def default_buttons(user_options = Hash.new)
-        options = Hash.new
-        options['button1'] = user_options[:button1] || "OK"
-        options['button2'] = user_options[:button2] || "Cancel"
-        options
-      end
-
-      def default_options_for_cocoa_dialog(user_options = Hash.new)
-        options = default_buttons(user_options)
-        options["string-output"] = ""
-        options
       end
 
     end
