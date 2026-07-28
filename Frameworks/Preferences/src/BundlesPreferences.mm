@@ -4,6 +4,7 @@
 #import <BundlesManager/BundlesManager.h>
 #import <BundlesManager/BundleSubscriptionManager.h>
 #import <BundlesManager/github_url.h>
+#import <bundles/query.h>
 #import <OakFoundation/OakFoundation.h>
 #import <ns/ns.h>
 #import <OakAppKit/NSAlert Additions.h>
@@ -354,10 +355,48 @@ static NSUserInterfaceItemIdentifier const kTableColumnIdentifierSourceBundles  
 }
 @property (nonatomic) NSUInteger selectedIndex;
 @property (nonatomic) NSArray<BundleListItem*>* items;
+@property (nonatomic, readwrite) BOOL needsAttention;
 @end
 
+static BOOL AnySubscriptionEclipsed (NSArray<BundleListItem*>* items)
+{
+	for(BundleListItem* item in items)
+	{
+		if(item.kind == BundleListItemKindSubscription && item.eclipsedByPath)
+			return YES;
+	}
+	return NO;
+}
+
+// The toolbar tints template images itself, but a colored badge means the
+// composed image can no longer be one, so the base is tinted by hand to the
+// color the toolbar would have used. Drawn in a handler so both the tint and
+// the badge colors re-resolve when the appearance changes.
+static NSImage* AttentionToolbarImage (NSImage* base)
+{
+	NSImage* badge = [NSImage imageWithSystemSymbolName:@"exclamationmark.circle.fill" accessibilityDescription:@"Needs attention"];
+	badge = [badge imageWithSymbolConfiguration:[NSImageSymbolConfiguration configurationWithPaletteColors:@[ NSColor.whiteColor, NSColor.systemOrangeColor ]]] ?: badge;
+
+	BOOL tintBase = base.isTemplate;
+	return [NSImage imageWithSize:base.size flipped:NO drawingHandler:^BOOL(NSRect dstRect){
+		[base drawInRect:dstRect fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1];
+		if(tintBase)
+		{
+			[NSColor.secondaryLabelColor set];
+			NSRectFillUsingOperation(dstRect, NSCompositingOperationSourceIn);
+		}
+		CGFloat badgeSide = round(NSWidth(dstRect) * 0.55);
+		[badge drawInRect:NSMakeRect(NSMaxX(dstRect)-badgeSide, 0, badgeSide, badgeSide) fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1];
+		return YES;
+	}];
+}
+
 @implementation BundlesPreferences
-- (NSImage*)toolbarItemImage { return PreferencesToolbarImage(@"puzzlepiece.extension", @"Bundles", [NSWorkspace.sharedWorkspace iconForContentType:[UTType typeWithFilenameExtension:@"tmbundle"]]); }
+- (NSImage*)toolbarItemImage
+{
+	NSImage* image = PreferencesToolbarImage(@"puzzlepiece.extension", @"Bundles", [NSWorkspace.sharedWorkspace iconForContentType:[UTType typeWithFilenameExtension:@"tmbundle"]]);
+	return _needsAttention ? AttentionToolbarImage(image) : image;
+}
 
 - (id)init
 {
@@ -370,6 +409,7 @@ static NSUserInterfaceItemIdentifier const kTableColumnIdentifierSourceBundles  
 		_selectedIndex     = NSNotFound;
 		_items             = [BundleListItem currentItems];
 		_sourceItems       = [BundleSourceItem currentItems];
+		_needsAttention    = AnySubscriptionEclipsed(_items); // Before the toolbar item first reads toolbarItemImage
 
 		_scopeBar = [[OakScopeBarViewController alloc] init];
 		_scopeBar.allowsEmptySelection = YES;
@@ -378,6 +418,22 @@ static NSUserInterfaceItemIdentifier const kTableColumnIdentifierSourceBundles  
 		// Both lists feed one table, so both have to be able to refresh it
 		[BundlesManager.sharedInstance addObserver:self forKeyPath:@"bundles" options:0 context:nullptr];
 		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(subscriptionsDidChange:) name:BundleSubscriptionsDidChangeNotification object:nil];
+
+		// The runtime index has changes of its own the two observers above
+		// never hear about — a bundle appearing on disk rearranges who wins a
+		// UUID, which is what the ‘not in effect’ badge reads. Same pattern as
+		// BundleEditor: the pane is created once and lives on, so a static
+		// callback is its lifetime.
+		struct callback_t : bundles::callback_t
+		{
+			callback_t (BundlesPreferences* self) : self(self) { }
+			void bundles_did_change ()                         { [self reloadItems]; }
+		private:
+			BundlesPreferences* self;
+		};
+
+		static callback_t cb(self);
+		bundles::add_callback(&cb);
 	}
 	return self;
 }
@@ -403,6 +459,16 @@ static NSUserInterfaceItemIdentifier const kTableColumnIdentifierSourceBundles  
 	self.items = [BundleListItem currentItems];
 	[self reloadSources];
 	[self updateCategories];
+
+	// See loadView: content goes to the controller by hand, and the table is
+	// asked to redisplay — its own binding to arrangedObjects is also entitled
+	// to treat an equal-comparing array as unchanged.
+	_arrayController.content = _items;
+	[_bundlesTableView reloadData];
+
+	BOOL needsAttention = AnySubscriptionEclipsed(_items);
+	if(_needsAttention != needsAttention)
+		self.needsAttention = needsAttention; // The window controller re-badges the toolbar icon on this
 }
 
 - (void)updateCategories
@@ -638,7 +704,14 @@ static NSUserInterfaceItemIdentifier const kTableColumnIdentifierSourceBundles  
 	// = Bindings =
 	// ============
 
-	[_arrayController bind:NSContentBinding toObject:self withKeyPath:@"items" options:nil];
+	// Content is handed to the controller in reloadItems rather than bound to
+	// ‘items’: rows compare isEqual: by identity (itemsBeingInstalled needs a
+	// rebuilt row to still count as the same row), so a rebuilt array compares
+	// equal to the one it replaces and the binding discards the update as a
+	// no-op — leaving rows whose derived state changed (‘not in effect’, an
+	// update badge) stale until the next launch. setContent: takes the new
+	// array as given.
+	_arrayController.content = _items;
 	[_scopeBar bind:NSValueBinding toObject:self withKeyPath:@"selectedIndex" options:nil];
 
 	[_bundlesTableView bind:NSContentBinding          toObject:_arrayController withKeyPath:@"arrangedObjects" options:nil];
@@ -1171,6 +1244,12 @@ static NSUserInterfaceItemIdentifier const kTableColumnIdentifierSourceBundles  
 	{
 		// Both branches, since cells are reused down the column
 		[aCell setTextColor:item.hasUpdatedDate ? NSColor.controlTextColor : NSColor.tertiaryLabelColor];
+	}
+	else if([aTableColumn.identifier isEqualToString:kTableColumnIdentifierSource])
+	{
+		// Both branches here too. Warning-colored rather than iconed: the badge
+		// text itself says what is wrong, the color says it needs a look.
+		[aCell setTextColor:item.eclipsedByPath ? NSColor.systemOrangeColor : NSColor.controlTextColor];
 	}
 }
 

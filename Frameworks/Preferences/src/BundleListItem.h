@@ -34,6 +34,13 @@ typedef NS_ENUM(NSInteger, BundleListItemKind)
 
 @property (nonatomic, readonly) NSString* detailText; // Shown as the row's tooltip
 
+// The bundle path whose copy is loaded in place of this subscription, nil when
+// the subscription is in effect. Asked of the runtime index rather than derived
+// from the location order: the loader already decided which copy of the UUID
+// won, and that answer stays right if the order ever changes. Only subscription
+// rows can have one — a signed row whose UUID a subscription owns is not shown.
+@property (nonatomic, readonly) NSString* eclipsedByPath;
+
 // Whether the row has a newer version to move to. Both kinds can: a signed
 // bundle when the index publishes one, a subscription when its ref resolves
 // past what is installed.

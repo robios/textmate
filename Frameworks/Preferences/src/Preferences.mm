@@ -77,6 +77,8 @@ static NSString* const kMASPreferencesSelectedViewKey = @"MASPreferences Selecte
 @property (nonatomic) PreferencesViewController* preferencesViewController;
 @end
 
+static void* kNeedsAttentionObserverContext = &kNeedsAttentionObserverContext;
+
 @implementation Preferences
 + (instancetype)sharedInstance
 {
@@ -109,6 +111,15 @@ static NSString* const kMASPreferencesSelectedViewKey = @"MASPreferences Selecte
 
 		for(NSViewController* viewController in viewControllers)
 			[contentViewController addChildViewController:viewController];
+
+		// A pane that can need attention badges its toolbar icon, and the badge
+		// has to appear while some other pane is selected — so the window
+		// controller watches, and re-reads the image when the state flips.
+		for(NSViewController* viewController in viewControllers)
+		{
+			if([viewController respondsToSelector:@selector(needsAttention)])
+				[viewController addObserver:self forKeyPath:@"needsAttention" options:0 context:kNeedsAttentionObserverContext];
+		}
 
 		NSToolbar* toolbar = [[NSToolbar alloc] initWithIdentifier:@"Preferneces"];
 		toolbar.allowsUserCustomization = NO;
@@ -187,6 +198,19 @@ static NSString* const kMASPreferencesSelectedViewKey = @"MASPreferences Selecte
 // ====================
 // = Toolbar Delegate =
 // ====================
+
+- (void)observeValueForKeyPath:(NSString*)keyPath ofObject:(id)object change:(NSDictionary*)change context:(void*)context
+{
+	if(context != kNeedsAttentionObserverContext)
+		return [super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
+
+	NSViewController <PreferencesPaneProtocol>* viewController = object;
+	for(NSToolbarItem* item in self.window.toolbar.items)
+	{
+		if([item.itemIdentifier isEqualToString:viewController.identifier] && [viewController respondsToSelector:@selector(toolbarItemImage)])
+			item.image = viewController.toolbarItemImage;
+	}
+}
 
 - (NSToolbarItem*)toolbar:(NSToolbar*)toolbar itemForItemIdentifier:(NSToolbarItemIdentifier)itemIdentifier willBeInsertedIntoToolbar:(BOOL)flag
 {

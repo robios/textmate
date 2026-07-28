@@ -1,8 +1,30 @@
 #import "BundleListItem.h"
+#import <bundles/query.h>
+#import <ns/ns.h>
 
 static NSString* ShortSHA (NSString* sha)
 {
 	return sha.length >= 7 ? [sha substringToIndex:7] : sha;
+}
+
+// The path whose copy of the subscription’s UUID is actually loaded, nil when
+// that copy is the subscription’s own. A bundle merged from several locations
+// (a local delta on top of the subscribed copy) lists them all, so any path
+// under Subscribed means the subscription is in effect. A UUID absent from the
+// index stays nil too — nothing won, so there is nothing to point at.
+static NSString* EclipsingPathForSubscription (BundleSubscription* subscription, NSString* bundlesDirectory)
+{
+	bundles::item_ptr bundleItem = bundles::lookup(oak::uuid_t(to_s(subscription.identifier.UUIDString)));
+	if(!bundleItem || bundleItem->paths().empty())
+		return nil;
+
+	std::string const prefix = to_s([bundlesDirectory stringByAppendingString:@"/"]);
+	for(auto const& path : bundleItem->paths())
+	{
+		if(path.compare(0, prefix.size(), prefix) == 0)
+			return nil;
+	}
+	return [to_ns(bundleItem->paths().front()) stringByDeletingLastPathComponent];
 }
 
 @implementation BundleListItem
@@ -23,9 +45,10 @@ static NSString* ShortSHA (NSString* sha)
 		subscriptionsByIdentifier[subscription.identifier] = subscription;
 
 		BundleListItem* item = [[BundleListItem alloc] init];
-		item->_kind         = BundleListItemKindSubscription;
-		item->_subscription = subscription;
-		item->_tapName      = [manager tapForSubscription:subscription].name ?: subscription.originTapName;
+		item->_kind           = BundleListItemKindSubscription;
+		item->_subscription   = subscription;
+		item->_tapName        = [manager tapForSubscription:subscription].name ?: subscription.originTapName;
+		item->_eclipsedByPath = EclipsingPathForSubscription(subscription, manager.bundlesDirectory);
 		[res addObject:item];
 	}
 
@@ -151,6 +174,9 @@ static NSString* ShortSHA (NSString* sha)
 	{
 		case BundleListItemKindSubscription:
 		{
+			// First: the states below describe a bundle that is at least in use
+			if(_eclipsedByPath)
+				return @"Subscribed · not in effect";
 			if(_subscription.isUnavailable)
 				return @"Subscribed · unavailable";
 			if(_subscription.isSourceChanged)
@@ -187,6 +213,8 @@ static NSString* ShortSHA (NSString* sha)
 				[res appendFormat:@", installed %@", ShortSHA(_subscription.installedSHA)];
 			if(_subscription.hasUpdate)
 				[res appendFormat:@". Update available: %@", ShortSHA(_subscription.availableSHA)];
+			if(_eclipsedByPath)
+				[res appendFormat:@". Not in effect — TextMate loads another copy of this bundle, from ‘%@’.", _eclipsedByPath];
 			if(_subscription.isOrphaned)
 				[res appendString:@". No longer listed by its tap."];
 			if(_subscription.isSourceChanged)
