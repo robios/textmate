@@ -53,4 +53,16 @@ check "argv passthrough"     "a b" "$("$shim" -e 'print ARGV.join(" ")' a b 2>&1
 check "stdin passthrough"    "hi"  "$(echo -n hi | "$shim" -e 'print STDIN.read' 2>&1)"
 check "exit status"          "3"   "$("$shim" -e 'exit 3' 2>&1; echo -n $?)"
 
+# 61 shipped shebangs say -KU, -wKU or -KA. Ruby retired -K, so the shim strips
+# the real kcode forms — silently, and without letting -KA force ASCII — while
+# an option argument that merely contains a K (-IKlib, -rKfoo) must pass
+# through byte for byte: the shim serves third-party bundles too, and rewriting
+# their arguments is a regression however unlikely the spelling.
+check "-KU stripped"         "clean" "$("$shim" -KU -e 'print "clean"' 2>&1)"
+check "-wKU keeps -w"        "warn"  "$("$shim" -wKU -e 'print $VERBOSE ? "warn" : "quiet"' 2>&1)"
+check "-KA does not force ASCII" "UTF-8" "$(LANG=en_US.UTF-8 "$shim" -KA -e 'print Encoding.default_external' 2>&1)"
+check "-IKlib passes through" "Klib" "$("$shim" -IKlib -e 'print $LOAD_PATH.first.split("/").last' 2>&1)"
+check "-rKfoo passes through" "Kfoo" "$("$shim" -rKfoo -e 1 2>&1 | grep -o 'Kfoo' | head -1)"
+check "-- ends filtering"    "-KU"  "$("$shim" -e 'print ARGV.first' -- -KU 2>&1)"
+
 exit $(( failures > 0 ))

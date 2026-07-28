@@ -29,6 +29,51 @@ if [ ! -x "$RUBY" ]; then
 	exit 1
 fi
 
+# Ruby 1.9 retired -K. Current ruby prints ‘-K is specified; it is for 1.8
+# compatibility’ on stderr — which reaches the user whenever the command shows
+# HTML or a tooltip — and -KA is worse than noise: it forces the external
+# encoding to ASCII-8BIT, while every -K in a bundle meant UTF-8, which the
+# locale from Default.tmProperties already provides. So drop K and its code
+# letter from leading option clusters (61 shebangs across the shipped bundles
+# say -KU or -wKU; one says -KA). Filtering stops at the first non-option
+# argument, and never touches anything with a slash, so script paths and our
+# own -r below are safe. No subshells: this runs on every command invocation.
+n=$#
+i=0
+filtering=1
+while [ $i -lt $n ]; do
+	i=$((i+1))
+	arg=$1
+	shift
+	if [ -n "$filtering" ]; then
+		case $arg in
+			--)      filtering= ;;
+			-*/*)    ;;
+			-*K*)
+				# Only a real kcode form: every letter before the K must be a
+				# flag that takes no argument, or the K belongs to an option
+				# argument (-IKlib, -rKfoo) and must pass through untouched.
+				# The letter after the K is consumed only when it is a kcode.
+				prefix=${arg%%K*}
+				rest=${arg#*K}
+				case ${prefix#-} in
+					*[!acdlnpsSvwy]*) ;;
+					*)
+						case $rest in
+							[aAeEnNsSuU]*) rest=${rest#?} ;;
+						esac
+						arg="$prefix$rest"
+						[ "$arg" = "-" ] && continue
+						;;
+				esac
+				;;
+			-*)      ;;
+			*)       filtering= ;;
+		esac
+	fi
+	set -- "$@" "$arg"
+done
+
 # -r needs an absolute path: ruby resolves a relative one against the load path
 # rather than the working directory, so ‘bin/ruby18 script.rb’ would fail to
 # find the guard. Expanded without a subshell, since this runs per command.
