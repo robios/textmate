@@ -20,6 +20,8 @@
 	<string>${TARGET_NAME} 2 Help</string>
 	<key>CFBundleIconFile</key>
 	<string>TextMate</string>
+	<key>CFBundleIconName</key>
+	<string>AppIcon</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundlePackageType</key>

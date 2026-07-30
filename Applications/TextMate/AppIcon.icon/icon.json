@@ -1,0 +1,28 @@
+{
+  "fill" : {
+    "automatic-gradient" : "srgb:0.42353,0.16078,0.56471,1.00000"
+  },
+  "groups" : [
+    {
+      "name" : "flower",
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.4
+      },
+      "specular" : false,
+      "layers" : [
+        {
+          "image-name" : "flower.png",
+          "name" : "flower",
+          "position" : {
+            "scale" : 0.88,
+            "translation-in-points" : [ 0, 0 ]
+          }
+        }
+      ]
+    }
+  ],
+  "supported-platforms" : {
+    "squares" : "shared"
+  }
+}

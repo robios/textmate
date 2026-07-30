@@ -91,6 +91,13 @@ target_xib_sources(TextMate "English.lproj"
   "${CMAKE_SOURCE_DIR}/Frameworks/BundleEditor/resources/English.lproj/GrammarProperties.xib")
 
 # Icon and image resources
+# resources/Assets.car is the compiled app icon (CFBundleIconName): flat renditions
+# for macOS ≤ 15 plus the layered Liquid Glass icon for macOS 26+. Regenerate from
+# the AppIcon.icon source with Xcode 26+:
+#   xcrun actool AppIcon.icon --app-icon AppIcon --compile resources \
+#     --output-partial-info-plist /dev/null --minimum-deployment-target 14.0 \
+#     --platform macosx --target-device mac
+# (then delete the stray resources/AppIcon.icns actool also emits)
 file(GLOB _icons icons/*.icns)
 file(GLOB _resources resources/*)
 set(_all_resources ${_icons} ${_resources})
