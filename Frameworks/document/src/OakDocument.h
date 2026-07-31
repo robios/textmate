@@ -7,6 +7,11 @@
 
 extern NSNotificationName const OakDocumentContentDidChangeNotification;
 extern NSNotificationName const OakDocumentMarksDidChangeNotification;
+// userInfo: @"redraw" — whether anything moved on screen; @"from"/@"to" — the byte
+// range whose squiggles changed when it did (from == to: the row containing that
+// index). A notification with @"redraw" NO means only a message/source/code
+// changed: nothing to repaint, but anything displaying one is now stale.
+extern NSNotificationName const OakDocumentDiagnosticsDidChangeNotification;
 extern NSNotificationName const OakDocumentWillReloadNotification;
 extern NSNotificationName const OakDocumentDidReloadNotification;
 extern NSNotificationName const OakDocumentWillSaveNotification;
@@ -14,6 +19,12 @@ extern NSNotificationName const OakDocumentDidSaveNotification;
 extern NSNotificationName const OakDocumentWillCloseNotification;
 extern NSNotificationName const OakDocumentWillShowAlertNotification;
 extern NSString* OakDocumentBookmarkIdentifier;
+
+// The severity class every diagnostics surface — gutter, squiggle, hover, panel,
+// minimap — agrees on: 1 = error, 2 = warning, 3 = note. LSP’s 3 (information)
+// and 4 (hint) collapse into note, and so does a missing or nonsensical value.
+// The protocol dictionary is left untouched for code-action requests.
+NSInteger OakDiagnosticSeverityClass (id lspSeverity);
 
 typedef NS_ENUM(NSInteger, OakDocumentIOResult) {
 	OakDocumentIOResultSuccess = 0,
@@ -94,6 +105,12 @@ typedef NS_ENUM(NSInteger, OakDocumentIOResult) {
 - (void)removeAllMarksOfType:(NSString*)aMark;
 - (NSString*)stringifyMarksOfType:(NSString*)aMark;
 + (void)removeAllMarksOfType:(NSString*)aMark;
+
+// LSP diagnostics drawn as squiggly underlines. Each entry uses the LSPClient
+// dictionary shape: line/character/endLine/endCharacter (UTF-16 columns),
+// severity, message, source and code. Pass an empty array to clear. No-op while
+// the document is unloaded.
+- (void)setDiagnostics:(NSArray<NSDictionary*>*)diagnostics;
 
 - (void)enumerateSymbolsUsingBlock:(void(^)(text::pos_t const& pos, NSString* symbol))block;
 - (void)enumerateBookmarksUsingBlock:(void(^)(text::pos_t const& pos, NSString* excerpt))block;

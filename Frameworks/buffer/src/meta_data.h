@@ -26,6 +26,36 @@ namespace ng
 		bool _disabled = false;
 	};
 
+	// The diagnostic list is the single source of truth: it carries the payload
+	// and it is what edits transform, so a squiggle and the message read at the
+	// same index can never disagree. The per-severity coalesced range lists and
+	// the point list are derived indexes for drawing and hit testing.
+	struct diagnostics_t : meta_data_t
+	{
+		diagnostics_dirty_t set (std::vector<diagnostic_t> const& diagnostics);
+
+		std::vector<std::pair<size_t, size_t>> ranges (size_t severity, size_t from, size_t to) const;
+		std::vector<std::pair<size_t, size_t>> points (size_t from, size_t to) const;
+		bool point_at (size_t index) const;
+		std::pair<size_t, size_t> range_containing (size_t severity, size_t index) const;
+		std::vector<diagnostic_t> at (size_t index) const;
+
+		bool empty () const { return _diagnostics.empty(); }
+
+	private:
+		void replace (buffer_t* buffer, size_t from, size_t to, size_t len);
+		using meta_data_t::did_parse;
+
+		void rebuild_indexes ();
+
+		static constexpr size_t kSeverityCount = 3;
+		static size_t severity_index (size_t severity) { return severity == 1 ? 0 : (severity == 2 ? 1 : 2); }
+
+		std::vector<diagnostic_t> _diagnostics;                         // sorted by ‘from’
+		std::vector<std::pair<size_t, size_t>> _ranges[kSeverityCount]; // coalesced (from, to) per severity class
+		std::vector<std::pair<size_t, size_t>> _points;                 // (index, worst severity), sorted by index
+	};
+
 	struct symbols_t : meta_data_t
 	{
 		std::map<size_t, std::string> symbols (buffer_t const* buffer) const;

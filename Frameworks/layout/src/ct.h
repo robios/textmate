@@ -64,11 +64,21 @@ namespace ct
 		CGFloat _leading_delta = 1;
 	};
 
+	// Wavy underline for an LSP diagnostic: severity 1 = error, 2 = warning,
+	// anything else = note. Exposed because a zero-width point diagnostic — one
+	// reported on a line with no character to underline — has no glyph run to
+	// hang off and is drawn straight from the paragraph.
+	void draw_squiggle (ng::context_t const& context, CGRect const& rect, size_t severity);
+
+	// Width of the marker drawn for a zero-width point diagnostic. Shared with
+	// mouse hit testing, which has no text extent to measure instead.
+	CGFloat const kDiagnosticPointWidth = 3;
+
 	struct line_t
 	{
 		line_t (std::string const& text, std::map<size_t, scope::scope_t> const& scopes, theme_ptr const& theme, size_t tabSize, ct::metrics_t const& metrics, CGColorRef textColor = NULL);
 
-		void draw_foreground (CGPoint pos, ng::context_t const& context, bool isFlipped, std::vector< std::pair<size_t, size_t> > const& misspelled, theme_ptr const& theme) const;
+		void draw_foreground (CGPoint pos, ng::context_t const& context, bool isFlipped, std::vector< std::pair<size_t, size_t> > const& misspelled, std::vector< std::pair<std::pair<size_t, size_t>, size_t> > const& diagnostics, theme_ptr const& theme) const;
 		void draw_background (CGPoint pos, CGFloat height, ng::context_t const& context, bool isFlipped, CGColorRef currentBackground) const;
 
 		CGFloat width (CGFloat* ascent = NULL, CGFloat* descent = NULL, CGFloat* leading = NULL) const;

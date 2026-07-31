@@ -23,6 +23,7 @@
 #import <selection/types.h>
 #import <text/newlines.h>
 #import <text/utf8.h>
+#import <text/utf16.h>
 #import <io/entries.h>
 #import <file/type.h>
 #import <file/open.h>
@@ -164,6 +165,7 @@ namespace document
 
 NSNotificationName const OakDocumentContentDidChangeNotification = @"OakDocumentContentDidChangeNotification";
 NSNotificationName const OakDocumentMarksDidChangeNotification   = @"OakDocumentMarksDidChangeNotification";
+NSNotificationName const OakDocumentDiagnosticsDidChangeNotification = @"OakDocumentDiagnosticsDidChangeNotification";
 NSNotificationName const OakDocumentWillReloadNotification       = @"OakDocumentWillReloadNotification";
 NSNotificationName const OakDocumentDidReloadNotification        = @"OakDocumentDidReloadNotification";
 NSNotificationName const OakDocumentWillSaveNotification         = @"OakDocumentWillSaveNotification";
@@ -1600,6 +1602,94 @@ static void* kDocumentEditedObserverContext = &kDocumentEditedObserverContext;
 	{
 		document::marks.remove_all(to_s(_path), to_s(aMark));
 	}
+}
+
+// ===============
+// = Diagnostics =
+// ===============
+
+NSInteger OakDiagnosticSeverityClass (id lspSeverity)
+{
+	NSInteger severity = [lspSeverity respondsToSelector:@selector(integerValue)] ? [lspSeverity integerValue] : 0;
+	return severity == 1 || severity == 2 ? severity : 3;
+}
+
+// LSP columns are UTF-16 code units; convert via the line’s text so squiggles
+// land correctly on non-ASCII lines. Out-of-range lines and columns clamp.
+static size_t DiagnosticIndexForPosition (ng::buffer_t const& buffer, size_t line, size_t utf16Column)
+{
+	line = std::min<size_t>(line, buffer.lines()-1);
+	size_t const bol = buffer.begin(line);
+	std::string const lineText = buffer.substr(bol, buffer.eol(line));
+	return bol + (utf16::advance(lineText.data(), utf16Column, lineText.data() + lineText.size()) - lineText.data());
+}
+
+// A zero-length range (a missing token, say) has nothing to underline, so give it
+// the nearest visible extent on its own line: the next character, else the
+// previous one. Extending onto the newline is not an option — foreground drawing
+// skips newline nodes. On an empty line, and in an empty document, it stays a
+// zero-width point, which the renderer draws as a short marker.
+static void ExtendDiagnosticPoint (ng::buffer_t const& buffer, size_t& from, size_t& to)
+{
+	size_t const line = buffer.convert(from).line;
+	size_t const bol = buffer.begin(line), eol = buffer.eol(line);
+
+	if(from < eol)
+	{
+		to = from + buffer[from].size();
+	}
+	else if(bol < from)
+	{
+		size_t prev = bol;
+		for(size_t i = bol; i < from; i += std::max<size_t>(buffer[i].size(), 1))
+			prev = i;
+		from = prev;
+	}
+}
+
+- (void)setDiagnostics:(NSArray<NSDictionary*>*)diagnostics
+{
+	if(!_buffer)
+		return;
+
+	std::vector<ng::diagnostic_t> entries;
+	for(NSDictionary* diagnostic in diagnostics)
+	{
+		NSNumber* line    = diagnostic[@"line"];
+		NSNumber* endLine = diagnostic[@"endLine"];
+		if(!line || !endLine)
+			continue;
+
+		ng::diagnostic_t entry;
+		entry.from     = DiagnosticIndexForPosition(*_buffer, line.unsignedIntegerValue,    [diagnostic[@"character"] unsignedIntegerValue]);
+		entry.to       = DiagnosticIndexForPosition(*_buffer, endLine.unsignedIntegerValue, [diagnostic[@"endCharacter"] unsignedIntegerValue]);
+		entry.severity = OakDiagnosticSeverityClass(diagnostic[@"severity"]);
+		if(entry.to < entry.from)
+			continue;
+		if((entry.zero_length = entry.from == entry.to))
+			ExtendDiagnosticPoint(*_buffer, entry.from, entry.to);
+
+		// The payload travels with the range so the hover and the squiggle stay in
+		// the same coordinate system after an edit
+		if(NSString* message = diagnostic[@"message"])
+			entry.message = to_s(message);
+		if(NSString* source = diagnostic[@"source"])
+			entry.source = to_s(source);
+		if(id code = diagnostic[@"code"])
+		{
+			if([code isKindOfClass:[NSString class]] || [code isKindOfClass:[NSNumber class]])
+				entry.code = to_s([code description]);
+		}
+
+		entries.push_back(std::move(entry));
+	}
+
+	// Announced whenever the set differs at all — a message that changed without
+	// moving still invalidates what a tooltip is showing — but ‘redraw’ keeps the
+	// repaint itself limited to the cases where something actually moved.
+	auto dirty = _buffer->set_diagnostics(entries);
+	if(dirty.changed)
+		[NSNotificationCenter.defaultCenter postNotificationName:OakDocumentDiagnosticsDidChangeNotification object:self userInfo:@{ @"from": @(dirty.from), @"to": @(dirty.to), @"redraw": @(dirty.redraw) }];
 }
 
 + (void)removeAllMarksOfType:(NSString*)aMark

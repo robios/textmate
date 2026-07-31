@@ -83,6 +83,9 @@ namespace ng
 		void begin_refresh_cycle (ng::ranges_t const& selection, ng::ranges_t const& highlightRanges = ng::ranges_t());
 		std::vector<CGRect> end_refresh_cycle (ng::ranges_t const& selection, CGRect visibleRect, ng::ranges_t const& highlightRanges = ng::ranges_t());
 		void did_update_scopes (size_t from, size_t to);
+		// Repaint-only invalidation for changed diagnostics; ‘from’ == ‘to’ means
+		// the single row containing that index.
+		void did_update_diagnostics (size_t from, size_t to);
 
 		ng::index_t index_above (ng::index_t const& index) const;
 		ng::index_t index_right_of (ng::index_t const& index) const;

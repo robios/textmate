@@ -266,6 +266,44 @@ namespace ct
 		}
 	}
 
+	// Wavy underline for an LSP diagnostic range: severity 1 = error (red),
+	// 2 = warning (orange), anything else = note (blue). The wave phase is
+	// aligned to absolute x so runs split across style boundaries join
+	// seamlessly; clipping trims the overshoot at both ends.
+	void draw_squiggle (ng::context_t const& context, CGRect const& rect, size_t severity)
+	{
+		if(rect.size.width <= 0)
+			return;
+
+		static CGColorRef const colors[3] = {
+			CGColorCreateGenericRGB(0.88, 0.23, 0.20, 0.90), // error
+			CGColorCreateGenericRGB(0.93, 0.66, 0.10, 0.90), // warning
+			CGColorCreateGenericRGB(0.35, 0.62, 0.90, 0.90), // note
+		};
+		CGColorRef color = colors[severity == 1 ? 0 : (severity == 2 ? 1 : 2)];
+
+		CGFloat const period    = 6;
+		CGFloat const amplitude = 1;
+		CGFloat const y         = rect.origin.y + rect.size.height / 2;
+
+		CGContextSaveGState(context);
+		CGContextClipToRect(context, CGRectInset(rect, 0, -1));
+		CGContextSetStrokeColorWithColor(context, color);
+		CGContextSetLineWidth(context, 1);
+		CGContextBeginPath(context);
+
+		CGFloat x = floor(rect.origin.x / period) * period;
+		CGContextMoveToPoint(context, x, y + amplitude);
+		bool up = true;
+		for(; x < CGRectGetMaxX(rect); x += period/2)
+		{
+			CGContextAddQuadCurveToPoint(context, x + period/4, y + (up ? -3 : 3) * amplitude, x + period/2, y + (up ? -1 : 1) * amplitude);
+			up = !up;
+		}
+		CGContextStrokePath(context);
+		CGContextRestoreGState(context);
+	}
+
 	void line_t::draw_invisible (std::vector<size_t> locations, CGPoint pos, std::string const& text, styles_t const& styles, ng::context_t const& context, bool isFlipped) const
 	{
 		CFMutableAttributedStringRef str = CFAttributedStringCreateMutable(kCFAllocatorDefault, 0);
@@ -293,7 +331,7 @@ namespace ct
 		CFRelease(line);
 	}
 
-	void line_t::draw_foreground (CGPoint pos, ng::context_t const& context, bool isFlipped, std::vector< std::pair<size_t, size_t> > const& misspelled, theme_ptr const& theme) const
+	void line_t::draw_foreground (CGPoint pos, ng::context_t const& context, bool isFlipped, std::vector< std::pair<size_t, size_t> > const& misspelled, std::vector< std::pair<std::pair<size_t, size_t>, size_t> > const& diagnostics, theme_ptr const& theme) const
 	{
 		if(!_line)
 			return;
@@ -324,6 +362,15 @@ namespace ct
 			CGFloat x1 = round(pos.x + CTLineGetOffsetForStringIndex(_line.get(), location, nullptr));
 			CGFloat x2 = round(pos.x + CTLineGetOffsetForStringIndex(_line.get(), location + length, nullptr));
 			draw_spelling_dot(context, CGRectMake(x1, pos.y + 1, x2 - x1, 3), isFlipped);
+		}
+
+		for(auto const& diagnostic : diagnostics)
+		{
+			CFIndex location = utf16::distance(_text.begin(),                             _text.begin() + diagnostic.first.first);
+			CFIndex length   = utf16::distance(_text.begin() + diagnostic.first.first,    _text.begin() + diagnostic.first.second);
+			CGFloat x1 = round(pos.x + CTLineGetOffsetForStringIndex(_line.get(), location, nullptr));
+			CGFloat x2 = round(pos.x + CTLineGetOffsetForStringIndex(_line.get(), location + length, nullptr));
+			draw_squiggle(context, CGRectMake(x1, pos.y + 1, x2 - x1, 3), diagnostic.second);
 		}
 
 		CGContextSaveGState(context);

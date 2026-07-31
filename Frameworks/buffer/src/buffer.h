@@ -55,8 +55,51 @@ namespace ng
 	};
 
 	struct spelling_t;
+	struct diagnostics_t;
 	struct symbols_t;
 	struct marks_t;
+
+	// One LSP diagnostic, converted to buffer indices. The payload travels with
+	// the range so every in-editor surface reads the same, edit-shifted, copy:
+	// re-deriving messages from the server’s line/column coordinates would use a
+	// different coordinate system as soon as the user types.
+	struct diagnostic_t
+	{
+		size_t from = 0;
+		size_t to = 0;      // from == to marks a zero-width point: a problem on a line with no character to underline
+		size_t severity = 3; // 1 = error, 2 = warning, 3 = note (3/4/missing/invalid all normalize to note)
+		// The server reported an empty range (a missing token, say) and the bridge
+		// grew it onto a neighbouring character so it can be seen. Hit testing is
+		// end-inclusive for these, so a caret at the position actually reported —
+		// end of line, for a range grown leftwards — still finds the message.
+		bool zero_length = false;
+		std::string message;
+		std::string source;
+		std::string code;
+
+		bool is_point () const { return from == to; }
+
+		bool operator== (diagnostic_t const& rhs) const
+		{
+			return std::tie(from, to, severity, zero_length, message, source, code) == std::tie(rhs.from, rhs.to, rhs.severity, rhs.zero_length, rhs.message, rhs.source, rhs.code);
+		}
+		bool operator!= (diagnostic_t const& rhs) const { return !(*this == rhs); }
+	};
+
+	// What a diagnostics update changed.
+	//
+	// ‘changed’ covers the payload as well, because a server can re-publish the
+	// same range with a different message and a surface showing the old one has
+	// to stop. ‘redraw’ is the narrower question — did the drawn ranges or points
+	// move — and it is separate from the extent because a point diagnostic in an
+	// empty buffer has no non-empty extent, yet still needs its row repainted.
+	struct diagnostics_dirty_t
+	{
+		bool changed = false;
+		bool redraw = false;
+		size_t from = 0;
+		size_t to = 0;
+	};
 
 	struct buffer_api_t
 	{
@@ -138,6 +181,20 @@ namespace ng
 		std::pair<size_t, size_t> next_misspelling (size_t from) const;
 		ns::spelling_tag_t spelling_tag () const;
 		void recheck_spelling (size_t from, size_t to);
+
+		// LSP diagnostics. Replaces the whole set (publishDiagnostics semantics)
+		// and reports what changed, so an unchanged re-publish repaints nothing.
+		diagnostics_dirty_t set_diagnostics (std::vector<diagnostic_t> const& diagnostics);
+		// Ranges of one severity overlapping [from, to), clamped to the window and
+		// relative to ‘from’ — same convention as misspellings().
+		std::vector<std::pair<size_t, size_t>> diagnostics (size_t severity, size_t from, size_t to) const;
+		// Zero-width points in [from, to] as (absolute index, severity).
+		std::vector<std::pair<size_t, size_t>> diagnostic_points (size_t from, size_t to) const;
+		bool has_diagnostic_point_at (size_t index) const;
+		// The range of ‘severity’ containing ‘index’, empty when there is none.
+		std::pair<size_t, size_t> diagnostic_range_containing (size_t severity, size_t index) const;
+		std::vector<diagnostic_t> diagnostics_at (size_t index) const;
+		bool has_diagnostics () const;
 
 		pairs_t& pairs ()              { return *_pairs.get(); }
 		pairs_t const& pairs () const  { return *_pairs.get(); }
@@ -230,10 +287,11 @@ namespace ng
 		indexed_map_t<scope::scope_t>    _scopes;
 		indexed_map_t<parse::stack_ptr>  _parser_states;
 
-		std::shared_ptr<spelling_t> _spelling;
-		std::shared_ptr<symbols_t>  _symbols;
-		std::shared_ptr<marks_t>    _marks;
-		std::shared_ptr<pairs_t>    _pairs;
+		std::shared_ptr<spelling_t>    _spelling;
+		std::shared_ptr<diagnostics_t> _diagnostics;
+		std::shared_ptr<symbols_t>     _symbols;
+		std::shared_ptr<marks_t>       _marks;
+		std::shared_ptr<pairs_t>       _pairs;
 
 		friend struct spelling_t; // _scopes
 		friend struct symbols_t;  // _scopes

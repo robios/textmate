@@ -177,10 +177,10 @@ namespace ng
 		}
 	}
 
-	void paragraph_t::node_t::draw_foreground (theme_ptr const& theme, ng::context_t const& context, bool isFlipped, CGRect visibleRect, ng::buffer_t const& buffer, size_t bufferOffset, std::vector< std::pair<size_t, size_t> > const& misspelled, CGPoint anchor, CGFloat baseline) const
+	void paragraph_t::node_t::draw_foreground (theme_ptr const& theme, ng::context_t const& context, bool isFlipped, CGRect visibleRect, ng::buffer_t const& buffer, size_t bufferOffset, std::vector< std::pair<size_t, size_t> > const& misspelled, std::vector< std::pair<std::pair<size_t, size_t>, size_t> > const& diagnostics, CGPoint anchor, CGFloat baseline) const
 	{
 		if(_line)
-			_line->draw_foreground(CGPointMake(anchor.x, anchor.y + baseline), context, isFlipped, misspelled, theme);
+			_line->draw_foreground(CGPointMake(anchor.x, anchor.y + baseline), context, isFlipped, misspelled, diagnostics, theme);
 
 		if(_type != kNodeTypeNewline || context.newline().size())
 		{
@@ -745,6 +745,19 @@ namespace ng
 	{
 		CGContextSetTextMatrix(context, CGAffineTransformMake(1, 0, 0, 1, 0, 0));
 
+		// Zero-width point diagnostics: a problem reported on a line that has no
+		// character to underline. They are drawn here rather than in the glyph run
+		// because the position they mark may have no node at all (an empty
+		// document), and never on a text node’s glyphs (an empty line).
+		std::vector< std::pair<size_t, size_t> > points;
+		if(buffer.has_diagnostics())
+		{
+			// The end index is inclusive only when nothing follows this paragraph:
+			// otherwise it is the next row’s start, and that row draws it.
+			bool const endsWithNewline = !_nodes.empty() && _nodes.back().type() == kNodeTypeNewline;
+			points = buffer.diagnostic_points(bufferOffset, bufferOffset + length() - (endsWithNewline ? 1 : 0));
+		}
+
 		auto lines = softlines(metrics, false);
 		for(size_t i = 0; i < lines.size(); ++i)
 		{
@@ -773,9 +786,36 @@ namespace ng
 					}
 				}
 
-				node->draw_foreground(theme, context, isFlipped, visibleRect, buffer, offset, misspelled, CGPointMake(anchor.x + x, anchor.y + lines[i].y), lines[i].baseline);
+				std::vector< std::pair<std::pair<size_t, size_t>, size_t> > diagnostics;
+				if(node->type() == kNodeTypeText && buffer.has_diagnostics())
+				{
+					for(size_t severity : { 3, 2, 1 }) // errors drawn last, on top of overlapping notes/warnings
+					{
+						for(auto const& range : buffer.diagnostics(severity, offset, offset + node->length()))
+							diagnostics.emplace_back(range, severity);
+					}
+				}
+
+				for(auto const& point : points)
+				{
+					if(point.first == offset)
+						ct::draw_squiggle(context, CGRectMake(anchor.x + x, anchor.y + lines[i].y + lines[i].baseline + 1, ct::kDiagnosticPointWidth, 3), point.second);
+				}
+
+				node->draw_foreground(theme, context, isFlipped, visibleRect, buffer, offset, misspelled, diagnostics, CGPointMake(anchor.x + x, anchor.y + lines[i].y), lines[i].baseline);
 				x += node->width();
 				offset += node->length();
+			}
+
+			// A point at the very end of the paragraph — an empty document, or a
+			// problem reported past the last character — has no node to precede
+			if(i + 1 == lines.size())
+			{
+				for(auto const& point : points)
+				{
+					if(point.first == offset)
+						ct::draw_squiggle(context, CGRectMake(anchor.x + x, anchor.y + lines[i].y + lines[i].baseline + 1, ct::kDiagnosticPointWidth, 3), point.second);
+				}
 			}
 		}
 	}

@@ -10,6 +10,7 @@ namespace ng
 {
 	buffer_t::buffer_t () : _grammar_callback(*this), _revision(0), _next_revision(1), _spelling_language("")
 	{
+		_meta_data.push_back((_diagnostics = std::make_shared<diagnostics_t>()).get());
 		_meta_data.push_back((_symbols = std::make_shared<symbols_t>()).get());
 		_meta_data.push_back((_marks = std::make_shared<marks_t>()).get());
 		_meta_data.push_back((_pairs = std::make_shared<pairs_t>()).get());
@@ -311,6 +312,14 @@ namespace ng
 	std::map<size_t, bool> buffer_t::misspellings (size_t from, size_t to) const   { return _spelling ? _spelling->misspellings(this, from, to) : std::map<size_t, bool>(); }
 	std::pair<size_t, size_t> buffer_t::next_misspelling (size_t from) const       { return _spelling ? _spelling->next_misspelling(from) : std::pair<size_t, size_t>(0, 0); }
 	ns::spelling_tag_t buffer_t::spelling_tag () const                             { return _spelling_tag; }
+
+	diagnostics_dirty_t buffer_t::set_diagnostics (std::vector<diagnostic_t> const& diagnostics)                       { return _diagnostics->set(diagnostics); }
+	std::vector<std::pair<size_t, size_t>> buffer_t::diagnostics (size_t severity, size_t from, size_t to) const      { return _diagnostics->ranges(severity, from, to); }
+	std::vector<std::pair<size_t, size_t>> buffer_t::diagnostic_points (size_t from, size_t to) const                 { return _diagnostics->points(from, to); }
+	bool buffer_t::has_diagnostic_point_at (size_t index) const                                                       { return _diagnostics->point_at(index); }
+	std::pair<size_t, size_t> buffer_t::diagnostic_range_containing (size_t severity, size_t index) const             { return _diagnostics->range_containing(severity, index); }
+	std::vector<diagnostic_t> buffer_t::diagnostics_at (size_t index) const                                           { return _diagnostics->at(index); }
+	bool buffer_t::has_diagnostics () const                                                                            { return !_diagnostics->empty(); }
 	void buffer_t::recheck_spelling (size_t from, size_t to)                       { if(_spelling) _spelling->recheck(this, from, to); }
 
 	void buffer_t::set_live_spelling (bool flag)

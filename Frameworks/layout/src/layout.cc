@@ -640,6 +640,25 @@ namespace ng
 		}
 	}
 
+	// Diagnostics change no layout and no scopes, so the affected rows only need
+	// a repaint. Unlike did_update_scopes this starts at the row *containing*
+	// ‘from’: a diagnostic that begins and ends inside one row would otherwise
+	// match no rows at all, and a zero-width point (a problem on an empty line,
+	// where there is no byte extent to describe) still dirties its own row.
+	void layout_t::did_update_diagnostics (size_t from, size_t to)
+	{
+		if(_rows.empty())
+			return;
+
+		auto last = _rows.lower_bound(to, &row_offset_comp);
+		for(auto row = row_for_offset(from); ; )
+		{
+			refresh_line_at_index(row->offset._length, false);
+			if(row == last || ++row == last)
+				break;
+		}
+	}
+
 	// ============
 	// = Movement =
 	// ============

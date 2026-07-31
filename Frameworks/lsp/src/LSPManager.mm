@@ -159,8 +159,23 @@ static std::string detectWorkspaceRoot (std::string const& filePath)
 		_failedCommandsByRoot = [NSMutableDictionary new];
 
 		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(applicationWillTerminate:) name:NSApplicationWillTerminateNotification object:nil];
+		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(documentDidReloadNotification:) name:OakDocumentDidReloadNotification object:nil];
 	}
 	return self;
+}
+
+// Reloading swaps the buffer content, which wipes the squiggle ranges stored
+// in it; the server only republishes when the content actually changed, so
+// re-apply what we have cached.
+- (void)documentDidReloadNotification:(NSNotification*)notification
+{
+	OakDocument* document = notification.object;
+	if(!document.path || ![_openDocuments containsObject:document.identifier])
+		return;
+
+	NSString* uri = [NSURL fileURLWithPath:document.path].absoluteString;
+	if(NSArray<NSDictionary*>* cached = _diagnosticsByURI[uri])
+		[self applyDiagnostics:cached toDocument:document];
 }
 
 - (void)applicationWillTerminate:(NSNotification*)notification
@@ -314,6 +329,16 @@ static NSString* clientKey (NSString* root, std::string const& lspCommand)
 	_documentVersions[docId] = @1;
 
 	[client openDocument:document languageId:langId];
+
+	// Servers like pyright analyze imports ahead of the user opening them, so
+	// diagnostics for this file may already be cached — apply them now instead
+	// of waiting out the server’s re-analysis after didOpen.
+	if(document.path)
+	{
+		NSString* uri = [NSURL fileURLWithPath:document.path].absoluteString;
+		if(NSArray<NSDictionary*>* cached = _diagnosticsByURI[uri])
+			[self applyDiagnostics:cached toDocument:document];
+	}
 }
 
 - (void)documentDidChange:(OakDocument*)document
@@ -405,6 +430,7 @@ static NSString* clientKey (NSString* root, std::string const& lspCommand)
 	[document removeAllMarksOfType:@"error"];
 	[document removeAllMarksOfType:@"warning"];
 	[document removeAllMarksOfType:@"note"];
+	[document setDiagnostics:@[]];
 
 	if(uri)
 		[NSNotificationCenter.defaultCenter postNotificationName:LSPDiagnosticsDidChangeNotification object:self userInfo:@{ @"uri": uri }];
@@ -1095,6 +1121,41 @@ static std::string configuredCommandForDocument (OakDocument* document)
 	[NSNotificationCenter.defaultCenter postNotificationName:LSPServerStatusDidChangeNotification object:self];
 }
 
+// Push diagnostics into a loaded document: gutter marks plus the squiggle
+// ranges in the buffer. Shared by arrival and the re-apply paths (didOpen
+// of a file the server already analyzed, reload).
+- (void)applyDiagnostics:(NSArray<NSDictionary*>*)diagnostics toDocument:(OakDocument*)doc
+{
+	if(!doc || !doc.isLoaded)
+		return;
+
+	[doc removeAllMarksOfType:@"error"];
+	[doc removeAllMarksOfType:@"warning"];
+	[doc removeAllMarksOfType:@"note"];
+
+	for(NSDictionary* diag in diagnostics)
+	{
+		NSString* message = diag[@"message"];
+		NSNumber* line    = diag[@"line"];
+
+		if(!message || !line)
+			continue;
+
+		NSString* markType;
+		switch(OakDiagnosticSeverityClass(diag[@"severity"]))
+		{
+			case 1:  markType = @"error";   break;
+			case 2:  markType = @"warning"; break;
+			default: markType = @"note";    break;
+		}
+
+		text::pos_t pos(line.unsignedIntegerValue, 0);
+		[doc setMarkOfType:markType atPosition:pos content:message];
+	}
+
+	[doc setDiagnostics:diagnostics];
+}
+
 - (void)lspClient:(LSPClient*)client didReceiveDiagnostics:(NSArray<NSDictionary*>*)diagnostics forDocumentURI:(NSString*)uri
 {
 	// Cache full diagnostics for codeAction requests
@@ -1106,33 +1167,7 @@ static std::string configuredCommandForDocument (OakDocument* document)
 		return;
 
 	OakDocument* doc = [OakDocument documentWithPath:filePath];
-	if(!doc || !doc.isLoaded)
-		return;
-
-	[doc removeAllMarksOfType:@"error"];
-	[doc removeAllMarksOfType:@"warning"];
-	[doc removeAllMarksOfType:@"note"];
-
-	for(NSDictionary* diag in diagnostics)
-	{
-		NSNumber* severity = diag[@"severity"];
-		NSString* message  = diag[@"message"];
-		NSNumber* line     = diag[@"line"];
-
-		if(!message || !line)
-			continue;
-
-		NSString* markType;
-		switch(severity.intValue)
-		{
-			case 1:  markType = @"error";   break;
-			case 2:  markType = @"warning"; break;
-			default: markType = @"note";    break;
-		}
-
-		text::pos_t pos(line.unsignedIntegerValue, 0);
-		[doc setMarkOfType:markType atPosition:pos content:message];
-	}
+	[self applyDiagnostics:diagnostics toDocument:doc];
 
 	[NSNotificationCenter.defaultCenter postNotificationName:LSPDiagnosticsDidChangeNotification object:self userInfo:@{ @"uri": uri }];
 }
