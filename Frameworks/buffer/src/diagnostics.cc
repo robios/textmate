@@ -46,11 +46,19 @@ namespace ng
 		for(size_t i = 0; i < kSeverityCount; ++i)
 			_ranges[i].clear();
 		_points.clear();
+		_stops.clear();
 
 		// ‘_diagnostics’ is sorted by ‘from’, so each severity’s subsequence is
 		// too and coalescing only ever has to look at the last range kept.
 		for(auto const& diagnostic : _diagnostics)
 		{
+			// Navigation stops are their own index because they are not ordered by
+			// ‘from’: a range grown leftwards reports one past its start, so it can
+			// come after a range that starts alongside it. Sorted and deduplicated
+			// here, which is also what makes several diagnostics on one position a
+			// single stop.
+			_stops.push_back(diagnostic.reported_index());
+
 			if(diagnostic.is_point())
 			{
 				auto it = std::lower_bound(_points.begin(), _points.end(), diagnostic.from, [](std::pair<size_t, size_t> const& lhs, size_t rhs){ return lhs.first < rhs; });
@@ -65,6 +73,9 @@ namespace ng
 					ranges.back().second = std::max(ranges.back().second, diagnostic.to);
 			else	ranges.emplace_back(diagnostic.from, diagnostic.to);
 		}
+
+		std::sort(_stops.begin(), _stops.end());
+		_stops.erase(std::unique(_stops.begin(), _stops.end()), _stops.end());
 	}
 
 	diagnostics_dirty_t diagnostics_t::set (std::vector<diagnostic_t> const& diagnostics)
@@ -83,7 +94,7 @@ namespace ng
 		// differ only in an omitted one have no defined order and the same set
 		// re-published in another order would read as a change.
 		std::sort(incoming.begin(), incoming.end(), [](diagnostic_t const& lhs, diagnostic_t const& rhs){
-			return std::tie(lhs.from, lhs.to, lhs.severity, lhs.zero_length, lhs.message, lhs.source, lhs.code) < std::tie(rhs.from, rhs.to, rhs.severity, rhs.zero_length, rhs.message, rhs.source, rhs.code);
+			return std::tie(lhs.from, lhs.to, lhs.severity, lhs.zero_length, lhs.grown_left, lhs.message, lhs.source, lhs.code) < std::tie(rhs.from, rhs.to, rhs.severity, rhs.zero_length, rhs.grown_left, rhs.message, rhs.source, rhs.code);
 		});
 
 		std::vector<std::pair<size_t, size_t>> oldRanges[kSeverityCount], oldPoints;
@@ -179,6 +190,53 @@ namespace ng
 				res.push_back(diagnostic);
 		}
 		return res;
+	}
+
+	// ‘to’ counts as inside, so a caller holding a line’s extent as
+	// [begin, eol] gets an answer for an empty line too — there the two are the
+	// same index, and asking about a half-open window there would ask about
+	// nothing. A range is still matched half-open, so the one that ends where
+	// this window begins (the common LSP range stopping at the next line’s
+	// start) belongs to the line before, not to this one.
+	bool diagnostics_t::any_in (size_t from, size_t to) const
+	{
+		if(from > to)
+			return false;
+
+		for(size_t i = 0; i < kSeverityCount; ++i)
+		{
+			auto const& ranges = _ranges[i];
+			// Sorted and disjoint, so of everything that starts at or before ‘to’
+			// the last one reaches furthest: if that one stops short of ‘from’,
+			// they all do.
+			auto it = std::upper_bound(ranges.begin(), ranges.end(), to, [](size_t lhs, std::pair<size_t, size_t> const& rhs){ return lhs < rhs.first; });
+			if(it != ranges.begin() && (it-1)->second > from)
+				return true;
+		}
+
+		auto it = std::lower_bound(_points.begin(), _points.end(), from, [](std::pair<size_t, size_t> const& lhs, size_t rhs){ return lhs.first < rhs; });
+		return it != _points.end() && it->first <= to;
+	}
+
+	// Navigation wraps, the way the gutter marks this replaced did: a reader
+	// walking the file’s problems expects to come back round to the first one
+	// rather than to stop at the last.
+	size_t diagnostics_t::next_stop (size_t index) const
+	{
+		if(_stops.empty())
+			return SIZE_MAX;
+
+		auto it = std::upper_bound(_stops.begin(), _stops.end(), index);
+		return it != _stops.end() ? *it : _stops.front();
+	}
+
+	size_t diagnostics_t::previous_stop (size_t index) const
+	{
+		if(_stops.empty())
+			return SIZE_MAX;
+
+		auto it = std::lower_bound(_stops.begin(), _stops.end(), index);
+		return it != _stops.begin() ? *(it-1) : _stops.back();
 	}
 
 	// Endpoint affinity: text inserted exactly at a range start or end lands

@@ -20,7 +20,7 @@ extern NSNotificationName const OakDocumentWillCloseNotification;
 extern NSNotificationName const OakDocumentWillShowAlertNotification;
 extern NSString* OakDocumentBookmarkIdentifier;
 
-// The severity class every diagnostics surface — gutter, squiggle, hover, panel,
+// The severity class every diagnostics surface — squiggle, hover, panel,
 // minimap — agrees on: 1 = error, 2 = warning, 3 = note. LSP’s 3 (information)
 // and 4 (hint) collapse into note, and so does a missing or nonsensical value.
 // The protocol dictionary is left untouched for code-action requests.
@@ -112,6 +112,14 @@ typedef NS_ENUM(NSInteger, OakDocumentIOResult) {
 // the document is unloaded.
 - (void)setDiagnostics:(NSArray<NSDictionary*>*)diagnostics;
 
+// The buffer’s diagnostics are what the editor navigates and probes by, since
+// nothing publishes them to the gutter’s marks any more. Both answer NO /
+// text::pos_t::undefined for an unloaded document, which has no buffer to ask.
+- (BOOL)hasDiagnostics;
+- (BOOL)hasDiagnosticsOnLine:(NSUInteger)line;
+- (text::pos_t)nextDiagnosticFromPosition:(text::pos_t const&)pos;
+- (text::pos_t)previousDiagnosticFromPosition:(text::pos_t const&)pos;
+
 // An LSP position (0-based line, 0-based UTF-16 column) as a selection string,
 // which is how the rest of the editor addresses a caret. The conversion needs
 // the line's bytes, so it only works on a loaded document — nil otherwise, and
@@ -121,8 +129,6 @@ typedef NS_ENUM(NSInteger, OakDocumentIOResult) {
 - (void)enumerateSymbolsUsingBlock:(void(^)(text::pos_t const& pos, NSString* symbol))block;
 - (void)enumerateBookmarksUsingBlock:(void(^)(text::pos_t const& pos, NSString* excerpt))block;
 - (void)enumerateBookmarksAtLine:(NSUInteger)line block:(void(^)(text::pos_t const& pos, NSString* type, NSString* payload))block;
-- (text::pos_t)nextMarkOfTypes:(NSArray<NSString*>*)types fromPosition:(text::pos_t const&)pos;
-- (text::pos_t)prevMarkOfTypes:(NSArray<NSString*>*)types fromPosition:(text::pos_t const&)pos;
 - (void)enumerateByteRangesUsingBlock:(void(^)(char const* bytes, NSRange byteRange, BOOL* stop))block;
 - (NSArray<OakDocumentMatch*>*)matchesForString:(NSString*)searchString options:(find::options_t)options;
 - (NSArray<OakDocumentMatch*>*)matchesForString:(NSString*)searchString options:(find::options_t)options bufferSize:(NSUInteger*)bufferSize;

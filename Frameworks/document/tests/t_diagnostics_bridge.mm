@@ -26,6 +26,10 @@ static OakDocument* document_with (NSString* content)
 	return res;
 }
 
+// text::pos_t prints one-based, which is also how the editor addresses a caret
+static std::string next_from (OakDocument* doc, size_t line, size_t column)     { return std::string([doc nextDiagnosticFromPosition:text::pos_t(line, column)]); }
+static std::string previous_from (OakDocument* doc, size_t line, size_t column) { return std::string([doc previousDiagnosticFromPosition:text::pos_t(line, column)]); }
+
 // One test function: creating documents registers them with the shared
 // OakDocumentController, and the test runner runs test functions in parallel.
 void test_diagnostics_bridge ()
@@ -186,6 +190,67 @@ void test_diagnostics_bridge ()
 		OAK_ASSERT_EQ(dirtyTo, [doc buffer].size() + 1);
 
 		[NSNotificationCenter.defaultCenter removeObserver:observer];
+	}
+
+	// The two questions the editor used to put to the gutter's marks: does this
+	// line have a problem (the code-action probe), and where is the next one
+	// (Next/Previous Diagnostic). Both are the buffer's to answer now, and both
+	// go through the document's line/index conversion to get there.
+	{
+		OakDocument* doc = document_with(@"alpha\n\nbéta\ngamma\n");
+		[doc setDiagnostics:@[
+			lsp_diagnostic(0, 1, 0, 3, @1),  // a range on line 0
+			lsp_diagnostic(1, 0, 1, 0, @2),  // a point on the empty line 1
+			lsp_diagnostic(3, 0, 4, 0, @1),  // a range on line 3, ending where line 4 starts
+		]];
+
+		OAK_ASSERT([doc hasDiagnosticsOnLine:0]);
+		OAK_ASSERT([doc hasDiagnosticsOnLine:1]); // the empty line's whole extent is one index
+		OAK_ASSERT(![doc hasDiagnosticsOnLine:2]);
+		OAK_ASSERT([doc hasDiagnosticsOnLine:3]);
+		OAK_ASSERT(![doc hasDiagnosticsOnLine:4]); // the range above stops where this line begins
+		OAK_ASSERT(![doc hasDiagnosticsOnLine:99]);
+
+		// Navigation lands on the reported column, not on the start of its line
+		OAK_ASSERT_EQ(next_from(doc, 0, 0), std::string("1:2"));
+		OAK_ASSERT_EQ(next_from(doc, 0, 1), std::string("2")); // an implicit column 1
+		OAK_ASSERT_EQ(next_from(doc, 1, 0), std::string("4"));
+		OAK_ASSERT_EQ(next_from(doc, 3, 0), std::string("1:2")); // wraps
+
+		OAK_ASSERT_EQ(previous_from(doc, 3, 0), std::string("2"));
+		OAK_ASSERT_EQ(previous_from(doc, 1, 0), std::string("1:2"));
+		OAK_ASSERT_EQ(previous_from(doc, 0, 1), std::string("4")); // wraps
+
+		// Navigation returns a byte column, and the LSP one it comes from counts
+		// UTF-16 units — on an ASCII line the two agree and prove nothing, so the
+		// case is pinned on the line that has a two-byte character in it. UTF-16
+		// column 2 in ‘béta’ is ‘t’, three bytes in; an implementation reading
+		// `character` as a byte column would point into the middle of ‘é’.
+		[doc setDiagnostics:@[ lsp_diagnostic(2, 2, 2, 4, @1) ]];
+		OAK_ASSERT_EQ(next_from(doc, 0, 0), std::string("3:4"));
+		OAK_ASSERT([doc hasDiagnosticsOnLine:2]);
+
+		// A zero-length diagnostic at end of line has no next character to
+		// underline, so the squiggle is grown onto the PREVIOUS one — and
+		// navigation has to land on the position the server reported anyway,
+		// which is where the missing token would be typed. Landing on the
+		// character borrowed to draw it puts the caret one place short.
+		[doc setDiagnostics:@[ lsp_diagnostic(0, 5, 0, 5, @1) ]]; // end of ‘alpha’
+		OAK_ASSERT_EQ(next_from(doc, 0, 0), std::string("1:6"));
+		OAK_ASSERT_EQ(previous_from(doc, 3, 0), std::string("1:6"));
+
+		// …and it still does between publishes, when an edit has moved the pair
+		// and the reported position is whatever the shifted range now ends at
+		[doc buffer].insert(0, "..");
+		OAK_ASSERT_EQ(next_from(doc, 0, 0), std::string("1:8"));
+		[doc buffer].erase(0, 2);
+
+		// A clean document has nowhere to go
+		[doc setDiagnostics:@[]];
+		OAK_ASSERT(![doc hasDiagnostics]);
+		OAK_ASSERT(![doc hasDiagnosticsOnLine:0]);
+		OAK_ASSERT([doc nextDiagnosticFromPosition:text::pos_t(0, 0)] == text::pos_t::undefined);
+		OAK_ASSERT([doc previousDiagnosticFromPosition:text::pos_t(0, 0)] == text::pos_t::undefined);
 	}
 }
 

@@ -320,6 +320,9 @@ namespace ng
 	std::pair<size_t, size_t> buffer_t::diagnostic_range_containing (size_t severity, size_t index) const             { return _diagnostics->range_containing(severity, index); }
 	std::vector<diagnostic_t> buffer_t::diagnostics_at (size_t index) const                                           { return _diagnostics->at(index); }
 	bool buffer_t::has_diagnostics () const                                                                            { return !_diagnostics->empty(); }
+	bool buffer_t::has_diagnostics_in (size_t from, size_t to) const                                                   { return _diagnostics->any_in(from, to); }
+	size_t buffer_t::next_diagnostic (size_t index) const                                                              { return _diagnostics->next_stop(index); }
+	size_t buffer_t::previous_diagnostic (size_t index) const                                                          { return _diagnostics->previous_stop(index); }
 	void buffer_t::recheck_spelling (size_t from, size_t to)                       { if(_spelling) _spelling->recheck(this, from, to); }
 
 	void buffer_t::set_live_spelling (bool flag)

@@ -3,7 +3,6 @@
 #import "LSPBundleSettings.h"
 #import <document/OakDocumentController.h>
 #import <settings/settings.h>
-#import <text/types.h>
 #import <io/path.h>
 #import <ns/ns.h>
 #import <OakFoundation/NSString Additions.h>
@@ -432,21 +431,14 @@ static NSString* clientKey (NSString* root, std::string const& lspCommand)
 // whether this is one document’s news or a whole client’s.
 - (void)applyStoredDiagnosticsToDocument:(OakDocument*)document
 {
-	NSString* uri = document.path ? [NSURL fileURLWithPath:document.path].absoluteString : nil;
-	NSArray<NSDictionary*>* remaining = uri ? [_diagnosticsStore diagnosticsForURI:uri] : @[];
+	// An unloaded document has nowhere to put them — its diagnostics lived in a
+	// buffer that no longer exists — and asks the store again when it loads. A
+	// purge walks every document it owned, so this is worth not looking up.
+	if(!document.isLoaded)
+		return;
 
-	if(document.isLoaded)
-	{
-		[self applyDiagnostics:remaining toDocument:document];
-	}
-	else
-	{
-		// applyDiagnostics: only touches loaded documents, but marks written
-		// while it was loaded outlive it on disk.
-		[document removeAllMarksOfType:@"error"];
-		[document removeAllMarksOfType:@"warning"];
-		[document removeAllMarksOfType:@"note"];
-	}
+	NSString* uri = document.path ? [NSURL fileURLWithPath:document.path].absoluteString : nil;
+	[self applyDiagnostics:uri ? [_diagnosticsStore diagnosticsForURI:uri] : @[] toDocument:document];
 }
 
 - (void)reapplyDiagnosticsForDocument:(OakDocument*)document
@@ -497,8 +489,8 @@ static NSString* clientKey (NSString* root, std::string const& lspCommand)
 	}
 
 	// Only documents that already exist. A file nobody opened has no buffer to
-	// clear and no marks to remove, and materializing one per URI would
-	// register hundreds of documents on a single crash.
+	// clear, and materializing one per URI would register hundreds of documents
+	// on a single crash.
 	if(removedPaths.count)
 	{
 		for(OakDocument* doc in OakDocumentController.sharedInstance.documents)
@@ -1230,37 +1222,20 @@ static std::string configuredCommandForDocument (OakDocument* document)
 	[NSNotificationCenter.defaultCenter postNotificationName:LSPServerStatusDidChangeNotification object:self];
 }
 
-// Push diagnostics into a loaded document: gutter marks plus the squiggle
-// ranges in the buffer. Shared by arrival and the re-apply paths (didOpen
-// of a file the server already analyzed, reload).
+// Push diagnostics into a loaded document, as ranges in its buffer. Shared by
+// arrival and the re-apply paths (didOpen of a file the server already
+// analyzed, reload).
+//
+// The gutter is deliberately not among the surfaces written to. Diagnostics
+// used to be published as `error`/`warning`/`note` marks in the bookmark
+// column, which is where they were read from — a click per message, in a
+// column that already had a job. Every one of those roles now has a surface of
+// its own (squiggle, hover, panel, minimap lane), so the column is left to the
+// bookmarks and to whatever `mate --set-mark` puts there.
 - (void)applyDiagnostics:(NSArray<NSDictionary*>*)diagnostics toDocument:(OakDocument*)doc
 {
 	if(!doc || !doc.isLoaded)
 		return;
-
-	[doc removeAllMarksOfType:@"error"];
-	[doc removeAllMarksOfType:@"warning"];
-	[doc removeAllMarksOfType:@"note"];
-
-	for(NSDictionary* diag in diagnostics)
-	{
-		NSString* message = diag[@"message"];
-		NSNumber* line    = diag[@"line"];
-
-		if(!message || !line)
-			continue;
-
-		NSString* markType;
-		switch(OakDiagnosticSeverityClass(diag[@"severity"]))
-		{
-			case 1:  markType = @"error";   break;
-			case 2:  markType = @"warning"; break;
-			default: markType = @"note";    break;
-		}
-
-		text::pos_t pos(line.unsignedIntegerValue, 0);
-		[doc setMarkOfType:markType atPosition:pos content:message];
-	}
 
 	[doc setDiagnostics:diagnostics];
 }

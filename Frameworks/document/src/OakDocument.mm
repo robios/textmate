@@ -1315,80 +1315,6 @@ static void* kDocumentEditedObserverContext = &kDocumentEditedObserverContext;
 	}
 }
 
-- (text::pos_t)nextMarkOfTypes:(NSArray<NSString*>*)types fromPosition:(text::pos_t const&)pos
-{
-	if(!self.isLoaded || !_buffer)
-		return text::pos_t::undefined;
-
-	std::set<std::string> typeSet;
-	for(NSString* type in types)
-		typeSet.insert(to_s(type));
-
-	size_t curIndex = _buffer->convert(pos);
-	size_t bufSize = _buffer->size();
-
-	// Search from cursor+1 to end
-	auto marks = _buffer->get_marks(curIndex + 1, bufSize);
-	for(auto const& pair : marks)
-	{
-		if(typeSet.count(pair.second.first))
-			return _buffer->convert(pair.first);
-	}
-
-	// Wrap: search from start, excluding current position
-	if(curIndex == 0)
-		return text::pos_t::undefined;
-	marks = _buffer->get_marks(0, curIndex - 1);
-	for(auto const& pair : marks)
-	{
-		if(typeSet.count(pair.second.first))
-			return _buffer->convert(pair.first);
-	}
-
-	return text::pos_t::undefined;
-}
-
-- (text::pos_t)prevMarkOfTypes:(NSArray<NSString*>*)types fromPosition:(text::pos_t const&)pos
-{
-	if(!self.isLoaded || !_buffer)
-		return text::pos_t::undefined;
-
-	std::set<std::string> typeSet;
-	for(NSString* type in types)
-		typeSet.insert(to_s(type));
-
-	size_t curIndex = _buffer->convert(pos);
-	size_t bufSize = _buffer->size();
-
-	// Search before cursor, excluding current position
-	text::pos_t result = text::pos_t::undefined;
-	if(curIndex > 0)
-	{
-		auto marks = _buffer->get_marks(0, curIndex - 1);
-		for(auto it = marks.rbegin(); it != marks.rend(); ++it)
-		{
-			if(typeSet.count(it->second.first))
-			{
-				result = _buffer->convert(it->first);
-				break;
-			}
-		}
-	}
-
-	if(result != text::pos_t::undefined)
-		return result;
-
-	// Wrap: search after cursor to end, take the last match
-	auto marks = _buffer->get_marks(curIndex + 1, bufSize);
-	for(auto it = marks.rbegin(); it != marks.rend(); ++it)
-	{
-		if(typeSet.count(it->second.first))
-			return _buffer->convert(it->first);
-	}
-
-	return text::pos_t::undefined;
-}
-
 - (void)enumerateByteRangesUsingBlock:(void(^)(char const* bytes, NSRange byteRange, BOOL* stop))block
 {
 	if(_buffer || (_backupPath && !self.isLoaded))
@@ -1629,7 +1555,10 @@ static size_t DiagnosticIndexForPosition (ng::buffer_t const& buffer, size_t lin
 // previous one. Extending onto the newline is not an option — foreground drawing
 // skips newline nodes. On an empty line, and in an empty document, it stays a
 // zero-width point, which the renderer draws as a short marker.
-static void ExtendDiagnosticPoint (ng::buffer_t const& buffer, size_t& from, size_t& to)
+// Answers whether it had to grow leftwards, which the diagnostic has to keep:
+// the reported position is then the range's END, and navigation would otherwise
+// put the caret one character before the place the server pointed at.
+static bool ExtendDiagnosticPoint (ng::buffer_t const& buffer, size_t& from, size_t& to)
 {
 	size_t const line = buffer.convert(from).line;
 	size_t const bol = buffer.begin(line), eol = buffer.eol(line);
@@ -1644,7 +1573,9 @@ static void ExtendDiagnosticPoint (ng::buffer_t const& buffer, size_t& from, siz
 		for(size_t i = bol; i < from; i += std::max<size_t>(buffer[i].size(), 1))
 			prev = i;
 		from = prev;
+		return true;
 	}
+	return false;
 }
 
 - (void)setDiagnostics:(NSArray<NSDictionary*>*)diagnostics
@@ -1667,7 +1598,7 @@ static void ExtendDiagnosticPoint (ng::buffer_t const& buffer, size_t& from, siz
 		if(entry.to < entry.from)
 			continue;
 		if((entry.zero_length = entry.from == entry.to))
-			ExtendDiagnosticPoint(*_buffer, entry.from, entry.to);
+			entry.grown_left = ExtendDiagnosticPoint(*_buffer, entry.from, entry.to);
 
 		// The payload travels with the range so the hover and the squiggle stay in
 		// the same coordinate system after an edit
@@ -1690,6 +1621,43 @@ static void ExtendDiagnosticPoint (ng::buffer_t const& buffer, size_t& from, siz
 	auto dirty = _buffer->set_diagnostics(entries);
 	if(dirty.changed)
 		[NSNotificationCenter.defaultCenter postNotificationName:OakDocumentDiagnosticsDidChangeNotification object:self userInfo:@{ @"from": @(dirty.from), @"to": @(dirty.to), @"redraw": @(dirty.redraw) }];
+}
+
+// Whether anything the editor can navigate to or draw is left after the
+// bridge’s conversion — which is not the same question as how many the server
+// sent, since a malformed range is dropped rather than clamped into something
+// it never said.
+- (BOOL)hasDiagnostics
+{
+	return _buffer && _buffer->has_diagnostics();
+}
+
+// A line’s whole extent, newline excluded — and on an empty line that is the
+// single index a point diagnostic can sit on, which is why the query takes
+// ‘to’ as inclusive.
+- (BOOL)hasDiagnosticsOnLine:(NSUInteger)line
+{
+	if(!_buffer || line >= _buffer->lines())
+		return NO;
+	return _buffer->has_diagnostics_in(_buffer->begin(line), _buffer->eol(line));
+}
+
+- (text::pos_t)nextDiagnosticFromPosition:(text::pos_t const&)pos
+{
+	if(!_buffer)
+		return text::pos_t::undefined;
+
+	size_t const index = _buffer->next_diagnostic(_buffer->convert(pos));
+	return index == SIZE_MAX ? text::pos_t::undefined : _buffer->convert(index);
+}
+
+- (text::pos_t)previousDiagnosticFromPosition:(text::pos_t const&)pos
+{
+	if(!_buffer)
+		return text::pos_t::undefined;
+
+	size_t const index = _buffer->previous_diagnostic(_buffer->convert(pos));
+	return index == SIZE_MAX ? text::pos_t::undefined : _buffer->convert(index);
 }
 
 - (NSString*)selectionStringForLine:(NSUInteger)line utf16Column:(NSUInteger)column

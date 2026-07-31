@@ -73,15 +73,24 @@ namespace ng
 		// end-inclusive for these, so a caret at the position actually reported —
 		// end of line, for a range grown leftwards — still finds the message.
 		bool zero_length = false;
+		// …and which side it grew towards, because at end of line there is no next
+		// character to take and it has to take the previous one instead. Without
+		// this the reported position is unrecoverable: both directions leave a
+		// one-character range flagged zero_length, and only the direction says
+		// whether the server pointed at its start or at its end.
+		bool grown_left = false;
 		std::string message;
 		std::string source;
 		std::string code;
 
 		bool is_point () const { return from == to; }
+		// Where the server said the problem is, which is not always where the
+		// squiggle starts. Navigation lands here.
+		size_t reported_index () const { return grown_left ? to : from; }
 
 		bool operator== (diagnostic_t const& rhs) const
 		{
-			return std::tie(from, to, severity, zero_length, message, source, code) == std::tie(rhs.from, rhs.to, rhs.severity, rhs.zero_length, rhs.message, rhs.source, rhs.code);
+			return std::tie(from, to, severity, zero_length, grown_left, message, source, code) == std::tie(rhs.from, rhs.to, rhs.severity, rhs.zero_length, rhs.grown_left, rhs.message, rhs.source, rhs.code);
 		}
 		bool operator!= (diagnostic_t const& rhs) const { return !(*this == rhs); }
 	};
@@ -197,6 +206,16 @@ namespace ng
 		std::pair<size_t, size_t> diagnostic_range_containing (size_t severity, size_t index) const;
 		std::vector<diagnostic_t> diagnostics_at (size_t index) const;
 		bool has_diagnostics () const;
+		// Whether anything is drawn between ‘from’ and ‘to’ — a range overlapping
+		// the window or a point in it, ‘to’ inclusive so an empty line, whose
+		// whole extent is one index, can be asked about as [begin, eol]. The
+		// window must not be reversed; ‘from’ > ‘to’ answers false rather than
+		// treating it as the window it is not.
+		bool has_diagnostics_in (size_t from, size_t to) const;
+		// Where the next/previous diagnostic starts, wrapping around the buffer;
+		// SIZE_MAX only when there are none at all.
+		size_t next_diagnostic (size_t index) const;
+		size_t previous_diagnostic (size_t index) const;
 
 		pairs_t& pairs ()              { return *_pairs.get(); }
 		pairs_t const& pairs () const  { return *_pairs.get(); }

@@ -39,6 +39,9 @@ namespace ng
 		bool point_at (size_t index) const;
 		std::pair<size_t, size_t> range_containing (size_t severity, size_t index) const;
 		std::vector<diagnostic_t> at (size_t index) const;
+		bool any_in (size_t from, size_t to) const;
+		size_t next_stop (size_t index) const;
+		size_t previous_stop (size_t index) const;
 
 		bool empty () const { return _diagnostics.empty(); }
 
@@ -54,6 +57,7 @@ namespace ng
 		std::vector<diagnostic_t> _diagnostics;                         // sorted by ‘from’
 		std::vector<std::pair<size_t, size_t>> _ranges[kSeverityCount]; // coalesced (from, to) per severity class
 		std::vector<std::pair<size_t, size_t>> _points;                 // (index, worst severity), sorted by index
+		std::vector<size_t> _stops;                                     // reported positions, sorted and unique: where navigation lands
 	};
 
 	struct symbols_t : meta_data_t

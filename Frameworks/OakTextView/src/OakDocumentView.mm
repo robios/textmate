@@ -1486,13 +1486,10 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 	if(![lsp serverSupportsCodeActionsForDocument:doc])
 		return;
 
-	__block BOOL hasDiagnostic = NO;
-	[doc enumerateBookmarksAtLine:line block:^(text::pos_t const& pos, NSString* type, NSString* payload){
-		if([type isEqualToString:@"error"] || [type isEqualToString:@"warning"] || [type isEqualToString:@"note"])
-			hasDiagnostic = YES;
-	}];
-
-	if(!hasDiagnostic)
+	// The buffer, not the gutter: diagnostics are no longer published as marks,
+	// and the buffer's ranges are the ones that follow the user's edits between
+	// publishes anyway.
+	if(![doc hasDiagnosticsOnLine:line])
 		return;
 
 	// Probe server for available actions on this line
@@ -1958,11 +1955,6 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 		}
 	}
 
-	NSDictionary* counts = [lsp diagnosticCountsForDocument:doc];
-	NSUInteger errors   = [counts[@"errors"] unsignedIntegerValue];
-	NSUInteger warnings = [counts[@"warnings"] unsignedIntegerValue];
-	NSUInteger info     = [counts[@"info"] unsignedIntegerValue];
-
 	// The panel is cross-file, so it is offered whether or not THIS file has
 	// anything wrong with it — an empty file in a project full of errors is
 	// exactly when the list is worth opening.
@@ -1971,7 +1963,11 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 	panelItem.target = self;
 	[menu addItem:panelItem];
 
-	if(errors + warnings + info > 0)
+	// Offered when there is somewhere for them to GO, which is the buffer's
+	// answer rather than the store's count. The two differ for a diagnostic the
+	// bridge dropped — a range the server gave backwards — and offering a jump
+	// that silently does nothing reads as the feature being broken.
+	if(doc.hasDiagnostics)
 	{
 		NSMenuItem* next = [[NSMenuItem alloc] initWithTitle:@"Next Diagnostic" action:@selector(lspNextDiagnostic:) keyEquivalent:@""];
 		next.target = self;
@@ -2019,13 +2015,17 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 	[[LSPManager sharedManager] reindexWorkspaceForDocument:self.document];
 }
 
+// Navigation reads the buffer's diagnostics rather than the marks it used to
+// publish, so it lands on the column the server actually complained about
+// instead of on the start of its line.
 - (void)lspNextDiagnostic:(id)sender
 {
-	NSArray<NSString*>* types = @[ @"error", @"warning", @"note" ];
 	text::selection_t sel(to_s(_textView.selectionString));
 	text::pos_t caret = sel.last().max();
-	text::pos_t next = [self.document nextMarkOfTypes:types fromPosition:caret];
-	if(next != text::pos_t::undefined)
+	// Wrapping onto the caret's own position means there is nowhere else to go;
+	// re-centring the view then looks like a jump that went nowhere.
+	text::pos_t next = [self.document nextDiagnosticFromPosition:caret];
+	if(next != text::pos_t::undefined && next != caret)
 	{
 		_textView.selectionString = to_ns(next);
 		[_textView centerSelectionInVisibleArea:self];
@@ -2034,11 +2034,10 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 
 - (void)lspPrevDiagnostic:(id)sender
 {
-	NSArray<NSString*>* types = @[ @"error", @"warning", @"note" ];
 	text::selection_t sel(to_s(_textView.selectionString));
 	text::pos_t caret = sel.last().max();
-	text::pos_t prev = [self.document prevMarkOfTypes:types fromPosition:caret];
-	if(prev != text::pos_t::undefined)
+	text::pos_t prev = [self.document previousDiagnosticFromPosition:caret];
+	if(prev != text::pos_t::undefined && prev != caret)
 	{
 		_textView.selectionString = to_ns(prev);
 		[_textView centerSelectionInVisibleArea:self];

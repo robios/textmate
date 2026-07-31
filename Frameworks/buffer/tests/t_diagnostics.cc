@@ -645,3 +645,106 @@ void test_diagnostics_many_ranges_lookup ()
 	assert_well_formed(buf);
 	OAK_ASSERT_EQ(buf.diagnostics(1, 0, buf.size()).size(), 1667);
 }
+
+void test_diagnostics_line_extent_query ()
+{
+	// The line-level question the code-action probe asks, once the gutter marks
+	// that used to answer it are gone.
+	ng::buffer_t buf;
+	buf.insert(0, "alpha\n\nbeta\ngamma\n"); // lines at 0, 6, 7, 12, 18
+
+	// A range on line 0, a point on the empty line 1, nothing on line 2, and a
+	// range on line 3 that stops where line 4 begins.
+	buf.set_diagnostics({ diag(1, 3, 1), diag(6, 6, 2), diag(12, 18, 1) });
+
+	OAK_ASSERT(buf.has_diagnostics_in(0, 5));    // line 0: the range
+	OAK_ASSERT(buf.has_diagnostics_in(6, 6));    // line 1: empty, and the point is its whole extent
+	OAK_ASSERT(!buf.has_diagnostics_in(7, 11));  // line 2: clean
+	OAK_ASSERT(buf.has_diagnostics_in(12, 17));  // line 3: the range
+	OAK_ASSERT(!buf.has_diagnostics_in(18, 18)); // line 4: the range above ends where it starts
+
+	// A multi-line range lights up every line it crosses, the empty one included
+	buf.set_diagnostics({ diag(1, 14, 1) });
+	OAK_ASSERT(buf.has_diagnostics_in(0, 5));
+	OAK_ASSERT(buf.has_diagnostics_in(6, 6));
+	OAK_ASSERT(buf.has_diagnostics_in(7, 11));
+	OAK_ASSERT(buf.has_diagnostics_in(12, 17));
+
+	// Severity is not part of the question
+	buf.set_diagnostics({ diag(8, 9, 3) });
+	OAK_ASSERT(buf.has_diagnostics_in(7, 11));
+	OAK_ASSERT(!buf.has_diagnostics_in(0, 5));
+
+	buf.set_diagnostics({});
+	OAK_ASSERT(!buf.has_diagnostics_in(0, buf.size()));
+
+	// A reversed window is not the window between the two indexes: answering it
+	// on the strength of a long range spanning both ends would be inventing one
+	buf.set_diagnostics({ diag(1, 14, 1) });
+	OAK_ASSERT(!buf.has_diagnostics_in(12, 5));
+	OAK_ASSERT(!buf.has_diagnostics_in(buf.size(), 0));
+}
+
+void test_diagnostics_navigation ()
+{
+	ng::buffer_t buf;
+	buf.insert(0, std::string(100, 'x'));
+	buf.set_diagnostics({ diag(10, 14, 1), diag(30, 30, 2), diag(50, 60, 3) });
+
+	// Strictly after / strictly before, so repeating the command moves on
+	OAK_ASSERT_EQ(buf.next_diagnostic(0), 10);
+	OAK_ASSERT_EQ(buf.next_diagnostic(10), 30);
+	OAK_ASSERT_EQ(buf.next_diagnostic(30), 50);
+	OAK_ASSERT_EQ(buf.previous_diagnostic(60), 50);
+	OAK_ASSERT_EQ(buf.previous_diagnostic(50), 30);
+	OAK_ASSERT_EQ(buf.previous_diagnostic(30), 10);
+
+	// From inside a range, forwards leaves it and backwards goes to its start —
+	// the caret is past that start, so it is the previous one
+	OAK_ASSERT_EQ(buf.next_diagnostic(12), 30);
+	OAK_ASSERT_EQ(buf.previous_diagnostic(55), 50);
+
+	// Both wrap, the way the marks this replaced did
+	OAK_ASSERT_EQ(buf.next_diagnostic(50), 10);
+	OAK_ASSERT_EQ(buf.next_diagnostic(buf.size()), 10);
+	OAK_ASSERT_EQ(buf.previous_diagnostic(10), 50);
+	OAK_ASSERT_EQ(buf.previous_diagnostic(0), 50);
+
+	// Two diagnostics sharing a start are one stop, not two
+	buf.set_diagnostics({ diag(10, 14, 1), diag(10, 20, 2) });
+	OAK_ASSERT_EQ(buf.next_diagnostic(0), 10);
+	OAK_ASSERT_EQ(buf.next_diagnostic(10), 10); // wrapped past both, back to the same place
+	OAK_ASSERT_EQ(buf.previous_diagnostic(10), 10);
+
+	// A zero-length diagnostic grown leftwards reports its END: at end of line
+	// there is no next character to underline, so the squiggle starts one before
+	// the position the server pointed at, and the caret belongs at that position
+	// rather than on the character borrowed to show it.
+	{
+		ng::diagnostic_t grown = diag(9, 10, 1);
+		grown.zero_length = true;
+		grown.grown_left  = true;
+		buf.set_diagnostics({ diag(20, 24, 1), grown });
+		OAK_ASSERT_EQ(buf.next_diagnostic(0), 10);
+		OAK_ASSERT_EQ(buf.previous_diagnostic(20), 10);
+		OAK_ASSERT_EQ(buf.next_diagnostic(10), 20);
+
+		// …and it keeps reporting its end after an edit moves the pair
+		buf.insert(0, "xx");
+		OAK_ASSERT_EQ(buf.next_diagnostic(0), 12);
+		buf.erase(0, 2);
+
+		// A range grown leftwards can report a position AFTER one that starts
+		// alongside it, which is why the stops are their own sorted index and not
+		// the diagnostic list read in order
+		ng::diagnostic_t alongside = diag(9, 30, 2);
+		buf.set_diagnostics({ grown, alongside });
+		OAK_ASSERT_EQ(buf.next_diagnostic(8), 9);
+		OAK_ASSERT_EQ(buf.next_diagnostic(9), 10);
+	}
+
+	// Nothing to navigate to
+	buf.set_diagnostics({});
+	OAK_ASSERT_EQ(buf.next_diagnostic(0), SIZE_MAX);
+	OAK_ASSERT_EQ(buf.previous_diagnostic(0), SIZE_MAX);
+}
