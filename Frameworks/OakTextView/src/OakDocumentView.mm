@@ -1593,8 +1593,17 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 			if(img)
 			{
 				CGFloat size = floor((self.lineHeight - 1) / 2) * 2 + 1;
-				NSImageSymbolConfiguration* config = [NSImageSymbolConfiguration configurationWithPointSize:size * 0.5 weight:NSFontWeightRegular];
-				return [img imageWithSymbolConfiguration:config];
+				NSImageSymbolConfiguration* config = [NSImageSymbolConfiguration configurationWithPointSize:size * 0.65 weight:NSFontWeightSemibold];
+				// A fixed amber rather than systemYellow: the gutter background follows
+				// the editor theme, not the system appearance the dynamic color
+				// resolves against, and plain yellow washes out on light gutters.
+				NSColor* amber = [NSColor colorWithSRGBRed:0.90 green:0.62 blue:0.05 alpha:1];
+				config = [config configurationByApplyingConfiguration:[NSImageSymbolConfiguration configurationWithHierarchicalColor:amber]];
+				img = [img imageWithSymbolConfiguration:config];
+				// The gutter draws template images as a silhouette in its gray icon
+				// color; opting out is what lets the yellow through.
+				[img setTemplate:NO];
+				return img;
 			}
 		}
 
