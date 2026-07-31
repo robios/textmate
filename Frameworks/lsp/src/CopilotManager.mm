@@ -531,7 +531,11 @@ static NSString* uriForDocument(OakDocument* doc)
 
 static NSString* languageIdForDocument(OakDocument* doc)
 {
-	return LSPLanguageIdForExtension(doc.path.pathExtension);
+	// Unlike LSPManager, keep the raw extension for unmapped types — Copilot
+	// accepts arbitrary language ids ("zig", "nim") and uses them for
+	// per-language enablement and telemetry
+	NSString* ext = doc.path.pathExtension;
+	return LSPLanguageIdForExtension(ext) ?: (ext.length ? ext.lowercaseString : @"plaintext");
 }
 
 // MARK: - Telemetry

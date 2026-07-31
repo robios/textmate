@@ -2272,7 +2272,7 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 NSString* LSPLanguageIdForExtension (NSString* ext)
 {
 	if(!ext.length)
-		return @"plaintext";
+		return nil;
 
 	static NSDictionary* map = @{
 		@"php"  : @"php",
@@ -2325,6 +2325,5 @@ NSString* LSPLanguageIdForExtension (NSString* ext)
 		@"dockerfile" : @"dockerfile",
 	};
 
-	NSString* langId = map[ext.lowercaseString];
-	return langId ?: ext.lowercaseString;
+	return map[ext.lowercaseString];
 }

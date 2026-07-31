@@ -402,6 +402,13 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 	else if([aKeyPath isEqualToString:@"fileType"])
 	{
 		_statusBar.fileType = self.document.fileType;
+
+		// A real grammar switch re-registers the document with LSP so it can
+		// attach to the new type's server. The initial KVO firing has no old
+		// value — it must not detach/reattach on every tab focus.
+		NSString* oldType = [changeDictionary[NSKeyValueChangeOldKey] isKindOfClass:[NSString class]] ? changeDictionary[NSKeyValueChangeOldKey] : nil;
+		if(oldType && ![oldType isEqualToString:self.document.fileType])
+			[LSPManager.sharedManager documentDidChangeFileType:self.document];
 	}
 	else if([aKeyPath isEqualToString:@"tabSize"])
 	{
@@ -453,7 +460,7 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(documentDidSave:) name:OakDocumentDidSaveNotification object:self.document];
 		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(documentWillClose:) name:OakDocumentWillCloseNotification object:self.document];
 		for(NSString* key in documentKeys)
-			[self.document addObserver:self forKeyPath:key options:NSKeyValueObservingOptionInitial context:nullptr];
+			[self.document addObserver:self forKeyPath:key options:NSKeyValueObservingOptionInitial|NSKeyValueObservingOptionOld context:nullptr];
 	}
 
 	[_textView setDocument:self.document];
@@ -1709,6 +1716,8 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 			title = [title stringByAppendingString:@" (starting…)"];
 		else if([status isEqualToString:@"indexing"])
 			title = [title stringByAppendingString:@" (indexing…)"];
+		else if([status isEqualToString:@"unavailable"])
+			title = [title stringByAppendingString:@" (not installed)"];
 
 		NSMenuItem* toggleItem = [[NSMenuItem alloc] initWithTitle:title action:@selector(toggleLSPEnabledForFileType:) keyEquivalent:@""];
 		toggleItem.target = self;
@@ -1729,9 +1738,14 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 		restart.target = self;
 		[menu addItem:restart];
 
-		NSMenuItem* reindex = [[NSMenuItem alloc] initWithTitle:@"Re-index Workspace" action:@selector(lspReindexWorkspace:) keyEquivalent:@""];
-		reindex.target = self;
-		[menu addItem:reindex];
+		// With no live client there is no workspace to re-index; Restart
+		// Server doubles as the retry after installing the missing binary.
+		if(![status isEqualToString:@"unavailable"])
+		{
+			NSMenuItem* reindex = [[NSMenuItem alloc] initWithTitle:@"Re-index Workspace" action:@selector(lspReindexWorkspace:) keyEquivalent:@""];
+			reindex.target = self;
+			[menu addItem:reindex];
+		}
 	}
 
 	NSDictionary* counts = [lsp diagnosticCountsForDocument:doc];

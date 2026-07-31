@@ -533,7 +533,9 @@ static NSButton* OakCreateImageToggleButton (NSImage* image, NSString* accessibi
 		return;
 	}
 
-	if(serverName && status)
+	if(serverName && [status isEqualToString:@"unavailable"])
+			self.lspPopUp.toolTip = [NSString stringWithFormat:@"%@ — not installed", serverName];
+	else if(serverName && status)
 			self.lspPopUp.toolTip = [NSString stringWithFormat:@"%@ — %@", serverName, status];
 	else if(serverName)
 			self.lspPopUp.toolTip = [NSString stringWithFormat:@"%@ — idle", serverName];
@@ -568,6 +570,19 @@ static NSButton* OakCreateImageToggleButton (NSImage* image, NSString* accessibi
 			NSForegroundColorAttributeName: [NSColor systemOrangeColor],
 		}]];
 		[attrTitle appendAttributedString:[[NSAttributedString alloc] initWithString:@"indexing" attributes:@{
+			NSFontAttributeName: font,
+			NSForegroundColorAttributeName: NSColor.secondaryLabelColor,
+		}]];
+	}
+	else if([status isEqualToString:@"unavailable"])
+	{
+		// A server is configured but its launch failed (binary missing) —
+		// must read as a warning, not as the dimmed idle look.
+		[attrTitle appendAttributedString:[[NSAttributedString alloc] initWithString:@"◉ " attributes:@{
+			NSFontAttributeName: font,
+			NSForegroundColorAttributeName: [NSColor systemOrangeColor],
+		}]];
+		[attrTitle appendAttributedString:[[NSAttributedString alloc] initWithString:@"LSP" attributes:@{
 			NSFontAttributeName: font,
 			NSForegroundColorAttributeName: NSColor.secondaryLabelColor,
 		}]];

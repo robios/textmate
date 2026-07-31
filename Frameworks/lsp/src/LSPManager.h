@@ -10,6 +10,7 @@ extern NSString* const LSPServerStatusDidChangeNotification;
 + (instancetype)sharedManager;
 - (void)documentDidOpen:(OakDocument*)document;
 - (void)documentDidChange:(OakDocument*)document;
+- (void)documentDidChangeFileType:(OakDocument*)document;
 - (void)documentDidSave:(OakDocument*)document;
 - (void)documentWillClose:(OakDocument*)document;
 - (void)shutdownAll;

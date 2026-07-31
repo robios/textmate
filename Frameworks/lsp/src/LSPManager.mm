@@ -32,6 +32,8 @@ static NSDictionary<NSString*, NSString*>* scopeToLanguageId ()
 		@"source.yaml"          : @"yaml",
 		@"source.swift"         : @"swift",
 		@"text.html.markdown"   : @"markdown",
+		@"text.tex"             : @"latex",
+		@"text.bibtex"          : @"bibtex",
 	};
 	return map;
 }
@@ -65,6 +67,21 @@ static NSString* languageIdForScope (NSString* fileType)
 }
 
 // Uses shared LSPLanguageIdForExtension() from LSPClient.mm
+
+// Defined below, next to serverStatusForDocument:.
+static std::string configuredCommandForDocument (OakDocument* document);
+
+// Would the same lspCommand apply to an arbitrary unrelated file in the same
+// directory? If so it is unscoped; if not, something targeted it at this
+// file specifically — a path glob like “[ *.zig ]” in .tm_properties or a
+// scope-selector match. The probe file name matches no reasonable glob.
+static bool commandIsScopedToDocument (OakDocument* document, std::string const& command)
+{
+	std::string directory = to_s(document.directory ?: [document.path stringByDeletingLastPathComponent]);
+	std::string probePath = path::join(directory, ".tm-lsp-scope-probe");
+	settings_t probeSettings = settings_for_path(probePath, "text.plain", directory);
+	return lsp::setting_with_bundle_fallback(kSettingsLSPCommandKey, probeSettings, scope::scope_t("text.plain")) != command;
+}
 
 static std::vector<std::string> const& workspaceMarkers ()
 {
@@ -104,7 +121,16 @@ static std::string detectWorkspaceRoot (std::string const& filePath)
 	NSMutableSet<NSUUID*>*                                   _openDocuments;
 	NSMutableDictionary<NSUUID*, NSTimer*>*                  _changeTimers;
 	NSMutableDictionary<NSString*, NSArray<NSDictionary*>*>* _diagnosticsByURI;
-	NSMutableSet<NSString*>* _clearCacheRoots;
+	// Keyed like _clients (root + lspCommand) so a re-index only flags the
+	// server it was requested for, not every server sharing the workspace.
+	NSMutableSet<NSString*>* _clearCacheKeys;
+
+	// lspCommand values whose launch failed (binary not found or not
+	// executable), grouped by workspace root — a relative command can exist
+	// in one workspace and not another, so a failure must not leak across
+	// them. Keys are the full command string, so editing the setting retries
+	// naturally; Restart Server clears its workspace's entries explicitly.
+	NSMutableDictionary<NSString*, NSMutableSet<NSString*>*>* _failedCommandsByRoot;
 }
 @end
 
@@ -129,7 +155,8 @@ static std::string detectWorkspaceRoot (std::string const& filePath)
 		_openDocuments      = [NSMutableSet new];
 		_changeTimers       = [NSMutableDictionary new];
 		_diagnosticsByURI   = [NSMutableDictionary new];
-		_clearCacheRoots    = [NSMutableSet new];
+		_clearCacheKeys     = [NSMutableSet new];
+		_failedCommandsByRoot = [NSMutableDictionary new];
 
 		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(applicationWillTerminate:) name:NSApplicationWillTerminateNotification object:nil];
 	}
@@ -141,12 +168,20 @@ static std::string detectWorkspaceRoot (std::string const& filePath)
 	[self shutdownAll];
 }
 
-- (NSString*)rootForClient:(LSPClient*)client
+// _clients is keyed by workspace root + lspCommand: one server per language
+// per workspace, so a C file and a Python file in the same root each get
+// their own server.
+static NSString* clientKey (NSString* root, std::string const& lspCommand)
 {
-	for(NSString* root in _clients)
+	return [NSString stringWithFormat:@"%@\n%s", root, lspCommand.c_str()];
+}
+
+- (NSString*)keyForClient:(LSPClient*)client
+{
+	for(NSString* key in _clients)
 	{
-		if(_clients[root] == client)
-			return root;
+		if(_clients[key] == client)
+			return key;
 	}
 	return nil;
 }
@@ -178,10 +213,18 @@ static std::string detectWorkspaceRoot (std::string const& filePath)
 	if(rootPath.empty())
 		rootPath = detectWorkspaceRoot(filePath);
 
+	// A running client for this workspace and command always wins — even if
+	// the same command failed to launch elsewhere.
 	NSString* root = to_ns(rootPath);
-	LSPClient* client = _clients[root];
+	NSString* key = clientKey(root, lspCommand);
+	LSPClient* client = _clients[key];
 	if(client)
 		return client;
+
+	// Don’t retry a launch that already failed in this workspace on every
+	// document open — Restart Server (or editing lspCommand) clears it.
+	if([_failedCommandsByRoot[root] containsObject:to_ns(lspCommand)])
+		return nil;
 
 	// Parse command: first whitespace-delimited token is executable, rest are args
 	std::vector<std::string> parts = path::unescape(lspCommand);
@@ -196,9 +239,9 @@ static std::string detectWorkspaceRoot (std::string const& filePath)
 	std::string initOpts = lsp::setting_with_bundle_fallback(kSettingsLSPInitOptionsKey, settings, scopeContext);
 	NSString* initOptsJSON = initOpts.empty() ? nil : to_ns(initOpts);
 
-	if([_clearCacheRoots containsObject:root])
+	if([_clearCacheKeys containsObject:key])
 	{
-		[_clearCacheRoots removeObject:root];
+		[_clearCacheKeys removeObject:key];
 		// Merge clearCache:true into initializationOptions for servers like Intelephense
 		if(initOptsJSON.length)
 		{
@@ -217,8 +260,17 @@ static std::string detectWorkspaceRoot (std::string const& filePath)
 	}
 
 	client = [[LSPClient alloc] initWithCommand:executable arguments:args workingDirectory:root initOptions:initOptsJSON];
+	if(!client)
+	{
+		NSMutableSet<NSString*>* failed = _failedCommandsByRoot[root];
+		if(!failed)
+			failed = _failedCommandsByRoot[root] = [NSMutableSet new];
+		[failed addObject:to_ns(lspCommand)];
+		[NSNotificationCenter.defaultCenter postNotificationName:LSPServerStatusDidChangeNotification object:self];
+		return nil;
+	}
 	client.delegate = self;
-	_clients[root] = client;
+	_clients[key] = client;
 	[NSNotificationCenter.defaultCenter postNotificationName:LSPServerStatusDidChangeNotification object:self];
 	return client;
 }
@@ -231,7 +283,22 @@ static std::string detectWorkspaceRoot (std::string const& filePath)
 
 	NSString* langId = languageIdForScope(document.fileType);
 	if([langId isEqualToString:@"plaintext"] && document.path)
+	{
 		langId = LSPLanguageIdForExtension(document.path.pathExtension);
+
+		// Unknown extension: still connect when the lspCommand was targeted
+		// at this file (e.g. “[ *.zig ] lspCommand = zls” with no Zig
+		// grammar installed), passing the raw extension as languageId. Only
+		// an unscoped command — one an arbitrary file next door would
+		// inherit — must not attach plain-text documents.
+		if(!langId && document.path.pathExtension.length)
+		{
+			std::string command = configuredCommandForDocument(document);
+			if(!command.empty() && commandIsScopedToDocument(document, command))
+				langId = document.path.pathExtension.lowercaseString;
+		}
+		langId = langId ?: @"plaintext";
+	}
 
 	// Don't connect plaintext files — prevents unscoped lspCommand
 	// from launching a server for every file type
@@ -281,7 +348,12 @@ static std::string detectWorkspaceRoot (std::string const& filePath)
 {
 	NSUUID* docId = document.identifier;
 	if(![_openDocuments containsObject:docId])
+	{
+		// An untitled document has no path to attach with — its first save
+		// is the first chance to connect it to a server.
+		[self documentDidOpen:document];
 		return;
+	}
 
 	// Flush any pending change notification
 	if(_changeTimers[docId])
@@ -318,6 +390,38 @@ static std::string detectWorkspaceRoot (std::string const& filePath)
 		NSURL* fileURL = [NSURL fileURLWithPath:path];
 		[_diagnosticsByURI removeObjectForKey:fileURL.absoluteString];
 	}
+}
+
+// Remove the document's LSP diagnostics — the gutter marks and the cached
+// entries — and tell the UI. Only needed when a document leaves its server
+// while staying open (grammar switch); a normal close tears the document
+// down anyway, so documentWillClose: does not pay for this.
+- (void)clearDiagnosticsForDocument:(OakDocument*)document
+{
+	NSString* uri = document.path ? [NSURL fileURLWithPath:document.path].absoluteString : nil;
+	if(uri)
+		[_diagnosticsByURI removeObjectForKey:uri];
+
+	[document removeAllMarksOfType:@"error"];
+	[document removeAllMarksOfType:@"warning"];
+	[document removeAllMarksOfType:@"note"];
+
+	if(uri)
+		[NSNotificationCenter.defaultCenter postNotificationName:LSPDiagnosticsDidChangeNotification object:self userInfo:@{ @"uri": uri }];
+}
+
+// The document's grammar changed: whatever registration it had under the
+// old language — a client, a languageId, possibly none — no longer applies.
+// Detach (a no-op when unregistered), drop the old language's diagnostics —
+// a server that no longer covers the document will never send the empty
+// update that would clear them — and run the open path again so the document
+// attaches to whichever server the new type is configured with.
+- (void)documentDidChangeFileType:(OakDocument*)document
+{
+	[self documentWillClose:document];
+	[self clearDiagnosticsForDocument:document];
+	[self documentDidOpen:document];
+	[NSNotificationCenter.defaultCenter postNotificationName:LSPServerStatusDidChangeNotification object:self];
 }
 
 - (void)shutdownAll
@@ -707,25 +811,26 @@ static std::string detectWorkspaceRoot (std::string const& filePath)
 	return @{ @"errors": @(errors), @"warnings": @(warnings), @"info": @(info) };
 }
 
-- (NSString*)serverStatusForDocument:(OakDocument*)document
+// The CONFIGURED lspCommand for this document (settings with bundle
+// Preferences fallback), or the empty string when none is set — independent
+// of whether a client is currently attached.
+static std::string configuredCommandForDocument (OakDocument* document)
 {
-	LSPClient* client = _documentClients[document.identifier];
-	if(!client)
-		return nil;
-	if(client.initialized && client.indexing)
-		return @"indexing";
-	if(client.initialized)
-		return @"running";
-	if(client.running)
-		return @"starting";
-	return nil;
+	NSString* path = document.path;
+	if(!path)
+		return "";
+
+	std::string filePath  = to_s(path);
+	std::string fileType  = to_s(document.fileType);
+	std::string directory = to_s(document.directory ?: [path stringByDeletingLastPathComponent]);
+
+	settings_t settings = settings_for_path(filePath, fileType, directory);
+	return lsp::setting_with_bundle_fallback(kSettingsLSPCommandKey, settings, scope::scope_t(fileType));
 }
 
-// The CONFIGURED server for this document (lspCommand from settings or
-// bundle defaults) — independent of whether a client is currently attached
-// or lspEnabled permits one, so the status-bar menu can offer the
-// per-file-type toggle while the server is disabled.
-- (NSString*)serverNameForDocument:(OakDocument*)document
+// The workspace root the document's client uses (lspRootPath setting or
+// marker detection) — the unit the failure cache is scoped by.
+- (NSString*)workspaceRootForDocument:(OakDocument*)document
 {
 	NSString* path = document.path;
 	if(!path)
@@ -736,7 +841,47 @@ static std::string detectWorkspaceRoot (std::string const& filePath)
 	std::string directory = to_s(document.directory ?: [path stringByDeletingLastPathComponent]);
 
 	settings_t settings = settings_for_path(filePath, fileType, directory);
-	std::string lspCommand = lsp::setting_with_bundle_fallback(kSettingsLSPCommandKey, settings, scope::scope_t(fileType));
+	std::string rootPath = lsp::setting_with_bundle_fallback(kSettingsLSPRootPathKey, settings, scope::scope_t(fileType));
+	if(rootPath.empty())
+		rootPath = detectWorkspaceRoot(filePath);
+	return to_ns(rootPath);
+}
+
+- (NSString*)serverStatusForDocument:(OakDocument*)document
+{
+	LSPClient* client = _documentClients[document.identifier];
+	if(!client)
+	{
+		// No client can mean “nothing configured” (nil → idle look) or “the
+		// configured command failed to launch” — the status bar must not
+		// render the latter as idle. A document whose effective lspEnabled is
+		// off is idle by choice, never “unavailable”, even with a recorded
+		// failure — re-enabling brings the failure state back until Restart
+		// Server retries.
+		std::string lspCommand = configuredCommandForDocument(document);
+		if(!lspCommand.empty() && [self lspEnabledForDocument:document])
+		{
+			NSString* root = [self workspaceRootForDocument:document];
+			if(root && [_failedCommandsByRoot[root] containsObject:to_ns(lspCommand)])
+				return @"unavailable";
+		}
+		return nil;
+	}
+	if(client.initialized && client.indexing)
+		return @"indexing";
+	if(client.initialized)
+		return @"running";
+	if(client.running)
+		return @"starting";
+	return nil;
+}
+
+// The CONFIGURED server for this document — independent of whether a client
+// is currently attached or lspEnabled permits one, so the status-bar menu
+// can offer the per-file-type toggle while the server is disabled.
+- (NSString*)serverNameForDocument:(OakDocument*)document
+{
+	std::string lspCommand = configuredCommandForDocument(document);
 	if(lspCommand.empty())
 		return nil;
 
@@ -749,9 +894,21 @@ static std::string detectWorkspaceRoot (std::string const& filePath)
 
 - (void)restartServerForDocument:(OakDocument*)document
 {
+	// Forget this workspace's failed launches so the restart really retries —
+	// the recovery path after the user installs a missing server binary.
+	// Other workspaces' failure records stay untouched.
+	if(NSString* root = [self workspaceRootForDocument:document])
+		[_failedCommandsByRoot removeObjectForKey:root];
+
 	LSPClient* client = _documentClients[document.identifier];
 	if(!client)
+	{
+		// A failed launch left the document unregistered (documentDidOpen:
+		// bailed before adding it), so opening it again runs the full path.
+		[self documentDidOpen:document];
+		[NSNotificationCenter.defaultCenter postNotificationName:LSPServerStatusDidChangeNotification object:self];
 		return;
+	}
 
 	// Collect affected documents and clean up state synchronously
 	// so documentDidOpen: can re-register them with a fresh client
@@ -767,9 +924,9 @@ static std::string detectWorkspaceRoot (std::string const& filePath)
 	}
 
 	// Remove client from _clients so a new one will be created
-	NSString* rootToRemove = [self rootForClient:client];
-	if(rootToRemove)
-		[_clients removeObjectForKey:rootToRemove];
+	NSString* keyToRemove = [self keyForClient:client];
+	if(keyToRemove)
+		[_clients removeObjectForKey:keyToRemove];
 
 	// Dissociate documents before shutdown
 	for(OakDocument* doc in affectedDocs)
@@ -813,9 +970,9 @@ static std::string detectWorkspaceRoot (std::string const& filePath)
 
 	// Dissociate every document served by this client so a later
 	// documentDidOpen: (lazy attach on focus) can start fresh
-	NSString* rootToRemove = [self rootForClient:client];
-	if(rootToRemove)
-		[_clients removeObjectForKey:rootToRemove];
+	NSString* keyToRemove = [self keyForClient:client];
+	if(keyToRemove)
+		[_clients removeObjectForKey:keyToRemove];
 
 	for(NSUUID* docId in [_documentClients allKeys])
 	{
@@ -857,9 +1014,8 @@ static std::string detectWorkspaceRoot (std::string const& filePath)
 	NSLog(@"[LSP:%@] Re-index: restarting with clearCache", client.serverName);
 
 	// Fallback: restart with clearCache in initializationOptions
-	NSString* rootToFlag = [self rootForClient:client];
-	if(rootToFlag)
-		[_clearCacheRoots addObject:rootToFlag];
+	if(NSString* keyToFlag = [self keyForClient:client])
+		[_clearCacheKeys addObject:keyToFlag];
 
 	[self restartServerForDocument:document];
 }
@@ -915,9 +1071,9 @@ static std::string detectWorkspaceRoot (std::string const& filePath)
 	NSLog(@"[LSP:%@] Handling server termination, cleaning up client", client.serverName);
 
 	// Find and remove the dead client from _clients
-	NSString* rootToRemove = [self rootForClient:client];
-	if(rootToRemove)
-		[_clients removeObjectForKey:rootToRemove];
+	NSString* keyToRemove = [self keyForClient:client];
+	if(keyToRemove)
+		[_clients removeObjectForKey:keyToRemove];
 
 	// Dissociate all documents that were using this client
 	NSMutableArray<NSUUID*>* docIdsToRemove = [NSMutableArray new];
