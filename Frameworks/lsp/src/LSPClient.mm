@@ -1032,7 +1032,15 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 		{"initializationOptions", _initOptionsJSON.length ? json::parse(_initOptionsJSON.UTF8String, nullptr, false) : json::object()},
 		{"capabilities", {
 			{"textDocument", {
-				{"publishDiagnostics", json::object()},
+				// relatedInformation keeps servers from degrading notes into standalone
+				// diagnostics (clangd would otherwise publish each note as its own entry
+				// and attach the parent's fix to it, duplicating quickfix menu items);
+				// tagSupport is what makes pyright publish its Unnecessary-tagged hints
+				// (unused imports) at all.
+				{"publishDiagnostics", {
+					{"relatedInformation", true},
+					{"tagSupport", {{"valueSet", {1, 2}}}}
+				}},
 				{"synchronization", {
 					{"didSave", true},
 					{"dynamicRegistration", false}
