@@ -699,6 +699,243 @@ void test_a_queued_setting_undoes_to_what_the_one_before_it_committed ()
 	OAK_ASSERT_EQ(to_s([plist[@"bundles"] firstObject][@"trackingRef"]), "v2");
 }
 
+// =========================================
+// = Trusting a tap instead of each bundle =
+// =========================================
+
+static NSString* const kUserRefUUID = @"1D9E4E2A-4E5D-4C2B-9A2E-6F0C1B7A2C33";
+
+// One tap the user trusts, one they merely subscribed to; two bundles from the
+// first — one following the catalogue, one on a ref the user chose — and one
+// from the second. The bundles’ URLs are deliberately not GitHub ones: a poll
+// resolves them, and fails, without a network.
+static NSDictionary* TapRegistryState (BOOL trusted)
+{
+	return @{
+		@"schemaVersion": @1,
+		@"taps": @[
+			@{ @"id": @"TAP-1", @"url": @"https://github.com/robios/tm-bundles", @"name": @"robios bundles", @"autoUpdate": @(trusted) },
+			@{ @"id": @"TAP-2", @"url": @"https://github.com/someone/bundles" },
+		],
+		@"bundles": @[
+			@{ @"uuid": kUUID,        @"name": @"Catalogue", @"url": @"https://example.com/a/b", @"refMode": @"catalogue", @"catalogueRef": @"main", @"tap": @"TAP-1" },
+			@{ @"uuid": kUserRefUUID, @"name": @"User Ref",  @"url": @"https://example.com/a/d", @"refMode": @"user", @"trackingRef": @"release", @"catalogueRef": @"main", @"tap": @"TAP-1" },
+			@{ @"uuid": kOtherUUID,   @"name": @"Other Tap", @"url": @"https://example.com/a/c", @"refMode": @"catalogue", @"catalogueRef": @"main", @"tap": @"TAP-2" },
+		],
+	};
+}
+
+static BundleSubscriptionManager* ManagerWithTaps (NSString* directory, BOOL trusted)
+{
+	return ManagerWithState(directory, TapRegistryState(trusted));
+}
+
+// The same state, behind a manager that records what each poll decided instead
+// of trying to act on it
+static RecordingBundleSubscriptionManager* RecordingManagerWithTaps (NSString* directory, BOOL trusted)
+{
+	NSString* registryPath = [directory stringByAppendingPathComponent:@"State/Subscriptions.plist"];
+	WritePlist(registryPath, TapRegistryState(trusted));
+
+	RecordingBundleSubscriptionManager* manager = [[RecordingBundleSubscriptionManager alloc] initWithInstallDirectory:directory registryFileURL:[NSURL fileURLWithPath:registryPath]];
+	[manager loadRegistry];
+	return manager;
+}
+
+void test_the_effective_policy_is_the_or_of_the_two_settings ()
+{
+	BundleSubscriptionManager* manager = ManagerWithTaps(TemporaryDirectory(), YES);
+
+	BundleSubscription* trusted = [manager subscriptionWithIdentifier:[[NSUUID alloc] initWithUUIDString:kUUID]];
+	BundleSubscription* plain   = [manager subscriptionWithIdentifier:[[NSUUID alloc] initWithUUIDString:kOtherUUID]];
+
+	// What the tap vouches for is enough on its own — and the per-bundle flag it
+	// speaks for is left exactly as it was, so withdrawing trust gives back the
+	// state that was there before.
+	OAK_ASSERT_EQ((bool)[manager tapTrustCoversSubscription:trusted], true);
+	OAK_ASSERT_EQ((bool)[manager effectiveAutoUpdateForSubscription:trusted], true);
+	OAK_ASSERT_EQ((bool)trusted.autoUpdate, false);
+
+	// A tap that was not trusted changes nothing about its bundles, which keep
+	// their own flag as their only switch
+	OAK_ASSERT_EQ((bool)[manager effectiveAutoUpdateForSubscription:plain], false);
+	plain.autoUpdate = YES;
+	OAK_ASSERT_EQ((bool)[manager effectiveAutoUpdateForSubscription:plain], true);
+	OAK_ASSERT_EQ((bool)[manager tapTrustCoversSubscription:plain], false);
+
+	// A ref the user chose is not one the curator published
+	trusted.refMode = BundleSubscriptionRefModeUser;
+	OAK_ASSERT_EQ((bool)[manager effectiveAutoUpdateForSubscription:trusted], false);
+	trusted.refMode = BundleSubscriptionRefModeCatalogue;
+
+	// …and a bundle dropped from the catalogue is no longer vouched for at all
+	trusted.orphaned = YES;
+	OAK_ASSERT_EQ((bool)[manager effectiveAutoUpdateForSubscription:trusted], false);
+	trusted.orphaned = NO;
+
+	// A tap that is not registered here speaks for nothing, and neither does no
+	// tap at all
+	trusted.tapIdentifier = @"GONE";
+	OAK_ASSERT_EQ((bool)[manager effectiveAutoUpdateForSubscription:trusted], false);
+	trusted.tapIdentifier = nil;
+	OAK_ASSERT_EQ((bool)[manager effectiveAutoUpdateForSubscription:trusted], false);
+}
+
+void test_a_moved_source_blocks_what_the_policy_still_permits ()
+{
+	BundleSubscriptionManager* manager = ManagerWithTaps(TemporaryDirectory(), YES);
+	BundleSubscription* subscription = [manager subscriptionWithIdentifier:[[NSUUID alloc] initWithUUIDString:kUUID]];
+
+	OAK_ASSERT_EQ((bool)[manager shouldApplyUpdateForSubscription:subscription], true);
+
+	// A catalogue that moved this bundle to a different repository is a source
+	// switch, not an update. Trust does not reach it: the setting is still what
+	// the user chose — which is what the menu goes on showing — but nothing is
+	// applied until they install the new source themselves.
+	subscription.sourceChanged = YES;
+	OAK_ASSERT_EQ((bool)[manager effectiveAutoUpdateForSubscription:subscription], true);
+	OAK_ASSERT_EQ((bool)[manager shouldApplyUpdateForSubscription:subscription], false);
+}
+
+void test_trust_that_cannot_be_recorded_is_not_granted ()
+{
+	NSString* directory = TemporaryDirectory();
+	BundleSubscriptionManager* manager = ManagerWithTaps(directory, NO);
+
+	NSString* stateDirectory = [directory stringByAppendingPathComponent:@"State"];
+	SetDirectoryWritable(stateDirectory, NO);
+
+	__block NSError* error = nil;
+	__block BOOL didFinish = NO;
+	[manager setAutoUpdate:YES forTap:manager.taps.firstObject completionHandler:^(NSError* err){ error = err; didFinish = YES; }];
+	SetDirectoryWritable(stateDirectory, YES);
+
+	// A trust that only lasts until the next launch is not a trust — and nothing
+	// may be applied on the strength of one, which is why the poll comes after
+	// the write rather than before it.
+	OAK_ASSERT_EQ((bool)didFinish, true);
+	OAK_ASSERT_EQ((bool)error, true);
+	OAK_ASSERT_EQ((bool)manager.taps.firstObject.autoUpdate, false);
+	OAK_ASSERT_EQ((bool)manager.subscriptions.firstObject.isUnavailable, false);
+}
+
+void test_trusting_a_tap_applies_what_is_already_waiting ()
+{
+	NSString* directory = TemporaryDirectory();
+	RecordingBundleSubscriptionManager* manager = RecordingManagerWithTaps(directory, NO);
+
+	__block NSArray<NSString*>* polledWhenReported = nil;
+	__block NSError* error = nil;
+	__block BOOL didFinish = NO;
+
+	[manager setAutoUpdate:YES forTap:manager.taps.firstObject completionHandler:^(NSError* err){
+		error = err;
+		polledWhenReported = [manager.polled copy];
+		didFinish = YES;
+	}];
+
+	// Checking the box and watching a row sit at “update available” until the
+	// next scheduled wake would read as the box not having worked — so the poll
+	// has to have run, with applying *enabled*, before this reported success. A
+	// poll that merely looked would leave the same rows in the same state.
+	OAK_ASSERT_EQ((bool)didFinish, true);
+	OAK_ASSERT_EQ(polledWhenReported.count, 2);
+	OAK_ASSERT_EQ(to_s(polledWhenReported.firstObject), "Catalogue apply=YES");
+
+	// Trust reaches what the catalogue publishes and stops there: the bundle on
+	// a ref the user chose is polled with the same tap, and applies nothing.
+	OAK_ASSERT_EQ(to_s(polledWhenReported.lastObject), "User Ref apply=NO");
+
+	// The error reports whether the setting was saved. One bundle that could not
+	// be resolved stays on its own status, where the next poll can clear it, and
+	// does not take the other bundles of the tap down with it.
+	OAK_ASSERT_EQ((bool)error, false);
+	OAK_ASSERT_EQ((bool)manager.taps.firstObject.autoUpdate, true);
+
+	NSDictionary* plist = [NSDictionary dictionaryWithContentsOfFile:[directory stringByAppendingPathComponent:@"State/Subscriptions.plist"]];
+	OAK_ASSERT_EQ((bool)[[plist[@"taps"] firstObject][@"autoUpdate"] boolValue], true);
+}
+
+void test_withdrawing_trust_is_not_retroactive ()
+{
+	NSString* directory = TemporaryDirectory();
+	RecordingBundleSubscriptionManager* manager = RecordingManagerWithTaps(directory, YES);
+
+	__block NSError* error = nil;
+	[manager setAutoUpdate:NO forTap:manager.taps.firstObject completionHandler:^(NSError* err){ error = err; }];
+
+	// Nothing to undo and nothing to fetch: it stops the next application, and
+	// the copies already installed are not a change of mind's to take back.
+	OAK_ASSERT_EQ((bool)error, false);
+	OAK_ASSERT_EQ((bool)manager.taps.firstObject.autoUpdate, false);
+	OAK_ASSERT_EQ(manager.polled.count, 0);
+}
+
+void test_trust_reaches_only_the_tap_it_was_given_to ()
+{
+	NSString* directory = TemporaryDirectory();
+	RecordingBundleSubscriptionManager* manager = RecordingManagerWithTaps(directory, NO);
+
+	[manager setAutoUpdate:YES forTap:manager.taps.firstObject completionHandler:nil];
+
+	// The second tap's bundle is not in the snapshot the setter polls at all —
+	// its own tap was not trusted, and nothing here speaks for it.
+	for(NSString* entry in manager.polled)
+		OAK_ASSERT_EQ((bool)[entry hasPrefix:@"Other Tap"], false);
+	OAK_ASSERT_EQ(manager.polled.count, 2);
+
+	// …and a poll of every subscription — what the scheduler runs, minus the
+	// catalogue refresh that would need a network — decides the same thing for
+	// the same reasons: the trusted tap's catalogue-mode bundle, and nothing else.
+	[manager.polled removeAllObjects];
+	[manager pollSubscriptions:manager.subscriptions atIndex:0 applyUpdates:YES completionHandler:^{ }];
+
+	OAK_ASSERT_EQ(manager.polled.count, 3);
+	OAK_ASSERT_EQ(to_s(manager.polled.firstObject), "Catalogue apply=YES");
+	OAK_ASSERT_EQ(to_s(manager.polled.lastObject), "Other Tap apply=NO");
+
+	// The same poll on a scheduler that is only allowed to look applies nothing
+	[manager.polled removeAllObjects];
+	[manager pollSubscriptions:manager.subscriptions atIndex:0 applyUpdates:NO completionHandler:^{ }];
+
+	OAK_ASSERT_EQ(to_s(manager.polled.firstObject), "Catalogue apply=NO");
+}
+
+void test_trusting_a_tap_neither_deadlocks_nor_lets_a_queued_change_race_it ()
+{
+	NSString* directory = TemporaryDirectory();
+	BundleSubscriptionManager* manager = ManagerWithTaps(directory, NO);
+	BundleSubscription* subscription = manager.subscriptions.firstObject;
+
+	dispatch_block_t releaseQueue = BlockTheQueue(manager);
+
+	// Both are asked for while the queue is busy, so the second is waiting when
+	// the first begins its own applications
+	dispatch_semaphore_t finished = dispatch_semaphore_create(0);
+	NSMutableArray* order = [NSMutableArray array];
+
+	[manager setAutoUpdate:YES forTap:manager.taps.firstObject completionHandler:^(NSError* error){
+		[order addObject:subscription.isUnavailable ? @"trust, then its poll" : @"trust alone"];
+	}];
+
+	[manager setRef:@"release" forSubscription:subscription completionHandler:^(NSError* error){
+		[order addObject:@"the change queued behind it"];
+		dispatch_semaphore_signal(finished);
+	}];
+
+	releaseQueue();
+	long timedOut = dispatch_semaphore_wait(finished, dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC));
+
+	// The immediate poll runs inside the setter's own operation rather than
+	// through the public entry point, which would enqueue behind the operation
+	// it is being awaited by — and holding the operation is also what keeps a
+	// ref edit from landing among the applications it changes the meaning of.
+	OAK_ASSERT_EQ((int)timedOut, 0);
+	OAK_ASSERT_EQ(order.count, 2);
+	OAK_ASSERT_EQ(to_s(order.firstObject), "trust, then its poll");
+	OAK_ASSERT_EQ(to_s(order.lastObject), "the change queued behind it");
+}
+
 void test_a_registry_that_cannot_be_read_is_not_a_registry_with_nothing_in_it ()
 {
 	NSString* directory = TemporaryDirectory();

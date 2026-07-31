@@ -21,6 +21,11 @@ typedef NS_ENUM(NSInteger, BundleSubscriptionRefMode)
 @property (nonatomic) NSString* name;                  // Display name published by the catalogue
 @property (nonatomic) NSString* catalogueSHA;          // Revision the cached catalogue was fetched at
 @property (nonatomic) NSDate*   fetchedAt;
+
+// “I trust this source”, said once instead of once per bundle: the bundles this
+// tap publishes update automatically, without the per-bundle flags below being
+// touched. Opt-in, exactly as they are.
+@property (nonatomic) BOOL      autoUpdate;
 @end
 
 // One bundle the user has actually subscribed to. Catalogue entries the user
@@ -40,7 +45,13 @@ typedef NS_ENUM(NSInteger, BundleSubscriptionRefMode)
 @property (nonatomic) NSString* originTapName;         // Display-only history, kept when a tap is removed
 @property (nonatomic) NSString* category;
 @property (nonatomic) NSString* summary;
-@property (nonatomic) BOOL      autoUpdate;            // Opt-in; without it an update is offered, never applied
+
+// Whether this bundle opted in by itself — not the whole answer, and not a
+// synonym for “unpinned”: a tap the user trusts speaks for what it publishes.
+// What decides whether an update is applied or only offered is
+// -[BundleSubscriptionManager effectiveAutoUpdateForSubscription:].
+@property (nonatomic) BOOL      autoUpdate;
+
 @property (nonatomic) NSString* installedSHA;          // What is on disk
 @property (nonatomic) NSString* availableSHA;          // Latest successfully resolved candidate
 @property (nonatomic) NSDate*   installedAt;

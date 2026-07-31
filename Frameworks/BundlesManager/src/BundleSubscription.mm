@@ -27,7 +27,7 @@ static NSString* NonEmptyString (id value)
 
 + (NSArray<NSString*>*)knownKeys
 {
-	return @[ @"id", @"url", @"trackingRef", @"name", @"catalogueSHA", @"fetchedAt" ];
+	return @[ @"id", @"url", @"trackingRef", @"name", @"catalogueSHA", @"fetchedAt", @"autoUpdate" ];
 }
 
 - (instancetype)initWithIdentifier:(NSString*)identifier url:(NSString*)url trackingRef:(NSString*)trackingRef
@@ -53,6 +53,7 @@ static NSString* NonEmptyString (id value)
 		_name         = NonEmptyString(plist[@"name"]);
 		_catalogueSHA = NonEmptyString(plist[@"catalogueSHA"]);
 		_fetchedAt    = [plist[@"fetchedAt"] isKindOfClass:[NSDate class]] ? plist[@"fetchedAt"] : nil;
+		_autoUpdate   = [plist[@"autoUpdate"] boolValue];
 		_unknownKeys  = UnknownKeys(plist, [[self class] knownKeys]);
 	}
 	return self;
@@ -72,6 +73,7 @@ static NSString* NonEmptyString (id value)
 		res[@"catalogueSHA"] = _catalogueSHA;
 	if(_fetchedAt)
 		res[@"fetchedAt"] = _fetchedAt;
+	res[@"autoUpdate"] = @(_autoUpdate);
 
 	return res;
 }

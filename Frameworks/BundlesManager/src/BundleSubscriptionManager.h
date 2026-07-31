@@ -60,7 +60,7 @@ typedef NS_ENUM(NSInteger, BundleCollisionKind)
 
 // Refreshes every tap catalogue, then resolves every subscription’s effective
 // ref — pinned ones included, so an update can be offered — and installs where
-// autoUpdate allows it.
+// the effective policy allows it (the bundle’s own flag, or its tap’s trust).
 - (void)pollSubscriptionsWithCompletionHandler:(void(^)(void))handler;
 
 // ========
@@ -86,6 +86,12 @@ typedef NS_ENUM(NSInteger, BundleCollisionKind)
 // The branch, tag, or revision the tap's own catalogue is read from
 - (void)setRef:(NSString*)ref forTap:(BundleTap*)tap completionHandler:(void(^)(NSError* error))handler;
 
+// One sentence — “I trust this source” — instead of the same sentence repeated
+// on every bundle the tap publishes. Enabling it applies what is already
+// waiting; disabling it only stops the next application, since what has been
+// installed cannot be uninstalled by a change of mind about the future.
+- (void)setAutoUpdate:(BOOL)flag forTap:(BundleTap*)tap completionHandler:(void(^)(NSError* error))handler;
+
 - (BundleTapCatalogue*)catalogueForTap:(BundleTap*)tap;
 - (BundleTap*)tapForCandidate:(BundleCandidate*)candidate;
 - (BundleTap*)tapForSubscription:(BundleSubscription*)subscription;
@@ -110,6 +116,17 @@ typedef NS_ENUM(NSInteger, BundleCollisionKind)
 - (void)followCatalogueForSubscription:(BundleSubscription*)subscription completionHandler:(void(^)(NSError* error))handler;
 - (void)setAutoUpdate:(BOOL)flag forSubscription:(BundleSubscription*)subscription;
 - (void)setAutoUpdate:(BOOL)flag forSubscription:(BundleSubscription*)subscription completionHandler:(void(^)(NSError* error))handler;
+
+// Whether this subscription updates by itself, which two settings can each say
+// on their own: its own flag, or the trust its tap was given. A subscription is
+// effectively pinned exactly when this is false — the raw per-bundle flag
+// answers only whether it opted in independently, and is not a synonym for it.
+- (BOOL)effectiveAutoUpdateForSubscription:(BundleSubscription*)subscription;
+
+// Only the tap-derived half, for when the UI has to name who owns the setting.
+// A tap vouches for what it publishes and no more: a user-chosen ref, a bundle
+// dropped from the catalogue, or a one-off repository is outside that sentence.
+- (BOOL)tapTrustCoversSubscription:(BundleSubscription*)subscription;
 
 // Lists an owner’s public repositories. This is the only feature that depends
 // on api.github.com, whose unauthenticated quota is 60 requests an hour, so it

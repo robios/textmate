@@ -110,6 +110,39 @@ void test_missing_file_loads_as_an_empty_registry ()
 	OAK_ASSERT_EQ((bool)[registry save:nil], true);
 }
 
+void test_tap_trust_survives_a_restart_without_a_schema_bump ()
+{
+	NSURL* url = TemporaryRegistryURL();
+
+	// A tap the user trusts, alongside a key this version does not know: an
+	// older build reading the file back has to preserve both, and honour
+	// neither — which is the failure worth having if it must be one.
+	WritePlist(url, @{
+		@"schemaVersion": @1,
+		@"taps":          @[ @{ @"id": @"TAP-1", @"url": @"https://github.com/robios/tm-bundles", @"autoUpdate": @YES, @"futureTapKey": @"kept" } ],
+	});
+
+	BundleSubscriptionRegistry* registry = [[BundleSubscriptionRegistry alloc] initWithFileURL:url];
+	OAK_ASSERT_EQ((bool)[registry load:nil], true);
+	OAK_ASSERT_EQ((bool)[registry tapWithIdentifier:@"TAP-1"].autoUpdate, true);
+	OAK_ASSERT_EQ((bool)[registry save:nil], true);
+
+	NSDictionary* plist = [NSDictionary dictionaryWithContentsOfURL:url error:nil];
+	OAK_ASSERT_EQ((bool)[[plist[@"taps"] firstObject][@"autoUpdate"] boolValue], true);
+	OAK_ASSERT_EQ(to_s([plist[@"taps"] firstObject][@"futureTapKey"]), "kept");
+	OAK_ASSERT_EQ([plist[@"schemaVersion"] integerValue], 1);
+
+	// A tap that was never trusted says so on file rather than by omission, the
+	// same way a subscription does
+	BundleSubscriptionRegistry* other = [[BundleSubscriptionRegistry alloc] initWithFileURL:TemporaryRegistryURL()];
+	[other addTap:[[BundleTap alloc] initWithIdentifier:@"TAP-2" url:@"https://github.com/robios/tm-bundles" trackingRef:nil]];
+	OAK_ASSERT_EQ((bool)[other save:nil], true);
+
+	NSDictionary* otherPlist = [NSDictionary dictionaryWithContentsOfURL:other.fileURL error:nil];
+	OAK_ASSERT_EQ((bool)[[otherPlist[@"taps"] firstObject][@"autoUpdate"] boolValue], false);
+	OAK_ASSERT_EQ((bool)[otherPlist[@"taps"] firstObject][@"autoUpdate"], true);
+}
+
 void test_effective_ref_follows_the_mode ()
 {
 	BundleSubscription* subscription = [[BundleSubscription alloc] initWithIdentifier:NSUUID.UUID url:@"https://github.com/a/b"];

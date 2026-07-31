@@ -21,6 +21,7 @@ static NSUserInterfaceItemIdentifier const kTableColumnIdentifierDescription = @
 static NSUserInterfaceItemIdentifier const kTableColumnIdentifierSourceName       = @"SourceName";
 static NSUserInterfaceItemIdentifier const kTableColumnIdentifierSourceRepository = @"SourceRepository";
 static NSUserInterfaceItemIdentifier const kTableColumnIdentifierSourceBranch     = @"SourceBranch";
+static NSUserInterfaceItemIdentifier const kTableColumnIdentifierSourceAutoUpdate = @"SourceAutoUpdate";
 static NSUserInterfaceItemIdentifier const kTableColumnIdentifierSourceBundles    = @"SourceBundles";
 
 
@@ -269,6 +270,10 @@ static NSUserInterfaceItemIdentifier const kTableColumnIdentifierSourceBundles  
 @property (nonatomic, readonly) NSString* name;
 @property (nonatomic) NSString* repository;          // owner/repository, which is all github.com needs
 @property (nonatomic) NSString* branch;
+
+// What the row's own kind calls automatic updating: a tap's trust in everything
+// it publishes, or a one-off repository's per-bundle flag.
+@property (nonatomic, readonly) BOOL autoUpdate;
 @property (nonatomic, readonly) NSString* bundleCount;
 @property (nonatomic, readonly, getter = isPlaceholder) BOOL placeholder;
 @end
@@ -325,6 +330,11 @@ static NSUserInterfaceItemIdentifier const kTableColumnIdentifierSourceBundles  
 	if(_subscription)
 		return _subscription.effectiveRef ?: @"";
 	return _branch ?: @"";
+}
+
+- (BOOL)autoUpdate
+{
+	return _tap ? _tap.autoUpdate : _subscription.autoUpdate;
 }
 
 - (NSString*)bundleCount
@@ -597,10 +607,21 @@ static NSImage* AttentionToolbarImage (NSImage* base)
 	// A source is not a bundle, so it gets its own list instead of a row in the
 	// one above — and the list is where it is typed in, too: a sheet for two
 	// short strings is more ceremony than the thing it collects.
-	NSTableColumn* sourceNameColumn       = [self columnWithIdentifier:kTableColumnIdentifierSourceName       title:@"Source"     editable:NO  width:150 resizingMask:NSTableColumnUserResizingMask];
+	NSTableColumn* sourceNameColumn       = [self columnWithIdentifier:kTableColumnIdentifierSourceName       title:@"Source"     editable:NO  width:130 resizingMask:NSTableColumnUserResizingMask];
 	NSTableColumn* sourceRepositoryColumn = [self columnWithIdentifier:kTableColumnIdentifierSourceRepository title:@"Repository" editable:YES width:230 resizingMask:NSTableColumnAutoresizingMask];
-	NSTableColumn* sourceBranchColumn     = [self columnWithIdentifier:kTableColumnIdentifierSourceBranch     title:@"Branch"     editable:YES width:110 resizingMask:NSTableColumnUserResizingMask];
+	NSTableColumn* sourceBranchColumn     = [self columnWithIdentifier:kTableColumnIdentifierSourceBranch     title:@"Branch"     editable:YES width:90  resizingMask:NSTableColumnUserResizingMask];
+	// Enough for the header, which is wider than what it labels
+	NSTableColumn* sourceAutoUpdateColumn = [self columnWithIdentifier:kTableColumnIdentifierSourceAutoUpdate title:@"Auto-Update" editable:YES width:76 resizingMask:NSTableColumnNoResizing];
 	NSTableColumn* sourceBundlesColumn    = [self columnWithIdentifier:kTableColumnIdentifierSourceBundles    title:@"Bundles"    editable:NO  width:60  resizingMask:NSTableColumnNoResizing];
+
+	// One column, one sentence — “update this source automatically” — whether the
+	// row is a tap speaking for everything it publishes or a repository speaking
+	// for the one bundle it is.
+	NSButtonCell* autoUpdateCell = [[NSButtonCell alloc] init];
+	autoUpdateCell.buttonType  = NSButtonTypeSwitch;
+	autoUpdateCell.controlSize = NSControlSizeSmall;
+	autoUpdateCell.title       = @"";
+	sourceAutoUpdateColumn.dataCell = autoUpdateCell;
 
 	NSTextFieldCell* sourceBundlesCell = [[NSTextFieldCell alloc] initTextCell:@""];
 	sourceBundlesCell.alignment = NSTextAlignmentRight;
@@ -623,7 +644,7 @@ static NSImage* AttentionToolbarImage (NSImage* base)
 	_sourcesTableView.delegate                = self;
 	_sourcesTableView.dataSource              = self;
 
-	for(NSTableColumn* tableColumn in @[ sourceNameColumn, sourceRepositoryColumn, sourceBranchColumn, sourceBundlesColumn ])
+	for(NSTableColumn* tableColumn in @[ sourceNameColumn, sourceRepositoryColumn, sourceBranchColumn, sourceAutoUpdateColumn, sourceBundlesColumn ])
 		[_sourcesTableView addTableColumn:tableColumn];
 
 	NSScrollView* tapsScrollView = [[NSScrollView alloc] initWithFrame:NSZeroRect];
@@ -644,7 +665,10 @@ static NSImage* AttentionToolbarImage (NSImage* base)
 	for(NSButton* button in @[ addSourceButton, _removeSourceButton ])
 		button.bezelStyle = NSBezelStyleSmallSquare;
 
-	NSButton* updateBundlesCheckbox = [NSButton checkboxWithTitle:@"Check for and install updates automatically" target:nil action:nil];
+	// “Trusted” is the whole distinction this pane turns on: the signed index,
+	// a subscription set to update automatically, and a tap given auto-update.
+	// Everything else is offered an update and waits to be told.
+	NSButton* updateBundlesCheckbox = [NSButton checkboxWithTitle:@"Check for updates and install trusted bundles automatically" target:nil action:nil];
 
 	NSButton* refreshButton = [NSButton buttonWithTitle:@"Refresh Now" target:self action:@selector(didClickRefresh:)];
 	refreshButton.controlSize = NSControlSizeSmall;
@@ -809,9 +833,31 @@ static NSImage* AttentionToolbarImage (NSImage* base)
 		{
 			// Only a subscription has a per-bundle setting: the signed path has
 			// one switch for all of it, at the bottom of this pane.
+			BundleSubscriptionManager* manager = BundleSubscriptionManager.sharedInstance;
+
 			menuItem.hidden  = !item.canUpdateAutomatically;
-			menuItem.state   = subscription.autoUpdate ? NSControlStateValueOn : NSControlStateValueOff;
+			// The setting as it is in effect, which a tap may own rather than
+			// this bundle — the checkmark says what happens, not which of the two
+			// switches said so.
+			menuItem.state   = subscription && [manager effectiveAutoUpdateForSubscription:subscription] ? NSControlStateValueOn : NSControlStateValueOff;
 			menuItem.enabled = subscription != nil;
+			menuItem.toolTip = nil;
+
+			if(subscription.isSourceChanged)
+			{
+				// Shown as it stands but not offered as a promise: the interlock
+				// is above the setting and nothing here will be applied.
+				menuItem.enabled = NO;
+				menuItem.toolTip = @"Automatic updates are paused because the catalogue now points to a different repository. Uninstall this bundle and install the new source to continue.";
+			}
+			else if(subscription && [manager tapTrustCoversSubscription:subscription])
+			{
+				// A checkmark that cannot be clicked is the statement: the
+				// setting is real, and it belongs to the source below.
+				BundleTap* tap = [manager tapForSubscription:subscription];
+				menuItem.enabled = NO;
+				menuItem.toolTip = [NSString stringWithFormat:@"Updated automatically because ‘%@’ is set to auto-update.", tap.name ?: [tap.url stringByReplacingOccurrencesOfString:@"https://github.com/" withString:@""]];
+			}
 		}
 		else if(menuItem.action == @selector(didClickOpenHomePage:))
 		{
@@ -985,7 +1031,8 @@ static NSImage* AttentionToolbarImage (NSImage* base)
 - (void)didClickRefresh:(id)sender
 {
 	// Explicit refresh runs both paths even when scheduled checks are off, and
-	// still honours each subscription’s own autoUpdate setting.
+	// still honours each subscription’s effective policy — its own setting, or
+	// the trust its tap was given.
 	BundleInstallHelper.sharedInstance.bundleInstallActivityText = @"Checking for bundle updates…";
 	[BundlesManager.sharedInstance refreshBundlesWithCompletionHandler:^{
 		BundleInstallHelper.sharedInstance.bundleInstallActivityText = @"Finished checking for bundle updates.";
@@ -1099,9 +1146,24 @@ static NSImage* AttentionToolbarImage (NSImage* base)
 		return item.repository;
 	else if([aTableColumn.identifier isEqualToString:kTableColumnIdentifierSourceBranch])
 		return item.branch;
+	else if([aTableColumn.identifier isEqualToString:kTableColumnIdentifierSourceAutoUpdate])
+		return item.isPlaceholder ? nil : @(item.autoUpdate); // The blank cell below would draw a boxed number for a flag
 	else if([aTableColumn.identifier isEqualToString:kTableColumnIdentifierSourceBundles])
 		return item.bundleCount;
 	return nil;
+}
+
+// The row being typed into is not a source yet, so there is nothing for a
+// checkbox there to be the setting of. Display only — what may actually be
+// edited is decided in shouldEditTableColumn:.
+- (NSCell*)tableView:(NSTableView*)aTableView dataCellForTableColumn:(NSTableColumn*)aTableColumn row:(NSInteger)rowIndex
+{
+	if(aTableView == _sourcesTableView && [aTableColumn.identifier isEqualToString:kTableColumnIdentifierSourceAutoUpdate] && rowIndex < _sourceItems.count && _sourceItems[rowIndex].isPlaceholder)
+		return [[NSTextFieldCell alloc] initTextCell:@""];
+
+	// Everywhere else, what the column already says — including the nil column
+	// AppKit asks about for a full-width row.
+	return aTableColumn.dataCell;
 }
 
 - (void)tableView:(NSTableView*)aTableView setObjectValue:(id)anObject forTableColumn:(NSTableColumn*)aTableColumn row:(NSInteger)rowIndex
@@ -1110,6 +1172,25 @@ static NSImage* AttentionToolbarImage (NSImage* base)
 		return;
 
 	BundleSourceItem* item = _sourceItems[rowIndex];
+
+	if([aTableColumn.identifier isEqualToString:kTableColumnIdentifierSourceAutoUpdate])
+	{
+		BOOL flag = [anObject boolValue];
+		void(^finish)(NSError*) = ^(NSError* error){
+			if(error)
+				BundleInstallHelper.sharedInstance.bundleInstallActivityText = error.localizedDescription;
+			// The manager owns the setting, so the row shows what it committed —
+			// a change that could not be recorded takes its checkmark back.
+			[self reloadSources];
+		};
+
+		if(BundleTap* tap = item.tap)
+			[BundleSubscriptionManager.sharedInstance setAutoUpdate:flag forTap:tap completionHandler:finish];
+		else if(BundleSubscription* subscription = item.subscription)
+			[BundleSubscriptionManager.sharedInstance setAutoUpdate:flag forSubscription:subscription completionHandler:finish];
+		return;
+	}
+
 	NSString* value = [anObject isKindOfClass:[NSString class]] ? anObject : @"";
 
 	if([aTableColumn.identifier isEqualToString:kTableColumnIdentifierSourceRepository])
@@ -1290,6 +1371,11 @@ static NSImage* AttentionToolbarImage (NSImage* base)
 		// and an addition, not an edit.
 		if([aTableColumn.identifier isEqualToString:kTableColumnIdentifierSourceRepository])
 			return _sourceItems[rowIndex].isPlaceholder;
+
+		// A row that is not a source yet has no setting to change; every real
+		// row does, whether it is a tap or a repository on its own.
+		if([aTableColumn.identifier isEqualToString:kTableColumnIdentifierSourceAutoUpdate])
+			return !_sourceItems[rowIndex].isPlaceholder;
 
 		return [aTableColumn.identifier isEqualToString:kTableColumnIdentifierSourceBranch];
 	}

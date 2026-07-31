@@ -1032,6 +1032,40 @@ static void DownloadTarball (std::string const& urlString, NSString* directory, 
 	}];
 }
 
+// =========================================
+// = Who may install without being asked =
+// =========================================
+
+// Two settings answer the same question, and either one on its own is a yes:
+// the bundle opted in, or its tap did. Computed rather than stored, so that
+// giving a tap trust does not rewrite twenty subscription records and taking it
+// back restores exactly the per-bundle state that was there before.
+- (BOOL)effectiveAutoUpdateForSubscription:(BundleSubscription*)subscription
+{
+	return subscription.autoUpdate || [self tapTrustCoversSubscription:subscription];
+}
+
+- (BOOL)tapTrustCoversSubscription:(BundleSubscription*)subscription
+{
+	// A ref the user chose is not one the curator published; a bundle dropped
+	// from the catalogue is no longer something the tap vouches for at all.
+	if(!subscription.tapIdentifier || subscription.refMode != BundleSubscriptionRefModeCatalogue || subscription.isOrphaned)
+		return NO;
+
+	BundleTap* tap = [_registry tapWithIdentifier:subscription.tapIdentifier];
+	return tap ? tap.autoUpdate : NO;
+}
+
+// The policy, plus the one interlock that overrides it: a catalogue that moved
+// a bundle to a different repository is a source switch, not an update, and is
+// offered but never applied (§9.2). Trust in a tap does not weaken that — it is
+// what keeps a compromised catalogue from redirecting a subscription elsewhere
+// and having the new source installed.
+- (BOOL)shouldApplyUpdateForSubscription:(BundleSubscription*)subscription
+{
+	return [self effectiveAutoUpdateForSubscription:subscription] && !subscription.isSourceChanged;
+}
+
 - (void)pollSubscriptions:(NSArray<BundleSubscription*>*)subscriptions atIndex:(NSUInteger)index applyUpdates:(BOOL)applyUpdates completionHandler:(dispatch_block_t)handler
 {
 	if(index == subscriptions.count)
@@ -1039,11 +1073,7 @@ static void DownloadTarball (std::string const& urlString, NSString* directory, 
 
 	BundleSubscription* subscription = subscriptions[index];
 
-	// A catalogue that moved a bundle to a different repository is a source
-	// switch, not an update: it is offered, never applied (§9.2).
-	BOOL applyUpdate = applyUpdates && subscription.autoUpdate && !subscription.isSourceChanged;
-
-	[self updateSubscription:subscription applyUpdate:applyUpdate completionHandler:^(NSError* error){
+	[self updateSubscription:subscription applyUpdate:applyUpdates && [self shouldApplyUpdateForSubscription:subscription] completionHandler:^(NSError* error){
 		// One subscription being unreachable says nothing about the next one
 		if(error)
 			os_log_error(OS_LOG_DEFAULT, "%{public}@: %{public}@", subscription.name, error.localizedDescription);
@@ -1433,6 +1463,56 @@ static void DownloadTarball (std::string const& urlString, NSString* directory, 
 
 			[self registryDidChange];
 			finish(error);
+		}];
+	}];
+}
+
+// Trusting a tap is a setting like the ref above, and is recorded like one —
+// with one thing more: what the trust permits, it permits now. A row sitting at
+// “update available” that stayed there until the next scheduled wake would read
+// as the checkbox not having worked.
+- (void)setAutoUpdate:(BOOL)flag forTap:(BundleTap*)tap completionHandler:(void(^)(NSError*))handler
+{
+	[self enqueueOperation:^(dispatch_block_t done){
+		void(^finish)(NSError*) = ^(NSError* error){
+			if(handler)
+				handler(error);
+			done();
+		};
+
+		if(NSError* error = self.readOnlyRegistryError)
+			return finish(error);
+
+		BOOL previousFlag = tap.autoUpdate;
+		tap.autoUpdate = flag;
+
+		NSError* error;
+		if(![self saveRegistry:&error])
+		{
+			tap.autoUpdate = previousFlag;
+			[self registryDidChange];
+			return finish(error);
+		}
+
+		// The checkmark is durable before any network work begins
+		[self registryDidChange];
+
+		// Withdrawing trust is not retroactive: it stops the next application,
+		// and there is nothing to do about the ones that already happened.
+		if(!flag)
+			return finish(nil);
+
+		// This already *is* the queued operation, so the public entry point —
+		// which would enqueue behind it — must not be used: waiting for it here
+		// would be waiting for something this block has to return first. Staying
+		// in the same operation also keeps a ref edit, an uninstall, or a second
+		// toggle from racing the applications below.
+		// The error this reports is whether the setting was recorded. One bundle
+		// that could not be resolved or installed stays on its own status, where
+		// the next poll can clear it, rather than suppressing the rest.
+		[self pollSubscriptions:[_registry subscriptionsForTapWithIdentifier:tap.identifier] atIndex:0 applyUpdates:YES completionHandler:^{
+			[self registryDidChange];
+			finish(nil);
 		}];
 	}];
 }
