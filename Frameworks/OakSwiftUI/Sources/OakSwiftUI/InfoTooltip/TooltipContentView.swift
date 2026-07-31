@@ -1,12 +1,24 @@
 import SwiftUI
 
+/// Which tab is selected, held outside the view because each presentation gets a
+/// new hosting controller and would reset `@State`. Keyed by label so that a
+/// section appearing or disappearing above the selected one does not move it.
+@MainActor final class TooltipSelection: ObservableObject {
+	@Published var label: String?
+}
+
 struct TooltipContentView: View {
 	let content: OakTooltipContent
+	@ObservedObject var selection: TooltipSelection
 	@EnvironmentObject var theme: OakThemeEnvironment
-	@State private var selectedTab: Int = 0
 
 	private var sections: [OakTooltipSection] {
 		content.sections
+	}
+
+	private var selectedTab: Int {
+		guard let label = selection.label, let index = sections.firstIndex(where: { $0.label == label }) else { return 0 }
+		return index
 	}
 
 	private var showTabBar: Bool {
@@ -68,7 +80,10 @@ struct TooltipContentView: View {
 	private var tabBar: some View {
 		TabBarView(
 			sections: sections,
-			selectedTab: $selectedTab
+			selectedTab: Binding(
+				get: { selectedTab },
+				set: { selection.label = sections.indices.contains($0) ? sections[$0].label : nil }
+			)
 		)
 		.frame(height: 32)
 		.padding(.horizontal, 8)

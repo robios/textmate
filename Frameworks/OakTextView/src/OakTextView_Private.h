@@ -30,6 +30,12 @@ typedef NS_ENUM(NSUInteger, OakFlagsState) {
 	OakFlagsStateSecondShiftDown,
 };
 
+typedef NS_ENUM(NSUInteger, OakTextViewTooltipOwner) {
+	OakTextViewTooltipOwnerNone = 0,
+	OakTextViewTooltipOwnerCommand, // ⌃⌘H
+	OakTextViewTooltipOwnerDwell,   // pointer resting on a squiggle
+};
+
 struct document_view_t : ng::buffer_api_t
 {
 	document_view_t (OakDocument* document, NSString* themeUUID, std::string const& scopeAttributes, bool scrollPastEnd, CGFloat fontScaleFactor = 1) : _document(document)
@@ -151,6 +157,10 @@ struct document_view_t : ng::buffer_api_t
 	bool visit_data (std::function<void(char const*, size_t, size_t, bool*)> const& f) const { return [_document_editor buffer].visit_data(f); }
 	size_t begin (size_t n) const { return [_document_editor buffer].begin(n); }
 	size_t eol (size_t n) const { return [_document_editor buffer].eol(n); }
+	bool has_diagnostics () const { return [_document_editor buffer].has_diagnostics(); }
+	bool has_diagnostic_point_at (size_t index) const { return [_document_editor buffer].has_diagnostic_point_at(index); }
+	std::pair<size_t, size_t> diagnostic_range_containing (size_t severity, size_t index) const { return [_document_editor buffer].diagnostic_range_containing(severity, index); }
+	std::vector<ng::diagnostic_t> diagnostics_at (size_t index) const { return [_document_editor buffer].diagnostics_at(index); }
 	size_t end (size_t n) const { return [_document_editor buffer].end(n); }
 	size_t lines () const { return [_document_editor buffer].lines(); }
 	size_t sanitize_index (size_t i) const { return [_document_editor buffer].sanitize_index(i); }
@@ -237,6 +247,7 @@ struct document_view_t : ng::buffer_api_t
 	void begin_refresh_cycle (ng::ranges_t const& selection, ng::ranges_t const& highlightRanges = ng::ranges_t()) { _layout->begin_refresh_cycle(selection, highlightRanges); }
 	std::vector<CGRect> end_refresh_cycle (ng::ranges_t const& selection, CGRect visibleRect, ng::ranges_t const& highlightRanges = ng::ranges_t()) { return _layout->end_refresh_cycle(selection, visibleRect, highlightRanges); }
 	void did_update_scopes (size_t from, size_t to) { _layout->did_update_scopes(from, to); }
+	void did_update_diagnostics (size_t from, size_t to) { _layout->did_update_diagnostics(from, to); }
 	size_t softline_for_index (ng::index_t const& index) const { return _layout->softline_for_index(index); }
 	ng::range_t range_for_softline (size_t softline) const { return _layout->range_for_softline(softline); }
 	bool is_line_folded (size_t n) const { return _layout->is_line_folded(n); }
@@ -327,6 +338,25 @@ private:
 	int _lspHoverRequestId;
 	NSMutableDictionary* _lspHoverCache;
 	ng::range_t _lspHoverHighlightRange;
+	NSTimer* _diagnosticDwellTimer;
+	// What dwell is showing for. A zero-width point diagnostic is a legitimate
+	// target with an empty range, so ‘_diagnosticHoverIsPoint’ — not
+	// ‘_diagnosticHoverRange.empty()’ — is what says whether dwell is armed.
+	ng::range_t _diagnosticHoverRange;
+	BOOL _diagnosticHoverIsPoint;
+	// Command hover and mouse dwell share one tooltip, and the command’s server
+	// round-trip can finish after dwell took over. Every presentation bumps the
+	// generation; an async completion showing a stale one is dropped.
+	OakTextViewTooltipOwner _lspTooltipOwner;
+	NSInteger _lspTooltipGeneration;
+	// What the visible tooltip was built from, so the locally-derived diagnostics
+	// half can be rebuilt on a re-publish without losing the server’s half — and
+	// so a publish that did not touch this index can be ignored outright, since
+	// re-presenting costs the reader whichever tab they were on.
+	size_t _lspTooltipIndex;
+	CGRect _lspTooltipRect;
+	OakTooltipContent* _lspTooltipHoverContent;
+	std::vector<ng::diagnostic_t> _lspTooltipDiagnostics;
 
 	// = LSP References =
 
@@ -423,6 +453,8 @@ private:
 
 @interface OakTextView (Hover)
 - (void)lspRequestHoverAtIndex:(ng::index_t)index;
+- (void)lspConsiderDiagnosticHoverAtPoint:(NSPoint)pos;
+- (void)lspDiagnosticsDidChange;
 - (void)cancelLSPHoverRequest;
 - (void)dismissLSPHoverPanel;
 - (NSMutableAttributedString*)syntaxHighlight:(NSString*)code withGrammar:(NSString*)grammarScope;

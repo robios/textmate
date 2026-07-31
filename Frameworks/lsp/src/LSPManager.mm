@@ -1111,6 +1111,11 @@ static std::string configuredCommandForDocument (OakDocument* document)
 
 	for(NSUUID* docId in docIdsToRemove)
 	{
+		// Nobody is left to update what this server said, so squiggles and marks
+		// from it would sit there indefinitely after a crash
+		if(OakDocument* doc = [OakDocument documentWithIdentifier:docId])
+			[self clearDiagnosticsForDocument:doc];
+
 		[_changeTimers[docId] invalidate];
 		[_changeTimers removeObjectForKey:docId];
 		[_documentClients removeObjectForKey:docId];
@@ -1158,8 +1163,12 @@ static std::string configuredCommandForDocument (OakDocument* document)
 
 - (void)lspClient:(LSPClient*)client didReceiveDiagnostics:(NSArray<NSDictionary*>*)diagnostics forDocumentURI:(NSString*)uri
 {
-	// Cache full diagnostics for codeAction requests
-	_diagnosticsByURI[uri] = diagnostics;
+	// Cache full diagnostics for codeAction requests. An empty publish means the
+	// file is clean, which is the absence of an entry rather than an empty one —
+	// the cross-file panel must not list a file with no diagnostics left.
+	if(diagnostics.count)
+			_diagnosticsByURI[uri] = diagnostics;
+	else	[_diagnosticsByURI removeObjectForKey:uri];
 
 	NSURL* url = [NSURL URLWithString:uri];
 	NSString* filePath = url.path;

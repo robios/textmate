@@ -12,6 +12,7 @@ private let kTabBarHeight: CGFloat = 32
 
 	private let popover: NSPopover
 	private let theme: OakThemeEnvironment
+	private let selection = TooltipSelection()
 
 	@objc public init(theme: OakThemeEnvironment) {
 		self.theme = theme
@@ -27,9 +28,23 @@ private let kTabBarHeight: CGFloat = 32
 	// MARK: - Public API
 
 	@objc public func show(in view: NSView, at rect: NSRect, content: OakTooltipContent) {
+		show(in: view, at: rect, content: content, preservingSelection: false)
+	}
+
+	/// Every presentation installs a fresh hosting controller, so SwiftUI `@State`
+	/// cannot hold the selected tab across one. The selection therefore lives here
+	/// and is keyed by section label, not by position: a caller that re-presents
+	/// updated content — diagnostics republished under an open tooltip — passes
+	/// `preservingSelection` so the reader stays on the tab they were on, even
+	/// though a section may have appeared or disappeared above it.
+	@objc public func show(in view: NSView, at rect: NSRect, content: OakTooltipContent, preservingSelection: Bool) {
+		if !preservingSelection {
+			selection.label = nil
+		}
+
 		let hostingController = NSHostingController(
 			rootView: AnyView(
-				TooltipContentView(content: content)
+				TooltipContentView(content: content, selection: selection)
 					.environmentObject(theme)
 			)
 		)

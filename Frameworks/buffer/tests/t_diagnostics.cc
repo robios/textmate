@@ -468,6 +468,29 @@ void test_diagnostics_replacement_aligned_with_endpoint ()
 		OAK_ASSERT(buf.diagnostic_points(0, buf.size()) == (ranges_t{ { 6, 1 } }));
 		assert_well_formed(buf);
 	}
+
+	// A point swallowed by an edit relocates rather than disappearing: it marks a
+	// position where something is missing, and that position survives an edit that
+	// removes the text around it — unlike a range, whose annotated text is gone.
+	{
+		ng::buffer_t buf;
+		buf.insert(0, "abc\n\n\ndef\n");
+		buf.set_diagnostics({ diag(5, 5, 1) }); // the second empty line
+		buf.erase(4, 6);                        // both empty lines
+		OAK_ASSERT(buf.diagnostic_points(0, buf.size()) == (ranges_t{ { 4, 1 } }));
+		OAK_ASSERT_EQ(buf.diagnostics_at(4).size(), 1);
+		assert_well_formed(buf);
+	}
+
+	// …and binds right of replacement text, for the same reason a range start does
+	{
+		ng::buffer_t buf;
+		buf.insert(0, "abc\n\n\ndef\n");
+		buf.set_diagnostics({ diag(5, 5, 1) });
+		buf.replace(4, 6, "XY");
+		OAK_ASSERT(buf.diagnostic_points(0, buf.size()) == (ranges_t{ { 6, 1 } }));
+		assert_well_formed(buf);
+	}
 }
 
 void test_diagnostics_payload_only_change ()

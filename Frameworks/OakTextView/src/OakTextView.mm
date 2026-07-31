@@ -458,6 +458,7 @@ static std::string shell_quote (std::vector<std::string> paths)
 		[NSNotificationCenter.defaultCenter removeObserver:self name:OakDocumentDidSaveNotification object:_document];
 		[NSNotificationCenter.defaultCenter removeObserver:self name:OakDocumentWillReloadNotification object:_document];
 		[NSNotificationCenter.defaultCenter removeObserver:self name:OakDocumentDidReloadNotification object:_document];
+		[NSNotificationCenter.defaultCenter removeObserver:self name:OakDocumentDiagnosticsDidChangeNotification object:_document];
 
 		[self updateDocumentMetadata];
 
@@ -544,6 +545,7 @@ static std::string shell_quote (std::vector<std::string> paths)
 		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(documentDidSave:) name:OakDocumentDidSaveNotification object:_document];
 		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(documentWillReload:) name:OakDocumentWillReloadNotification object:_document];
 		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(documentDidReload:) name:OakDocumentDidReloadNotification object:_document];
+		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(documentDiagnosticsDidChange:) name:OakDocumentDiagnosticsDidChangeNotification object:_document];
 		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(handleApplyEditRequest:) name:@"LSPApplyEditRequest" object:nil];
 
 		[self resetBlinkCaretTimer];
@@ -635,6 +637,27 @@ static std::string shell_quote (std::vector<std::string> paths)
 {
 	for(auto const& item : bundles::query(bundles::kFieldSemanticClass, "callback.document.did-reload", [self scopeContext], bundles::kItemTypeMost, oak::uuid_t(), false))
 		[self performBundleItem:item];
+}
+
+- (void)documentDiagnosticsDidChange:(NSNotification*)aNotification
+{
+	if(!documentView)
+		return;
+
+	// A message that changed without moving needs no repaint, but whatever is
+	// showing the old one has to be rebuilt
+	[self lspDiagnosticsDidChange];
+
+	if(![aNotification.userInfo[@"redraw"] boolValue])
+		return;
+
+	size_t const size = documentView->size();
+	size_t from = std::min<size_t>([aNotification.userInfo[@"from"] unsignedIntegerValue], size);
+	size_t to   = std::min<size_t>([aNotification.userInfo[@"to"] unsignedIntegerValue], size);
+
+	// from == to is a zero-width point diagnostic: repaint the row it sits on
+	AUTO_REFRESH;
+	documentView->did_update_diagnostics(from, std::max(from, to));
 }
 
 - (void)reflectDocumentSize
@@ -3780,6 +3803,8 @@ static char const* kOakMenuItemTitle = "OakMenuItemTitle";
 		[self dismissLSPHoverPanel];
 		return;
 	}
+
+	[self lspConsiderDiagnosticHoverAtPoint:pos];
 }
 
 

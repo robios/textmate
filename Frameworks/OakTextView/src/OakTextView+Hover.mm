@@ -32,7 +32,13 @@
 	if(!doc)
 		return;
 
+	// dismissLSPHoverPanel above cancelled any dwell; claim the tooltip so a
+	// dwell that takes over before the server answers wins over this request
+	_lspTooltipOwner = OakTextViewTooltipOwnerCommand;
+	NSInteger const generation = ++_lspTooltipGeneration;
+
 	text::pos_t pos = documentView->convert(index.index);
+	OakTooltipSection* diagnosticsSection = [self lspDiagnosticsSectionAtIndex:index];
 
 	ng::range_t wordRange = ng::extend(*documentView, index, kSelectionExtendToWord).last();
 	std::string word = documentView->substr(wordRange.min().index, wordRange.max().index);
@@ -51,10 +57,10 @@
 				{
 					ng::range_t wordRange = ng::extend(*documentView, index, kSelectionExtendToWord).last();
 					CGRect wordRect = documentView->rect_for_range(wordRange.min().index, wordRange.max().index);
-					[self showLSPHoverTooltip:content atRect:NSRectFromCGRect(wordRect)];
+					[self showLSPHoverTooltipForIndex:index.index diagnostics:diagnosticsSection hover:content atRect:NSRectFromCGRect(wordRect)];
 					_lspHoverHighlightRange = wordRange;
 					[self setNeedsDisplayInRect:NSRectFromCGRect(wordRect)];
-					
+
 					return;
 				}
 			}
@@ -63,6 +69,16 @@
 				[_lspHoverCache removeObjectForKey:cacheKey];
 			}
 		}
+	}
+
+	// The caret’s diagnostics are known locally: show them right away, and
+	// re-show combined with the server’s hover content when (if) it arrives
+	if(diagnosticsSection)
+	{
+		CGRect wordRect = documentView->rect_for_range(wordRange.min().index, wordRange.max().index);
+		[self showLSPHoverTooltipForIndex:index.index diagnostics:diagnosticsSection hover:nil atRect:NSRectFromCGRect(wordRect)];
+		_lspHoverHighlightRange = wordRange;
+		[self setNeedsDisplayInRect:NSRectFromCGRect(wordRect)];
 	}
 
 	[[LSPManager sharedManager] flushPendingChangesForDocument:doc];
@@ -107,15 +123,252 @@
 				};
 			}
 
-			if(content)
+			// The response is cached either way, but the tooltip itself may belong
+			// to a dwell — or to a newer request — by the time it arrives
+			if(content && strongSelf->_lspTooltipGeneration == generation)
 			{
+				// Re-read the diagnostics rather than reusing the section captured
+				// when the request went out: the server may have re-published since
+				OakTooltipSection* currentDiagnostics = [strongSelf lspDiagnosticsSectionAtIndex:index];
+
 				ng::range_t wordRange = ng::extend(*strongSelf->documentView, index, kSelectionExtendToWord).last();
 				CGRect wordRect = strongSelf->documentView->rect_for_range(wordRange.min().index, wordRange.max().index);
-				[strongSelf showLSPHoverTooltip:content atRect:NSRectFromCGRect(wordRect)];
+				[strongSelf showLSPHoverTooltipForIndex:index.index diagnostics:currentDiagnostics hover:content atRect:NSRectFromCGRect(wordRect)];
 				strongSelf->_lspHoverHighlightRange = wordRange;
 				[strongSelf setNeedsDisplayInRect:NSRectFromCGRect(wordRect)];
 			}
 		}];
+}
+
+// MARK: - Diagnostics
+
+// Read the payloads from the buffer, not from the manager’s raw dictionaries:
+// the buffer’s ranges shift with edits, so between an edit and the server’s next
+// publish the protocol line/column coordinates describe a different text. The
+// severities stored here are already normalized to error/warning/note.
+- (OakTooltipSection*)lspDiagnosticsSectionAtIndex:(ng::index_t)index
+{
+	if(!documentView)
+		return nil;
+
+	std::vector<ng::diagnostic_t> const hits = documentView->diagnostics_at(index.index);
+	if(hits.empty())
+		return nil;
+
+	NSFont* font = [NSFont systemFontOfSize:11];
+	NSDictionary* messageAttrs = @{ NSFontAttributeName: font, NSForegroundColorAttributeName: [NSColor labelColor] };
+	NSDictionary* originAttrs  = @{ NSFontAttributeName: font, NSForegroundColorAttributeName: [NSColor secondaryLabelColor] };
+
+	NSMutableAttributedString* text = [NSMutableAttributedString new];
+	size_t worstSeverity = 3;
+	for(auto const& diagnostic : hits)
+	{
+		worstSeverity = std::min(worstSeverity, diagnostic.severity);
+
+		if(text.length)
+			[text appendAttributedString:[[NSAttributedString alloc] initWithString:@"\n" attributes:messageAttrs]];
+
+		NSColor* dotColor = diagnostic.severity == 1 ? NSColor.systemRedColor : (diagnostic.severity == 2 ? NSColor.systemOrangeColor : NSColor.systemBlueColor);
+		[text appendAttributedString:[[NSAttributedString alloc] initWithString:@"● " attributes:@{ NSFontAttributeName: font, NSForegroundColorAttributeName: dotColor }]];
+		[text appendAttributedString:[[NSAttributedString alloc] initWithString:to_ns(diagnostic.message) attributes:messageAttrs]];
+
+		NSString* source = to_ns(diagnostic.source);
+		NSString* code   = to_ns(diagnostic.code);
+		if(source.length || code.length)
+		{
+			NSString* origin = source.length && code.length ? [NSString stringWithFormat:@"  %@(%@)", source, code] : [NSString stringWithFormat:@"  %@", source.length ? source : code];
+			[text appendAttributedString:[[NSAttributedString alloc] initWithString:origin attributes:originAttrs]];
+		}
+	}
+
+	NSString* label = hits.size() > 1 ? @"Diagnostics" : (worstSeverity == 1 ? @"Error" : (worstSeverity == 2 ? @"Warning" : @"Note"));
+	return [[OakTooltipSection alloc] initWithLabel:label content:text];
+}
+
+// MARK: - Dwell (mouse hover over a squiggle)
+
+// The byte range of whichever diagnostics cover the index — the union when
+// severities overlap — so the dwell tooltip anchors to the squiggle and stays
+// up while the pointer moves within it. Empty when the index is clean. This runs
+// on every mouse-moved event, so it asks for the containing range per severity
+// instead of copying the whole document’s diagnostics.
+- (ng::range_t)lspDiagnosticRangeAtIndex:(size_t)index
+{
+	ng::range_t result;
+	if(!documentView || !documentView->has_diagnostics())
+		return result;
+
+	for(size_t severity = 1; severity <= 3; ++severity)
+	{
+		auto range = documentView->diagnostic_range_containing(severity, index);
+		if(range.first == range.second)
+			continue;
+
+		if(result.empty())
+				result = ng::range_t(range.first, range.second);
+		else	result = ng::range_t(std::min(result.min().index, range.first), std::max(result.max().index, range.second));
+	}
+	return result;
+}
+
+// The dwell target at a buffer index: the union of the non-empty diagnostic
+// ranges covering it, or the index itself when a zero-width point marker sits
+// there. ‘rect’ is what the pointer is tested against and what the tooltip
+// anchors to — for a point that is the marker, which has no text extent of its
+// own, so it gets the marker's width plus a little slop rather than a fake range.
+- (BOOL)lspDiagnosticTargetAtIndex:(size_t)index range:(ng::range_t&)range isPoint:(BOOL&)isPoint rect:(CGRect&)rect
+{
+	if(!documentView || !documentView->has_diagnostics())
+		return NO;
+
+	if(ng::range_t covering = [self lspDiagnosticRangeAtIndex:index]; !covering.empty())
+	{
+		range   = covering;
+		isPoint = NO;
+		rect    = documentView->rect_for_range(covering.min().index, covering.max().index);
+		return YES;
+	}
+
+	if(documentView->has_diagnostic_point_at(index))
+	{
+		CGFloat const slop = 3;
+		range   = ng::range_t(index, index);
+		isPoint = YES;
+		rect    = documentView->rect_for_range(index, index);
+		rect    = CGRectMake(rect.origin.x - slop, rect.origin.y, ct::kDiagnosticPointWidth + 2*slop, rect.size.height);
+		return YES;
+	}
+
+	return NO;
+}
+
+- (void)lspConsiderDiagnosticHoverAtPoint:(NSPoint)pos
+{
+	[_diagnosticDwellTimer invalidate];
+	_diagnosticDwellTimer = nil;
+
+	if(!documentView)
+		return;
+
+	ng::index_t index = documentView->index_at_point(NSPointToCGPoint(pos));
+
+	ng::range_t range;
+	BOOL isPoint = NO;
+	CGRect rect  = CGRectZero;
+	BOOL const overTarget = [self lspDiagnosticTargetAtIndex:index.index range:range isPoint:isPoint rect:rect] && NSPointInRect(pos, NSRectFromCGRect(rect));
+
+	BOOL const dwellIsShowing = _lspHoverTooltip.isVisible && _lspTooltipOwner == OakTextViewTooltipOwnerDwell;
+	if(overTarget)
+	{
+		// A coalesced/union range can cover different payload sets at different
+		// indices (an inner diagnostic nested in an outer one, for example).
+		// Keep the tooltip only while the pointer still resolves to the exact index
+		// whose payloads it is showing. Re-arming is cheap; diagnostics_at() remains
+		// deferred until the timer fires instead of returning to the mouse-moved path.
+		if(dwellIsShowing && _lspTooltipIndex == index.index && _diagnosticHoverIsPoint == isPoint && _diagnosticHoverRange == range)
+			return;
+
+		// The index under the pointer, not the union range's start: nested and
+		// overlapping diagnostics only all show up when the payloads are looked up
+		// at the position the user is actually pointing at
+		_diagnosticDwellTimer = [NSTimer scheduledTimerWithTimeInterval:0.35 target:self selector:@selector(lspDiagnosticDwellTimerDidFire:) userInfo:@{ @"index": @(index.index) } repeats:NO];
+	}
+	else if(_diagnosticHoverIsPoint || !_diagnosticHoverRange.empty())
+	{
+		if(dwellIsShowing) // never dismiss a tooltip the hover command owns
+			[_lspHoverTooltip dismiss];
+		_diagnosticHoverRange   = ng::range_t();
+		_diagnosticHoverIsPoint = NO;
+	}
+}
+
+- (void)lspDiagnosticDwellTimerDidFire:(NSTimer*)timer
+{
+	_diagnosticDwellTimer = nil;
+	if(!documentView)
+		return;
+
+	// The index the pointer was over. The union range is recomputed from it below
+	// for the anchor; the payloads are read at the index itself.
+	size_t index = [timer.userInfo[@"index"] unsignedIntegerValue];
+
+	ng::range_t range;
+	BOOL isPoint = NO;
+	CGRect rect  = CGRectZero;
+	if(![self lspDiagnosticTargetAtIndex:index range:range isPoint:isPoint rect:rect])
+		return;
+
+	// 0.35 s is long enough for the pointer to have left the squiggle without a
+	// mouseMoved: telling us — it stops at the view boundary, and there is no
+	// mouseExited: — and long enough for a click to have dismissed the popover,
+	// which would otherwise pop back up on its own.
+	if(!self.window || !NSPointInRect([self convertPoint:self.window.mouseLocationOutsideOfEventStream fromView:nil], NSRectFromCGRect(rect)))
+		return;
+
+	// A command tooltip already showing this very index says everything dwell
+	// would, plus the server's hover sections. Taking it over would drop those and
+	// cancel a request that is about to enrich it further.
+	if(_lspHoverTooltip.isVisible && _lspTooltipOwner == OakTextViewTooltipOwnerCommand && _lspTooltipIndex == index)
+		return;
+
+	OakTooltipSection* section = [self lspDiagnosticsSectionAtIndex:ng::index_t(index)];
+	if(!section)
+		return;
+
+	// Dwell takes the tooltip over: drop an outstanding command-hover request so
+	// its answer cannot arrive later and replace this content
+	[self cancelLSPHoverRequest];
+	_lspTooltipOwner = OakTextViewTooltipOwnerDwell;
+	++_lspTooltipGeneration;
+
+	[self showLSPHoverTooltipForIndex:index diagnostics:section hover:nil atRect:NSRectFromCGRect(rect)];
+	_diagnosticHoverRange   = range;
+	_diagnosticHoverIsPoint = isPoint;
+}
+
+// A re-publish can replace a diagnostic's message without moving it. Whatever is
+// on screen is stale at that point, and since nothing moved, neither a repaint nor
+// pointer movement inside the same range would refresh it. So rebuild the local
+// section from the buffer and re-show it, whichever surface owns the tooltip: the
+// server's hover sections are carried over untouched, and the generation is left
+// alone so an in-flight hover answer is still welcome when it lands.
+//
+// Re-presenting is not free — it installs a fresh hosting controller — so a
+// publish that did not touch *this* index is ignored, and one that did preserves
+// the selected tab. A diagnostics burst elsewhere in the file must not pull the
+// reader off the Documentation tab.
+//
+// If the diagnostic is simply gone, the presentation path finds nothing to show
+// and closes the tooltip — including, unavoidably, a command tooltip whose server
+// answer has not arrived yet. Showing the old message instead is worse.
+- (void)lspDiagnosticsDidChange
+{
+	if(!documentView || !_lspHoverTooltip.isVisible || _lspTooltipOwner == OakTextViewTooltipOwnerNone)
+		return;
+
+	if(documentView->diagnostics_at(_lspTooltipIndex) == _lspTooltipDiagnostics)
+		return;
+
+	NSRect rect = NSRectFromCGRect(_lspTooltipRect);
+	if(_lspTooltipOwner == OakTextViewTooltipOwnerDwell)
+	{
+		// Dwell is anchored to the squiggle, which the publish may have reshaped —
+		// or turned into a point, or removed from under the pointer entirely
+		ng::range_t range;
+		BOOL isPoint = NO;
+		CGRect target = CGRectZero;
+		if(![self lspDiagnosticTargetAtIndex:_lspTooltipIndex range:range isPoint:isPoint rect:target])
+		{
+			[_lspHoverTooltip dismiss];
+			return;
+		}
+
+		rect                    = NSRectFromCGRect(target);
+		_diagnosticHoverRange   = range;
+		_diagnosticHoverIsPoint = isPoint;
+	}
+
+	[self showLSPHoverTooltipForIndex:_lspTooltipIndex diagnostics:[self lspDiagnosticsSectionAtIndex:ng::index_t(_lspTooltipIndex)] hover:_lspTooltipHoverContent atRect:rect preservingSelection:YES];
 }
 
 - (OakTooltipContent*)createTooltipContentFromHover:(NSDictionary*)hover grammarScope:(NSString*)grammarScope
@@ -201,7 +454,47 @@
 	return [[OakTooltipContent alloc] initWithSections:sections];
 }
 
+// The one presentation point for the hover tooltip. The locally-derived
+// diagnostics section is kept apart from the server's hover content — and both,
+// with the index and anchor they were built for, are remembered — so a
+// diagnostics re-publish can rebuild the local half in place instead of leaving a
+// stale message on screen or throwing away the server's answer. Diagnostics come
+// first because sections render as tabs.
+- (void)showLSPHoverTooltipForIndex:(size_t)index diagnostics:(OakTooltipSection*)diagnosticsSection hover:(OakTooltipContent*)hoverContent atRect:(NSRect)rect
+{
+	[self showLSPHoverTooltipForIndex:index diagnostics:diagnosticsSection hover:hoverContent atRect:rect preservingSelection:NO];
+}
+
+- (void)showLSPHoverTooltipForIndex:(size_t)index diagnostics:(OakTooltipSection*)diagnosticsSection hover:(OakTooltipContent*)hoverContent atRect:(NSRect)rect preservingSelection:(BOOL)preservingSelection
+{
+	NSMutableArray<OakTooltipSection*>* sections = [NSMutableArray new];
+	if(diagnosticsSection)
+		[sections addObject:diagnosticsSection];
+	if(hoverContent)
+		[sections addObjectsFromArray:hoverContent.sections];
+
+	if(sections.count == 0)
+	{
+		// Nothing left to say: a rebuild whose diagnostic is gone lands here
+		if(_lspHoverTooltip.isVisible)
+			[_lspHoverTooltip dismiss];
+		return;
+	}
+
+	_lspTooltipIndex        = index;
+	_lspTooltipRect         = NSRectToCGRect(rect);
+	_lspTooltipHoverContent = hoverContent;
+	_lspTooltipDiagnostics  = documentView ? documentView->diagnostics_at(index) : std::vector<ng::diagnostic_t>();
+
+	[self showLSPHoverTooltip:[[OakTooltipContent alloc] initWithSections:sections] atRect:rect preservingSelection:preservingSelection];
+}
+
 - (void)showLSPHoverTooltip:(OakTooltipContent*)content atRect:(NSRect)rect
+{
+	[self showLSPHoverTooltip:content atRect:rect preservingSelection:NO];
+}
+
+- (void)showLSPHoverTooltip:(OakTooltipContent*)content atRect:(NSRect)rect preservingSelection:(BOOL)preservingSelection
 {
 	if(!content)
 		return;
@@ -214,7 +507,7 @@
 		_lspHoverTooltip.delegate = (id<OakInfoTooltipDelegate>)self;
 	}
 
-	[_lspHoverTooltip showIn:self at:rect content:content];
+	[_lspHoverTooltip showIn:self at:rect content:content preservingSelection:preservingSelection];
 }
 
 
@@ -224,6 +517,13 @@
 - (void)dismissLSPHoverPanel
 {
 	[self cancelLSPHoverRequest];
+	[_diagnosticDwellTimer invalidate];
+	_diagnosticDwellTimer = nil;
+	_diagnosticHoverRange   = ng::range_t();
+	_diagnosticHoverIsPoint = NO;
+	_lspTooltipOwner = OakTextViewTooltipOwnerNone;
+	++_lspTooltipGeneration;
+	_lspTooltipHoverContent = nil;
 	if(_lspHoverTooltip.isVisible)
 	{
 		[_lspHoverTooltip dismiss];
@@ -625,6 +925,16 @@ static void ApplyCodeIndentation (NSMutableAttributedString* styled, NSFont* fon
 
 - (void)infoTooltipDidDismiss:(OakInfoTooltip*)tooltip
 {
+	// A click dismisses the popover on its own; an armed timer would bring it
+	// straight back
+	[_diagnosticDwellTimer invalidate];
+	_diagnosticDwellTimer = nil;
+
+	_diagnosticHoverRange   = ng::range_t();
+	_diagnosticHoverIsPoint = NO;
+	_lspTooltipOwner = OakTextViewTooltipOwnerNone;
+	++_lspTooltipGeneration;
+	_lspTooltipHoverContent = nil;
 	if(!_lspHoverHighlightRange.empty() && documentView)
 	{
 		[self setNeedsDisplayInRect:NSRectFromCGRect(documentView->rect_for_range(_lspHoverHighlightRange.min().index, _lspHoverHighlightRange.max().index))];
