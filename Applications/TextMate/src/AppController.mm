@@ -252,6 +252,7 @@ BOOL HasDocumentWindow (NSArray* windows)
 				{ @"Show Minimap",           @selector(toggleMinimap:)                },
 				{ @"Show Markdown Preview",  @selector(toggleMarkdownPreview:)        },
 				{ @"Show Diff",              @selector(toggleDiffPane:),       @"g", .modifierFlags = NSEventModifierFlagCommand|NSEventModifierFlagOption|NSEventModifierFlagControl },
+				{ @"Show Diagnostics",       @selector(toggleDiagnosticsPane:) },
 				{ /* -------- */ },
 				{ @"Show Invisibles",        @selector(toggleShowInvisibles:), @"i", .modifierFlags = NSEventModifierFlagCommand|NSEventModifierFlagOption },
 				{ /* -------- */ },
@@ -1205,7 +1206,7 @@ static KVDB* commandPaletteFrecencyDB ()
 		// Toggle selectors that qualify as "settings"
 		NSSet<NSString*>* settingSelectors = [NSSet setWithArray:@[
 			@"toggleSoftWrap:", @"toggleShowInvisibles:", @"toggleLineNumbers:",
-			@"toggleMinimap:", @"toggleMarkdownPreview:", @"toggleDiffPane:", @"toggleShowWrapColumn:", @"toggleShowIndentGuides:",
+			@"toggleMinimap:", @"toggleMarkdownPreview:", @"toggleDiffPane:", @"toggleDiagnosticsPane:", @"toggleShowWrapColumn:", @"toggleShowIndentGuides:",
 			@"toggleContinuousSpellChecking:", @"toggleScrollPastEnd:",
 		]];
 

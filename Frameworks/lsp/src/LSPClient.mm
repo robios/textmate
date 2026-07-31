@@ -188,6 +188,7 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 	if(self = [super init])
 	{
 		_serverName = command.lastPathComponent;
+		_identifier = NSUUID.UUID.UUIDString;
 		_logPrefix = [NSString stringWithFormat:@"LSP:%@", _serverName];
 		_workingDirectory = workingDirectory;
 		_initOptionsJSON = initOptionsJSON;

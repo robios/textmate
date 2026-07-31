@@ -1692,6 +1692,13 @@ static void ExtendDiagnosticPoint (ng::buffer_t const& buffer, size_t& from, siz
 		[NSNotificationCenter.defaultCenter postNotificationName:OakDocumentDiagnosticsDidChangeNotification object:self userInfo:@{ @"from": @(dirty.from), @"to": @(dirty.to), @"redraw": @(dirty.redraw) }];
 }
 
+- (NSString*)selectionStringForLine:(NSUInteger)line utf16Column:(NSUInteger)column
+{
+	if(!_buffer)
+		return nil;
+	return to_ns(std::string(_buffer->convert(DiagnosticIndexForPosition(*_buffer, line, column))));
+}
+
 + (void)removeAllMarksOfType:(NSString*)aMark
 {
 	for(OakDocument* document in [OakDocumentController.sharedInstance documents])

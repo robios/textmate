@@ -270,17 +270,22 @@ namespace ct
 	// 2 = warning (orange), anything else = note (blue). The wave phase is
 	// aligned to absolute x so runs split across style boundaries join
 	// seamlessly; clipping trims the overshoot at both ends.
-	void draw_squiggle (ng::context_t const& context, CGRect const& rect, size_t severity)
+	CGColorRef diagnostic_color (size_t severity)
 	{
-		if(rect.size.width <= 0)
-			return;
-
 		static CGColorRef const colors[3] = {
 			CGColorCreateGenericRGB(0.88, 0.23, 0.20, 0.90), // error
 			CGColorCreateGenericRGB(0.93, 0.66, 0.10, 0.90), // warning
 			CGColorCreateGenericRGB(0.35, 0.62, 0.90, 0.90), // note
 		};
-		CGColorRef color = colors[severity == 1 ? 0 : (severity == 2 ? 1 : 2)];
+		return colors[severity == 1 ? 0 : (severity == 2 ? 1 : 2)];
+	}
+
+	void draw_squiggle (ng::context_t const& context, CGRect const& rect, size_t severity)
+	{
+		if(rect.size.width <= 0)
+			return;
+
+		CGColorRef color = diagnostic_color(severity);
 
 		CGFloat const period    = 6;
 		CGFloat const amplitude = 1;

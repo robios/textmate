@@ -1,6 +1,7 @@
 #import <document/OakDocument.h>
 #import <document/OakDocument Private.h>
 #import <buffer/buffer.h>
+#import <ns/ns.h>
 
 typedef std::vector<std::pair<size_t, size_t>> ranges_t;
 
@@ -167,4 +168,76 @@ void test_diagnostics_bridge ()
 		[doc setDiagnostics:@[ lsp_diagnostic(0, 5, 0, 2, @1) ]];
 		OAK_ASSERT(![doc buffer].has_diagnostics());
 	}
+}
+
+// A panel row addresses a caret the way the rest of the editor does — a
+// selection string — but the position it starts from is an LSP one, whose
+// column counts UTF-16 code units rather than the bytes a selection string
+// wants. The panel cannot do this conversion itself: it needs the line.
+void test_diagnostics_selection_string ()
+{
+	OakDocument* doc = [OakDocument documentWithString:@"" fileType:@"text.plain" customName:@"selection"];
+	doc.content = @"aébc\nxy\n"; // ‘é’ is two bytes, one UTF-16 unit
+
+	OAK_ASSERT_EQ(to_s([doc selectionStringForLine:0 utf16Column:0]), std::string("1")); // column 1 is implicit
+	OAK_ASSERT_EQ(to_s([doc selectionStringForLine:0 utf16Column:2]), std::string("1:4")); // past ‘é’: three bytes in
+	OAK_ASSERT_EQ(to_s([doc selectionStringForLine:1 utf16Column:1]), std::string("2:2"));
+
+	// Out-of-range positions clamp rather than escaping the buffer, the same
+	// way the diagnostic ranges themselves do.
+	OAK_ASSERT_EQ(to_s([doc selectionStringForLine:0 utf16Column:99]), std::string("1:6"));
+	OAK_ASSERT_EQ(to_s([doc selectionStringForLine:99 utf16Column:0]), std::string("3"));
+
+	// An unloaded document has no line to convert against, which is the
+	// caller's cue that it has to load first.
+	OAK_ASSERT([[OakDocument documentWithPath:@"/tmp/never-loaded-diagnostics.txt"] selectionStringForLine:0 utf16Column:0] == nil);
+}
+
+// Opening a diagnostics row is the panel's one path into an arbitrary, possibly
+// stale, file name, so what a failing load does with its own reference is
+// load-bearing for it. -loadModalForWindow: opens the document before anything
+// else, but on failure OakDocument closes itself from -didLoadContent: BEFORE
+// calling back — so the caller must close only on success. Closing on both
+// drives an unsigned open count below zero, after which the document never
+// closes again, never posts OakDocumentWillCloseNotification, and never tells
+// its server the file was closed.
+//
+// This lives with the diagnostics tests because they are what made the contract
+// load-bearing; it belongs to OakDocument.
+static BOOL load_failed_for (OakDocument* doc)
+{
+	__block BOOL failed = NO;
+	dispatch_semaphore_t done = dispatch_semaphore_create(0);
+
+	// -loadModalForWindow: is main-thread work; the runner leaves the main
+	// thread spinning its run loop while test functions run off it.
+	dispatch_async(dispatch_get_main_queue(), ^{
+		[doc loadModalForWindow:nil completionHandler:^(OakDocumentIOResult result, NSString* errorMessage, oak::uuid_t const& filterUUID){
+			failed = result != OakDocumentIOResultSuccess;
+			dispatch_semaphore_signal(done);
+		}];
+	});
+	OAK_ASSERT_EQ((long)dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10 * NSEC_PER_SEC))), 0L);
+	return failed;
+}
+
+void test_failed_load_releases_its_own_reference ()
+{
+	// A path that cannot be read as a file. Note that a *deleted* file is not
+	// one of these: TextMate opens a missing path as a new empty document, so
+	// the row for a file the server has since lost simply opens it empty.
+	OakDocument* unreadable = [OakDocument documentWithPath:@"/private/etc"];
+	OAK_ASSERT_EQ((BOOL)unreadable.isOpen, NO);
+
+	OAK_ASSERT_EQ(load_failed_for(unreadable), YES);
+	OAK_ASSERT_EQ((BOOL)unreadable.isOpen, NO); // …so the caller must NOT close it
+	OAK_ASSERT_EQ((BOOL)unreadable.isLoaded, NO);
+
+	// The success path is the other half of the same contract: there the open
+	// reference is the caller's to release.
+	OakDocument* missing = [OakDocument documentWithPath:@"/tmp/com.macromates.textmate.no-such-file-for-diagnostics.txt"];
+	OAK_ASSERT_EQ(load_failed_for(missing), NO);
+	OAK_ASSERT_EQ((BOOL)missing.isOpen, YES);
+	[missing close];
+	OAK_ASSERT_EQ((BOOL)missing.isOpen, NO);
 }

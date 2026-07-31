@@ -112,6 +112,12 @@ typedef NS_ENUM(NSInteger, OakDocumentIOResult) {
 // the document is unloaded.
 - (void)setDiagnostics:(NSArray<NSDictionary*>*)diagnostics;
 
+// An LSP position (0-based line, 0-based UTF-16 column) as a selection string,
+// which is how the rest of the editor addresses a caret. The conversion needs
+// the line's bytes, so it only works on a loaded document — nil otherwise, and
+// nil is the caller's cue that it has to load first.
+- (NSString*)selectionStringForLine:(NSUInteger)line utf16Column:(NSUInteger)column;
+
 - (void)enumerateSymbolsUsingBlock:(void(^)(text::pos_t const& pos, NSString* symbol))block;
 - (void)enumerateBookmarksUsingBlock:(void(^)(text::pos_t const& pos, NSString* excerpt))block;
 - (void)enumerateBookmarksAtLine:(NSUInteger)line block:(void(^)(text::pos_t const& pos, NSString* type, NSString* payload))block;

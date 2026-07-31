@@ -1,6 +1,7 @@
 #import "LSPManager.h"
 #import "LSPClient.h"
 #import "LSPBundleSettings.h"
+#import <document/OakDocumentController.h>
 #import <settings/settings.h>
 #import <text/types.h>
 #import <io/path.h>
@@ -120,7 +121,13 @@ static std::string detectWorkspaceRoot (std::string const& filePath)
 	NSMutableDictionary<NSUUID*, NSNumber*>*                 _documentVersions;
 	NSMutableSet<NSUUID*>*                                   _openDocuments;
 	NSMutableDictionary<NSUUID*, NSTimer*>*                  _changeTimers;
-	NSMutableDictionary<NSString*, NSArray<NSDictionary*>*>* _diagnosticsByURI;
+	// Diagnostics are owned by the client that published them, not by the
+	// document that happened to be open — a workspace server publishes for
+	// files nobody opened, and only the publisher may retract them.
+	LSPDiagnosticsStore*                                     _diagnosticsStore;
+	// Workspace root per client identity, so the store can scope a snapshot to
+	// a window without taking a composite key apart.
+	NSMutableDictionary<NSString*, NSString*>*               _workspaceRootByClientId;
 	// Keyed like _clients (root + lspCommand) so a re-index only flags the
 	// server it was requested for, not every server sharing the workspace.
 	NSMutableSet<NSString*>* _clearCacheKeys;
@@ -154,7 +161,8 @@ static std::string detectWorkspaceRoot (std::string const& filePath)
 		_documentVersions   = [NSMutableDictionary new];
 		_openDocuments      = [NSMutableSet new];
 		_changeTimers       = [NSMutableDictionary new];
-		_diagnosticsByURI   = [NSMutableDictionary new];
+		_diagnosticsStore   = [LSPDiagnosticsStore new];
+		_workspaceRootByClientId = [NSMutableDictionary new];
 		_clearCacheKeys     = [NSMutableSet new];
 		_failedCommandsByRoot = [NSMutableDictionary new];
 
@@ -174,7 +182,8 @@ static std::string detectWorkspaceRoot (std::string const& filePath)
 		return;
 
 	NSString* uri = [NSURL fileURLWithPath:document.path].absoluteString;
-	if(NSArray<NSDictionary*>* cached = _diagnosticsByURI[uri])
+	NSArray<NSDictionary*>* cached = [_diagnosticsStore diagnosticsForURI:uri];
+	if(cached.count)
 		[self applyDiagnostics:cached toDocument:document];
 }
 
@@ -286,6 +295,7 @@ static NSString* clientKey (NSString* root, std::string const& lspCommand)
 	}
 	client.delegate = self;
 	_clients[key] = client;
+	_workspaceRootByClientId[client.identifier] = root;
 	[NSNotificationCenter.defaultCenter postNotificationName:LSPServerStatusDidChangeNotification object:self];
 	return client;
 }
@@ -336,7 +346,8 @@ static NSString* clientKey (NSString* root, std::string const& lspCommand)
 	if(document.path)
 	{
 		NSString* uri = [NSURL fileURLWithPath:document.path].absoluteString;
-		if(NSArray<NSDictionary*>* cached = _diagnosticsByURI[uri])
+		NSArray<NSDictionary*>* cached = [_diagnosticsStore diagnosticsForURI:uri];
+		if(cached.count)
 			[self applyDiagnostics:cached toDocument:document];
 	}
 }
@@ -409,31 +420,98 @@ static NSString* clientKey (NSString* root, std::string const& lspCommand)
 	[_documentClients removeObjectForKey:docId];
 	[_documentVersions removeObjectForKey:docId];
 
-	NSString* path = document.path;
-	if(path)
+	// The cached entry deliberately stays: the client is still live and still
+	// responsible for this file, and the cross-file panel lists files nobody
+	// has open. didClose tells the server we stopped watching, not that what
+	// it said stopped being true.
+}
+
+// Bring the document back in line with what the store now holds for it —
+// whatever survived a client going away, which is usually nothing but can be
+// a second server’s diagnostics for the same file. Silent: the caller decides
+// whether this is one document’s news or a whole client’s.
+- (void)applyStoredDiagnosticsToDocument:(OakDocument*)document
+{
+	NSString* uri = document.path ? [NSURL fileURLWithPath:document.path].absoluteString : nil;
+	NSArray<NSDictionary*>* remaining = uri ? [_diagnosticsStore diagnosticsForURI:uri] : @[];
+
+	if(document.isLoaded)
 	{
-		NSURL* fileURL = [NSURL fileURLWithPath:path];
-		[_diagnosticsByURI removeObjectForKey:fileURL.absoluteString];
+		[self applyDiagnostics:remaining toDocument:document];
+	}
+	else
+	{
+		// applyDiagnostics: only touches loaded documents, but marks written
+		// while it was loaded outlive it on disk.
+		[document removeAllMarksOfType:@"error"];
+		[document removeAllMarksOfType:@"warning"];
+		[document removeAllMarksOfType:@"note"];
 	}
 }
 
-// Remove the document's LSP diagnostics — the gutter marks and the cached
-// entries — and tell the UI. Only needed when a document leaves its server
-// while staying open (grammar switch); a normal close tears the document
-// down anyway, so documentWillClose: does not pay for this.
+- (void)reapplyDiagnosticsForDocument:(OakDocument*)document
+{
+	[self applyStoredDiagnosticsToDocument:document];
+
+	if(NSString* uri = document.path ? [NSURL fileURLWithPath:document.path].absoluteString : nil)
+		[NSNotificationCenter.defaultCenter postNotificationName:LSPDiagnosticsDidChangeNotification object:self userInfo:@{ @"uri": uri }];
+}
+
+// Drop every client's entry for this document and update the UI. Only needed
+// when a document leaves its server while staying open (grammar switch); a
+// normal close keeps its diagnostics, since the client still owns them.
 - (void)clearDiagnosticsForDocument:(OakDocument*)document
 {
-	NSString* uri = document.path ? [NSURL fileURLWithPath:document.path].absoluteString : nil;
-	if(uri)
-		[_diagnosticsByURI removeObjectForKey:uri];
+	if(NSString* uri = document.path ? [NSURL fileURLWithPath:document.path].absoluteString : nil)
+		[_diagnosticsStore removeDiagnosticsForURI:uri];
 
-	[document removeAllMarksOfType:@"error"];
-	[document removeAllMarksOfType:@"warning"];
-	[document removeAllMarksOfType:@"note"];
-	[document setDiagnostics:@[]];
+	[self reapplyDiagnosticsForDocument:document];
+}
 
-	if(uri)
-		[NSNotificationCenter.defaultCenter postNotificationName:LSPDiagnosticsDidChangeNotification object:self userInfo:@{ @"uri": uri }];
+// Everything one client published goes when the client does. Ownership is by
+// client identity, not by workspace root and command, because a restart puts a
+// new client under that same composite key — and its late predecessor must not
+// take the successor's diagnostics with it.
+// Every purge is explicit — none of them waits for lspClientDidTerminate: to
+// notice. For a deliberate teardown that callback is not merely late: the
+// task's termination handler holds the client weakly, so releasing the last
+// strong reference deallocates it and the delegate call never happens at all.
+- (void)purgeDiagnosticsForClient:(LSPClient*)client
+{
+	if(!client)
+		return;
+
+	// URI-driven rather than registration-driven. The documents a client is
+	// *registered to* are not the files it published for: a workspace server
+	// analyses files no editor is attached to, and a file open under one client
+	// can carry a second client's diagnostics. Re-applying only the former
+	// leaves the latter showing a dead server's squiggles for good.
+	NSArray<NSString*>* removed = [_diagnosticsStore removeDiagnosticsForClientKey:client.identifier];
+	[_workspaceRootByClientId removeObjectForKey:client.identifier];
+
+	NSMutableSet<NSString*>* removedPaths = [NSMutableSet new];
+	for(NSString* uri in removed)
+	{
+		if(NSString* filePath = [NSURL URLWithString:uri].path)
+			[removedPaths addObject:filePath];
+	}
+
+	// Only documents that already exist. A file nobody opened has no buffer to
+	// clear and no marks to remove, and materializing one per URI would
+	// register hundreds of documents on a single crash.
+	if(removedPaths.count)
+	{
+		for(OakDocument* doc in OakDocumentController.sharedInstance.documents)
+		{
+			if(doc.path && [removedPaths containsObject:doc.path])
+				[self applyStoredDiagnosticsToDocument:doc];
+		}
+	}
+
+	// Announced once, not per document: most of what a workspace server
+	// publishes is for files nobody opened, so a server can die owning nothing
+	// that would carry the news on its own.
+	[NSNotificationCenter.defaultCenter postNotificationName:LSPDiagnosticsDidChangeNotification object:self userInfo:@{}];
 }
 
 // The document's grammar changed: whatever registration it had under the
@@ -457,7 +535,15 @@ static NSString* clientKey (NSString* root, std::string const& lspCommand)
 	[_changeTimers removeAllObjects];
 
 	for(LSPClient* client in _clients.allValues)
+	{
+		// Explicitly, before the last strong reference goes: this is the path
+		// the AI pane's master switch takes, and leaving the store to
+		// lspClientDidTerminate: would leave it holding every entry for the
+		// rest of the session — that callback cannot arrive once the client is
+		// deallocated (see purgeDiagnosticsForClient:).
+		[self purgeDiagnosticsForClient:client];
 		[client shutdown];
+	}
 
 	[_clients removeAllObjects];
 	[_documentClients removeAllObjects];
@@ -821,7 +907,7 @@ static NSString* clientKey (NSString* root, std::string const& lspCommand)
 	if(path)
 	{
 		NSURL* fileURL = [NSURL fileURLWithPath:path];
-		NSArray<NSDictionary*>* diags = _diagnosticsByURI[fileURL.absoluteString];
+		NSArray<NSDictionary*>* diags = [_diagnosticsStore diagnosticsForURI:fileURL.absoluteString];
 		for(NSDictionary* diag in diags)
 		{
 			switch([diag[@"severity"] intValue])
@@ -954,6 +1040,11 @@ static std::string configuredCommandForDocument (OakDocument* document)
 	if(keyToRemove)
 		[_clients removeObjectForKey:keyToRemove];
 
+	// The restarted server republishes from scratch, so nothing the old one
+	// said outlives it. Done here rather than left to the old process's late
+	// termination callback, which arrives after the new client has connected.
+	[self purgeDiagnosticsForClient:client];
+
 	// Dissociate documents before shutdown
 	for(OakDocument* doc in affectedDocs)
 	{
@@ -999,6 +1090,10 @@ static std::string configuredCommandForDocument (OakDocument* document)
 	NSString* keyToRemove = [self keyForClient:client];
 	if(keyToRemove)
 		[_clients removeObjectForKey:keyToRemove];
+
+	// Stopping is a detach like any other: no publisher is left, so what this
+	// server said goes with it rather than lingering until something reopens.
+	[self purgeDiagnosticsForClient:client];
 
 	for(NSUUID* docId in [_documentClients allKeys])
 	{
@@ -1054,8 +1149,8 @@ static std::string configuredCommandForDocument (OakDocument* document)
 
 	NSURL* fileURL = [NSURL fileURLWithPath:path];
 	NSString* uri = fileURL.absoluteString;
-	NSArray<NSDictionary*>* allDiags = _diagnosticsByURI[uri];
-	if(!allDiags)
+	NSArray<NSDictionary*>* allDiags = [_diagnosticsStore diagnosticsForURI:uri];
+	if(!allDiags.count)
 		return @[];
 
 	NSMutableArray<NSDictionary*>* result = [NSMutableArray array];
@@ -1075,7 +1170,17 @@ static std::string configuredCommandForDocument (OakDocument* document)
 // Main thread only: the cache is filled from handleMessage, which runs on the main queue.
 - (NSDictionary<NSString*, NSArray<NSDictionary*>*>*)allDiagnosticsByURI
 {
-	return [_diagnosticsByURI copy];
+	return [_diagnosticsStore allDiagnosticsByURI];
+}
+
+- (LSPDiagnosticsSnapshot*)diagnosticsSnapshotForWorkspaceRoots:(NSArray<NSString*>*)roots
+{
+	return [_diagnosticsStore snapshotForWorkspaceRoots:roots];
+}
+
+- (NSString*)diagnosticsRevisionForWorkspaceRoots:(NSArray<NSString*>*)roots
+{
+	return [_diagnosticsStore revisionForWorkspaceRoots:roots];
 }
 
 #pragma mark - LSPClientDelegate
@@ -1101,6 +1206,10 @@ static std::string configuredCommandForDocument (OakDocument* document)
 	if(keyToRemove)
 		[_clients removeObjectForKey:keyToRemove];
 
+	// Nobody is left to update or retract what this server said — cross-file
+	// entries included, which the panel would otherwise keep listing.
+	[self purgeDiagnosticsForClient:client];
+
 	// Dissociate all documents that were using this client
 	NSMutableArray<NSUUID*>* docIdsToRemove = [NSMutableArray new];
 	for(NSUUID* docId in _documentClients)
@@ -1111,11 +1220,6 @@ static std::string configuredCommandForDocument (OakDocument* document)
 
 	for(NSUUID* docId in docIdsToRemove)
 	{
-		// Nobody is left to update what this server said, so squiggles and marks
-		// from it would sit there indefinitely after a crash
-		if(OakDocument* doc = [OakDocument documentWithIdentifier:docId])
-			[self clearDiagnosticsForDocument:doc];
-
 		[_changeTimers[docId] invalidate];
 		[_changeTimers removeObjectForKey:docId];
 		[_documentClients removeObjectForKey:docId];
@@ -1163,12 +1267,19 @@ static std::string configuredCommandForDocument (OakDocument* document)
 
 - (void)lspClient:(LSPClient*)client didReceiveDiagnostics:(NSArray<NSDictionary*>*)diagnostics forDocumentURI:(NSString*)uri
 {
-	// Cache full diagnostics for codeAction requests. An empty publish means the
-	// file is clean, which is the absence of an entry rather than an empty one —
-	// the cross-file panel must not list a file with no diagnostics left.
-	if(diagnostics.count)
-			_diagnosticsByURI[uri] = diagnostics;
-	else	[_diagnosticsByURI removeObjectForKey:uri];
+	// Publishes reach the main queue by dispatch_async, so one parsed just
+	// before the user hit Stop or Restart Server routinely lands after the
+	// purge. Taking it would resurrect a dead server's diagnostics — with no
+	// workspace root, since the purge took that too — and after an explicit
+	// stop nothing would ever republish to take them down again.
+	if(![self keyForClient:client])
+		return;
+
+	// Cached under the publishing client, so a second server's diagnostics for
+	// the same file survive this one replacing its own. An empty publish means
+	// the file is clean, which the store expresses as the absence of an entry —
+	// the cross-file panel must not list a file with nothing left in it.
+	[_diagnosticsStore setDiagnostics:diagnostics forURI:uri clientKey:client.identifier workspaceRoot:_workspaceRootByClientId[client.identifier]];
 
 	NSURL* url = [NSURL URLWithString:uri];
 	NSString* filePath = url.path;
@@ -1176,7 +1287,8 @@ static std::string configuredCommandForDocument (OakDocument* document)
 		return;
 
 	OakDocument* doc = [OakDocument documentWithPath:filePath];
-	[self applyDiagnostics:diagnostics toDocument:doc];
+	// The document shows every server's view of it, not just this publisher's.
+	[self applyDiagnostics:[_diagnosticsStore diagnosticsForURI:uri] toDocument:doc];
 
 	[NSNotificationCenter.defaultCenter postNotificationName:LSPDiagnosticsDidChangeNotification object:self userInfo:@{ @"uri": uri }];
 }

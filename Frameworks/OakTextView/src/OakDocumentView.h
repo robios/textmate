@@ -27,6 +27,18 @@
 - (IBAction)toggleDiffPane:(id)sender;
 - (IBAction)selectNextDiffHunk:(id)sender;
 - (IBAction)selectPreviousDiffHunk:(id)sender;
+- (IBAction)toggleDiagnosticsPane:(id)sender;
+
+// The window's project roots, which scope the diagnostics pane to the servers
+// that serve this window. Empty falls back to the active document's directory,
+// which is what a window with no project root supplies anyway.
+@property (nonatomic, copy) NSArray<NSString*>* diagnosticsWorkspaceRoots;
+
+// Where a diagnostics row sends the reader. LSP coordinates: 0-based line,
+// 0-based UTF-16 column. A view with no handler navigates within its own
+// document and ignores rows for other files — opening a tab is the window's
+// job, not the editor view's.
+@property (nonatomic, copy) void (^openDiagnosticLocationHandler)(NSURL* fileURL, NSUInteger line, NSUInteger column);
 
 - (void)addAuxiliaryView:(NSView*)aView atEdge:(NSRectEdge)anEdge;
 - (void)removeAuxiliaryView:(NSView*)aView;

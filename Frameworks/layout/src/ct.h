@@ -70,6 +70,11 @@ namespace ct
 	// hang off and is drawn straight from the paragraph.
 	void draw_squiggle (ng::context_t const& context, CGRect const& rect, size_t severity);
 
+	// The one severity palette. Every diagnostics surface reads it from here —
+	// a dot in the panel and a squiggle under the same text must be the same
+	// red, or the two stop looking like one system.
+	CGColorRef diagnostic_color (size_t severity);
+
 	// Width of the marker drawn for a zero-width point diagnostic. Shared with
 	// mouse hit testing, which has no text extent to measure instead.
 	CGFloat const kDiagnosticPointWidth = 3;

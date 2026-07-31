@@ -2,6 +2,7 @@
 #define LSP_MANAGER_H_POC
 
 #import <document/OakDocument.h>
+#import "LSPDiagnosticsStore.h"
 
 extern NSString* const LSPDiagnosticsDidChangeNotification;
 extern NSString* const LSPServerStatusDidChangeNotification;
@@ -29,6 +30,15 @@ extern NSString* const LSPServerStatusDidChangeNotification;
 - (BOOL)serverSupportsRenameForDocument:(OakDocument*)document;
 - (NSArray<NSDictionary*>*)diagnosticsForDocument:(OakDocument*)document atLine:(NSUInteger)line character:(NSUInteger)character endLine:(NSUInteger)endLine endCharacter:(NSUInteger)endCharacter;
 - (NSDictionary<NSString*, NSArray<NSDictionary*>*>*)allDiagnosticsByURI;
+
+// Everything the live clients serving these workspace roots have published,
+// grouped by file — the cross-file panel’s source. Immutable; ask again after
+// LSPDiagnosticsDidChangeNotification rather than holding on to it.
+- (LSPDiagnosticsSnapshot*)diagnosticsSnapshotForWorkspaceRoots:(NSArray<NSString*>*)roots;
+
+// The revision that snapshot would carry, without building it — ask this first
+// and skip the snapshot entirely when it matches what you already show.
+- (NSString*)diagnosticsRevisionForWorkspaceRoots:(NSArray<NSString*>*)roots;
 - (void)requestPrepareRenameForDocument:(OakDocument*)document line:(NSUInteger)line character:(NSUInteger)character completion:(void(^)(NSDictionary*))callback;
 - (void)requestRenameForDocument:(OakDocument*)document line:(NSUInteger)line character:(NSUInteger)character newName:(NSString*)newName completion:(void(^)(NSDictionary*))callback;
 - (BOOL)serverSupportsCodeActionsForDocument:(OakDocument*)document;

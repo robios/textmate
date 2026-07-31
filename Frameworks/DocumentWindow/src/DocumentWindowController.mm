@@ -207,6 +207,14 @@ static NSArray* const kObservedKeyPaths = @[ @"arrayController.arrangedObjects.p
 
 		self.documentView = [[OakDocumentView alloc] init];
 		self.documentView.reviewBase = self.reviewBase;
+
+		// A diagnostics row can name any file a server publishes for, opened or
+		// not — which the editor view has no way to reach on its own.
+		__weak DocumentWindowController* weakSelf = self;
+		self.documentView.openDiagnosticLocationHandler = ^(NSURL* fileURL, NSUInteger line, NSUInteger column){
+			[weakSelf revealFileURL:fileURL atLine:line utf16Column:column];
+		};
+
 		self.textView = self.documentView.textView;
 		self.textView.delegate = self;
 
@@ -1239,6 +1247,102 @@ static NSArray* const kObservedKeyPaths = @[ @"arrayController.arrangedObjects.p
 	}];
 }
 
+// Where a diagnostics row sends the reader. The position arrives in LSP
+// coordinates, and converting the UTF-16 column needs the line's bytes — so the
+// document has to be loaded first even when the row points at a file that has
+// never been opened in this window. Nothing here assumes opening is
+// synchronous; the caret is placed from the load's completion.
+- (void)revealFileURL:(NSURL*)fileURL atLine:(NSUInteger)line utf16Column:(NSUInteger)column
+{
+	NSString* path = fileURL.filePathURL.path;
+	if(!path)
+		return;
+
+	// Resolve to the controller's document first, so the tab lookup below can go
+	// by identity. Comparing path strings would miss a tab opened under a
+	// different spelling of the same file — servers that resolve symlinks in the
+	// URIs they publish (pyright does) hand us exactly that — whereas the
+	// controller matches by inode.
+	OakDocument* document = [OakDocumentController.sharedInstance documentWithPath:path];
+	if(!document)
+		return;
+
+	__weak DocumentWindowController* weakSelf = self;
+	[document loadModalForWindow:self.window completionHandler:^(OakDocumentIOResult result, NSString* errorMessage, oak::uuid_t const& filterUUID){
+		// A failed load has already released the reference -loadModalForWindow:
+		// took: OakDocument closes itself from -didLoadContent: before calling
+		// back. Closing again here would drive a fresh document's open count
+		// below zero — where it is unsigned, so it never closes again — or take
+		// an existing tab's own reference and leave a live tab on a closed
+		// document. The panel is what makes a failing load reachable at all: a
+		// row names whatever file a server analysed, which may since have
+		// become unreadable. A file that was merely *deleted* does not fail —
+		// a missing path opens as a new empty document.
+		if(result != OakDocumentIOResultSuccess)
+			return;
+
+		if(DocumentWindowController* strongSelf = weakSelf)
+		{
+			NSString* selection = [document selectionStringForLine:line utf16Column:column];
+
+			if([document isEqual:strongSelf.selectedDocument])
+			{
+				if(selection)
+				{
+					strongSelf.textView.selectionString = selection;
+					[strongSelf.textView centerSelectionInVisibleArea:strongSelf];
+				}
+			}
+			else
+			{
+				// -setDocument: applies this when the tab becomes current, which
+				// is the only moment a text view exists to place a caret in.
+				if(selection)
+					document.selection = selection;
+
+				// Selecting a tab is two halves everywhere else in this file —
+				// the tab bar (selectedTabIndex) and the editor
+				// (openAndSelectDocument:) — and this branch had only the
+				// second. For a file already open in a background tab that left
+				// the tab bar highlighting the file the reader came from while
+				// the editor showed the one they clicked, and everything
+				// measured from the selected index followed the lie: a new tab
+				// landing beside the wrong neighbour, and the session recording
+				// it. insertDocuments: sets the index itself, so only the
+				// existing-tab case needs saying.
+				//
+				// Asked of the tab list as it is now rather than as it was
+				// before the load, which is also what decides whether a tab
+				// needs opening at all: a tab closed while the load was in
+				// flight is then simply opened again, rather than leaving the
+				// window showing a document its own tab list does not have.
+				NSUInteger const tabIndex = [strongSelf.documents indexOfObject:document];
+				if(tabIndex != NSNotFound)
+				{
+					strongSelf.selectedTabIndex = tabIndex;
+				}
+				else
+				{
+					// Consume the disposable tab, as every other way of opening
+					// a file into this window does.
+					NSMutableArray<NSUUID*>* tabsToClose = [NSMutableArray array];
+					if(NSUUID* uuid = strongSelf.disposableDocument)
+						[tabsToClose addObject:uuid];
+					[strongSelf insertDocuments:@[ document ] atIndex:strongSelf.selectedTabIndex + 1 selecting:document andClosing:tabsToClose];
+				}
+
+				// activate:NO keeps first responder where it is — which is the
+				// panel. Walking a list of problems should not require clicking
+				// back into it after every row, and it makes the two branches
+				// behave alike: the same-file one above moves only the caret.
+				[strongSelf openAndSelectDocument:document activate:NO];
+			}
+		}
+
+		[document close]; // balances the load above; the tab holds its own reference
+	}];
+}
+
 - (IBAction)saveDocument:(id)sender
 {
 	OakDocument* doc = self.selectedDocument;
@@ -1556,7 +1660,17 @@ static NSArray* const kObservedKeyPaths = @[ @"arrayController.arrangedObjects.p
 
 		[self updateExternalAttributes];
 		[self updateWindowTitle];
+		[self updateDiagnosticsWorkspaceRoots];
 	}
+}
+
+// What the diagnostics pane is scoped to. The project root when there is one;
+// otherwise the active document's directory, which is the only thing that says
+// where a lone window sits in the file system.
+- (void)updateDiagnosticsWorkspaceRoots
+{
+	NSString* root = _projectPath ?: [self.selectedDocument.path stringByDeletingLastPathComponent];
+	self.documentView.diagnosticsWorkspaceRoots = root.length ? @[ root ] : @[];
 }
 
 - (void)setDocumentPath:(NSString*)newDocumentPath

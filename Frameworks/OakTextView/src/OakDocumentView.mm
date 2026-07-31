@@ -4,6 +4,7 @@
 #import "MinimapView.h"
 #import "MarkdownPreviewView.h"
 #import "DiffPaneView.h"
+#import "DiagnosticsPaneView.h"
 #import "BufferDiffService.h"
 #import "diff_pane_model.h"
 #import "OakReviewBase.h"
@@ -86,6 +87,19 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 	CGFloat diffPaneWidth;
 	BOOL showDiffPane;
 
+	MarkdownPreviewDividerView* diagnosticsPaneDividerView;
+	NSScrollView* diagnosticsPaneScrollView;
+	DiagnosticsPaneView* diagnosticsPaneView;
+	CGFloat diagnosticsPaneWidth;
+	BOOL showDiagnosticsPane;
+	// Workspace analysis publishes for many files at once. One main-run-loop
+	// hop collapses the burst into a single snapshot and rebuild.
+	BOOL diagnosticsRefreshScheduled;
+	// What the pane is currently showing, so an unchanged re-publish costs a
+	// string comparison instead of a rebuild. Cleared when the pane is opened,
+	// since a closed pane threw its rows away.
+	NSString* diagnosticsPaneRevision;
+
 	BufferDiffService* diffService;
 	BufferDiffSnapshot* lastDiffSnapshot; // what the base selector and the status bar describe
 	NSString* lastDiffRepoRoot;           // repo root of the most recent snapshot
@@ -166,8 +180,9 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 		minimapScrollView.documentView           = minimapView;
 		minimapScrollView.hidden = ![NSUserDefaults.standardUserDefaults boolForKey:@"DocumentView Show Minimap"];
 
-		// The diff pane materializes lazily; only its width persists.
-		diffPaneWidth = [NSUserDefaults.standardUserDefaults doubleForKey:@"DocumentView Diff Pane Width"];
+		// The side panes materialize lazily; only their widths persist.
+		diffPaneWidth        = [NSUserDefaults.standardUserDefaults doubleForKey:@"DocumentView Diff Pane Width"];
+		diagnosticsPaneWidth = [NSUserDefaults.standardUserDefaults doubleForKey:@"DocumentView Diagnostics Pane Width"];
 
 		// The buffer-diff service runs regardless of the pane: it also
 		// maintains the diff.* document marks the minimap renders.
@@ -224,14 +239,18 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 		NSMutableDictionary* views = [NSDictionaryOfVariableBindings(gutterScrollView, gutterView, gutterDividerView, textScrollView, minimapScrollView) mutableCopy];
 		NSMutableString* format = [@"H:|[gutterScrollView(==gutterView)][gutterDividerView][textScrollView(>=100)][minimapScrollView(==minimapWidth)]" mutableCopy];
 
-		// Diff pane width wins over stretching the text view but yields (@490)
+		// Side-pane width wins over stretching the text view but yields (@490)
 		// to the text view’s required minimum when the window gets too narrow.
-		BOOL const diffPaneVisible = diffPaneScrollView && !diffPaneScrollView.hidden;
-		CGFloat const maxDiffWidth = NSWidth(self.bounds) - NSWidth(gutterScrollView.frame) - (minimapScrollView.hidden ? 0 : 110) - 150;
+		// The two panes are mutually exclusive, so at most one is ever wide.
+		BOOL const diffPaneVisible        = diffPaneScrollView && !diffPaneScrollView.hidden;
+		BOOL const diagnosticsPaneVisible = diagnosticsPaneScrollView && !diagnosticsPaneScrollView.hidden;
+		CGFloat const maxPaneWidth = NSWidth(self.bounds) - NSWidth(gutterScrollView.frame) - (minimapScrollView.hidden ? 0 : 110) - 150;
 		NSDictionary* metrics = @{
 			@"minimapWidth": @(minimapScrollView.hidden ? 0 : 110),
 			@"diffDividerWidth": @(diffPaneVisible ? 5 : 0),
-			@"diffWidth": @(diffPaneVisible ? std::clamp<CGFloat>(diffPaneWidth, 150, std::max<CGFloat>(150, maxDiffWidth)) : 0),
+			@"diffWidth": @(diffPaneVisible ? std::clamp<CGFloat>(diffPaneWidth, 150, std::max<CGFloat>(150, maxPaneWidth)) : 0),
+			@"diagnosticsDividerWidth": @(diagnosticsPaneVisible ? 5 : 0),
+			@"diagnosticsWidth": @(diagnosticsPaneVisible ? std::clamp<CGFloat>(diagnosticsPaneWidth, 150, std::max<CGFloat>(150, maxPaneWidth)) : 0),
 		};
 
 		if(diffPaneScrollView)
@@ -239,6 +258,12 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 			[format appendString:@"[diffPaneDividerView(==diffDividerWidth)][diffPaneScrollView(==diffWidth@490)]"];
 			views[@"diffPaneDividerView"] = diffPaneDividerView;
 			views[@"diffPaneScrollView"]  = diffPaneScrollView;
+		}
+		if(diagnosticsPaneScrollView)
+		{
+			[format appendString:@"[diagnosticsPaneDividerView(==diagnosticsDividerWidth)][diagnosticsPaneScrollView(==diagnosticsWidth@490)]"];
+			views[@"diagnosticsPaneDividerView"] = diagnosticsPaneDividerView;
+			views[@"diagnosticsPaneScrollView"]  = diagnosticsPaneScrollView;
 		}
 		[format appendString:@"|"];
 
@@ -548,6 +573,12 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 		diffPaneDividerView.lineColor       = [NSColor colorWithCGColor:styles.divider];
 		diffPaneScrollView.backgroundColor  = diffPaneView.themeBackgroundColor;
 
+		diagnosticsPaneView.themeBackgroundColor   = [NSColor colorWithCGColor:theme->background(to_s(self.document.fileType))];
+		diagnosticsPaneView.themeForegroundColor   = [NSColor colorWithCGColor:theme->styles_for_scope(to_s(self.document.fileType)).foreground()];
+		diagnosticsPaneDividerView.backgroundColor = diagnosticsPaneView.themeBackgroundColor;
+		diagnosticsPaneDividerView.lineColor       = [NSColor colorWithCGColor:styles.divider];
+		diagnosticsPaneScrollView.backgroundColor  = diagnosticsPaneView.themeBackgroundColor;
+
 		[gutterView setNeedsDisplay:YES];
 	}
 }
@@ -580,6 +611,8 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 - (IBAction)toggleDiffPane:(id)sender
 {
 	showDiffPane = !showDiffPane;
+	if(showDiffPane)
+		[self hideDiagnosticsPane]; // one side pane at a time
 	[self updateDiffPaneVisibility];
 	[self updateDiffMarksColumnVisibility]; // the “only while the pane is open” setting
 }
@@ -946,6 +979,7 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 {
 	showDiffPane = NO;
 	[self updateDiffPaneVisibility];
+	[self updateDiffMarksColumnVisibility];
 }
 
 - (void)takeDiffPaneWidthFrom:(CGFloat)newWidth
@@ -956,6 +990,176 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 	[self layoutSubtreeIfNeeded]; // live resize while the divider is dragged
 }
 
+// ====================
+// = Diagnostics pane =
+// ====================
+
+// The cross-file problem list. Unlike the diff pane it does not follow the
+// active tab: its whole point is the files you have not opened.
+- (IBAction)toggleDiagnosticsPane:(id)sender
+{
+	showDiagnosticsPane = !showDiagnosticsPane;
+	if(showDiagnosticsPane)
+		[self hideDiffPane]; // one side pane at a time
+	[self updateDiagnosticsPaneVisibility];
+}
+
+- (void)updateDiagnosticsPaneVisibility
+{
+	BOOL const show = showDiagnosticsPane;
+
+	if(show && !diagnosticsPaneView)
+	{
+		if(diagnosticsPaneWidth <= 0)
+			diagnosticsPaneWidth = std::max<CGFloat>(150, round(NSWidth(textScrollView.frame) / 3));
+
+		diagnosticsPaneView = [[DiagnosticsPaneView alloc] initWithFrame:NSZeroRect];
+
+		__weak OakDocumentView* weakSelf = self;
+		diagnosticsPaneView.closeHandler = ^{
+			[weakSelf hideDiagnosticsPane];
+		};
+		diagnosticsPaneView.openLocationHandler = ^(NSURL* fileURL, NSUInteger line, NSUInteger column){
+			[weakSelf openDiagnosticLocation:fileURL line:line column:column];
+		};
+
+		// Scroller-less scroll view wrapper, mirroring the gutter, minimap and
+		// diff pane: a plain sibling that redraws next to OakTextView leaves the
+		// text view’s giant tiled backing layer blank.
+		diagnosticsPaneScrollView = [[NSScrollView alloc] initWithFrame:NSZeroRect];
+		diagnosticsPaneScrollView.borderType               = NSNoBorder;
+		diagnosticsPaneScrollView.hasVerticalScroller      = NO;
+		diagnosticsPaneScrollView.hasHorizontalScroller    = NO;
+		diagnosticsPaneScrollView.verticalScrollElasticity = NSScrollElasticityNone;
+		diagnosticsPaneScrollView.documentView             = diagnosticsPaneView;
+
+		diagnosticsPaneDividerView = [[MarkdownPreviewDividerView alloc] initWithFrame:NSZeroRect];
+		diagnosticsPaneDividerView.resizedView = diagnosticsPaneScrollView;
+		diagnosticsPaneDividerView.widthChangeHandler = ^(CGFloat newWidth){
+			[weakSelf takeDiagnosticsPaneWidthFrom:newWidth];
+		};
+
+		diagnosticsPaneScrollView.hidden  = YES; // flipped below, so the constraint pass always runs
+		diagnosticsPaneDividerView.hidden = YES;
+
+		OakAddAutoLayoutViewsToSuperview(@[ diagnosticsPaneDividerView, diagnosticsPaneScrollView ], self);
+		[self updateStyle]; // seed the pane’s theme colors
+	}
+
+	if(diagnosticsPaneScrollView && diagnosticsPaneScrollView.hidden == show)
+	{
+		diagnosticsPaneScrollView.hidden  = !show;
+		diagnosticsPaneDividerView.hidden = !show;
+		[self setNeedsUpdateConstraints:YES];
+	}
+	diagnosticsPaneView.active = show;
+
+	if(show)
+	{
+		diagnosticsPaneRevision = nil; // the teardown took the rows with it
+		[self refreshDiagnosticsPane];
+	}
+}
+
+- (void)hideDiagnosticsPane
+{
+	showDiagnosticsPane = NO;
+	[self updateDiagnosticsPaneVisibility];
+}
+
+- (void)takeDiagnosticsPaneWidthFrom:(CGFloat)newWidth
+{
+	diagnosticsPaneWidth = newWidth;
+	[NSUserDefaults.standardUserDefaults setDouble:newWidth forKey:@"DocumentView Diagnostics Pane Width"];
+	[self setNeedsUpdateConstraints:YES];
+	[self layoutSubtreeIfNeeded]; // live resize while the divider is dragged
+}
+
+// The window supplies its project roots; a lone editor scopes itself to the
+// directory of the file it is showing, which is what a window with no project
+// root does too.
+- (NSArray<NSString*>*)effectiveDiagnosticsWorkspaceRoots
+{
+	if(_diagnosticsWorkspaceRoots.count)
+		return _diagnosticsWorkspaceRoots;
+	if(NSString* path = self.document.path)
+		return @[ [path stringByDeletingLastPathComponent] ];
+	return @[];
+}
+
+- (void)refreshDiagnosticsPane
+{
+	if(!showDiagnosticsPane || !diagnosticsPaneView)
+		return;
+
+	// Servers re-publish unchanged diagnostics constantly — the design says so
+	// of pyright, and the manager announces every publish, changed or not.
+	// Asking for the revision first is what keeps an idle project from
+	// regrouping, re-sorting and re-measuring the whole list several times a
+	// second for nothing.
+	NSArray<NSString*>* roots = [self effectiveDiagnosticsWorkspaceRoots];
+	NSString* revision = [LSPManager.sharedManager diagnosticsRevisionForWorkspaceRoots:roots];
+	if([revision isEqualToString:diagnosticsPaneRevision])
+		return;
+
+	diagnosticsPaneRevision = revision;
+	[diagnosticsPaneView takeSnapshot:[LSPManager.sharedManager diagnosticsSnapshotForWorkspaceRoots:roots]];
+}
+
+// A workspace analysis publishes for one URI at a time, so a project-wide
+// re-analysis arrives as a burst of notifications. Rebuilding the row model
+// once per burst is the difference between a hitch and a freeze.
+- (void)scheduleDiagnosticsPaneRefresh
+{
+	if(diagnosticsRefreshScheduled || !showDiagnosticsPane)
+		return;
+
+	diagnosticsRefreshScheduled = YES;
+	__weak OakDocumentView* weakSelf = self;
+	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.075 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+		OakDocumentView* strongSelf = weakSelf;
+		if(!strongSelf)
+			return;
+		[strongSelf didFireDiagnosticsPaneRefresh];
+	});
+}
+
+- (void)didFireDiagnosticsPaneRefresh
+{
+	diagnosticsRefreshScheduled = NO;
+	[self refreshDiagnosticsPane];
+}
+
+- (void)setDiagnosticsWorkspaceRoots:(NSArray<NSString*>*)someRoots
+{
+	if(_diagnosticsWorkspaceRoots == someRoots || [_diagnosticsWorkspaceRoots isEqualToArray:someRoots])
+		return;
+
+	_diagnosticsWorkspaceRoots = [someRoots copy];
+	[self refreshDiagnosticsPane];
+}
+
+// Same-file rows are handled here so a lone editor still navigates; the window
+// takes cross-file rows, which need a tab and a load it knows nothing about.
+- (void)openDiagnosticLocation:(NSURL*)fileURL line:(NSUInteger)line column:(NSUInteger)column
+{
+	if(_openDiagnosticLocationHandler)
+	{
+		_openDiagnosticLocationHandler(fileURL, line, column);
+		return;
+	}
+
+	OakDocument* document = self.document;
+	if(!document.path || ![document.path isEqualToString:fileURL.path])
+		return;
+
+	if(NSString* selection = [document selectionStringForLine:line utf16Column:column])
+	{
+		_textView.selectionString = selection;
+		[_textView centerSelectionInVisibleArea:self];
+	}
+}
+
 - (BOOL)validateMenuItem:(NSMenuItem*)aMenuItem
 {
 	if([aMenuItem action] == @selector(toggleLineNumbers:))
@@ -964,6 +1168,8 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 		[aMenuItem setTitle:minimapScrollView.hidden ? @"Show Minimap" : @"Hide Minimap"];
 	else if([aMenuItem action] == @selector(toggleDiffPane:))
 		[aMenuItem setTitle:showDiffPane ? @"Hide Diff" : @"Show Diff"];
+	else if([aMenuItem action] == @selector(toggleDiagnosticsPane:))
+		[aMenuItem setTitle:showDiagnosticsPane ? @"Hide Diagnostics" : @"Show Diagnostics"];
 	else if([aMenuItem action] == @selector(selectNextDiffHunk:))
 		return showDiffPane && diffPaneView.canSelectNextHunk;
 	else if([aMenuItem action] == @selector(selectPreviousDiffHunk:))
@@ -1574,6 +1780,10 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 
 - (void)lspDiagnosticsDidChange:(NSNotification*)notification
 {
+	// The pane is cross-file, so every publish is potentially its business —
+	// including ones for documents this window never opened.
+	[self scheduleDiagnosticsPaneRefresh];
+
 	if(!_statusBar || !self.document)
 		return;
 
@@ -1753,10 +1963,16 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 	NSUInteger warnings = [counts[@"warnings"] unsignedIntegerValue];
 	NSUInteger info     = [counts[@"info"] unsignedIntegerValue];
 
+	// The panel is cross-file, so it is offered whether or not THIS file has
+	// anything wrong with it — an empty file in a project full of errors is
+	// exactly when the list is worth opening.
+	[menu addItem:[NSMenuItem separatorItem]];
+	NSMenuItem* panelItem = [[NSMenuItem alloc] initWithTitle:showDiagnosticsPane ? @"Hide Diagnostics" : @"Show Diagnostics" action:@selector(toggleDiagnosticsPane:) keyEquivalent:@""];
+	panelItem.target = self;
+	[menu addItem:panelItem];
+
 	if(errors + warnings + info > 0)
 	{
-		[menu addItem:[NSMenuItem separatorItem]];
-
 		NSMenuItem* next = [[NSMenuItem alloc] initWithTitle:@"Next Diagnostic" action:@selector(lspNextDiagnostic:) keyEquivalent:@""];
 		next.target = self;
 		[menu addItem:next];

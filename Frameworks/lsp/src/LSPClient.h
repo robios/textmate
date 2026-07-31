@@ -25,6 +25,11 @@ extern NSString* const LSPShowMessageRequestNotification;
 @interface LSPClient : NSObject
 @property (nonatomic, weak) id<LSPClientDelegate> delegate;
 @property (nonatomic, readonly) NSString* serverName;
+// Identity of this server process, stable for its lifetime and never reused.
+// The diagnostics store keys ownership by it rather than by workspace root and
+// command: a restart puts a new client under that same composite key, and the
+// dying one must not take the new one's published diagnostics with it.
+@property (nonatomic, readonly) NSString* identifier;
 @property (nonatomic, readonly) BOOL initialized;
 @property (nonatomic, readonly) BOOL running;
 @property (nonatomic, readonly) BOOL indexing;
