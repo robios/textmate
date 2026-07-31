@@ -17,7 +17,7 @@ done|sort|cut -f2-
 	<key>inputFormat</key>
 	<string>text</string>
 	<key>keyEquivalent</key>
-	<string></string>
+	<string></string>
 	<key>name</key>
 	<string>Randomize Lines in Document / Selection</string>
 	<key>outputCaret</key>

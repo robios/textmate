@@ -329,6 +329,9 @@ BOOL HasDocumentWindow (NSArray* windows)
 				{ @"Jump to Next Change",        @selector(selectNextDiffHunk:),           .modifierFlags = 0,                        .key = NSF4FunctionKey },
 				{ @"Jump to Previous Change",    @selector(selectPreviousDiffHunk:),       .modifierFlags = NSEventModifierFlagShift, .key = NSF4FunctionKey },
 				{ /* -------- */ },
+				{ @"Jump to Next Diagnostic",     @selector(lspNextDiagnostic:),           .modifierFlags = 0,                        .key = NSF5FunctionKey },
+				{ @"Jump to Previous Diagnostic", @selector(lspPrevDiagnostic:),           .modifierFlags = NSEventModifierFlagShift, .key = NSF5FunctionKey },
+				{ /* -------- */ },
 				{ @"Scroll",
 					.submenu = {
 						{ @"Line Up",      @selector(scrollLineUp:),      .modifierFlags = NSEventModifierFlagCommand|NSEventModifierFlagOption|NSEventModifierFlagControl, .key = NSUpArrowFunctionKey    },
@@ -386,9 +389,6 @@ BOOL HasDocumentWindow (NSArray* windows)
 						{ /* -------- */ },
 						{ @"Restart Server",                       @selector(lspRestartServer:) },
 						{ @"Re-index Workspace",                   @selector(lspReindexWorkspace:) },
-						{ /* -------- */ },
-						{ @"Next Diagnostic",                      @selector(lspNextDiagnostic:) },
-						{ @"Previous Diagnostic",                  @selector(lspPrevDiagnostic:) },
 						{ /* -------- */ },
 						{ @"Debug Panel",                          @selector(toggleLogPanel), .target = [LSPBridge class] },
 					}

@@ -1174,6 +1174,8 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 		return showDiffPane && diffPaneView.canSelectNextHunk;
 	else if([aMenuItem action] == @selector(selectPreviousDiffHunk:))
 		return showDiffPane && diffPaneView.canSelectPreviousHunk;
+	else if([aMenuItem action] == @selector(lspNextDiagnostic:) || [aMenuItem action] == @selector(lspPrevDiagnostic:))
+		return self.document.hasDiagnostics;
 	else if([aMenuItem action] == @selector(takeTabSizeFrom:))
 		[aMenuItem setState:_textView.tabSize == [aMenuItem tag] ? NSControlStateValueOn : NSControlStateValueOff];
 	else if([aMenuItem action] == @selector(showTabSizeSelectorPanel:))

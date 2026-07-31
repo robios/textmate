@@ -13,7 +13,7 @@ exec /usr/bin/awk '!x[$0]++'
 	<key>inputFormat</key>
 	<string>text</string>
 	<key>keyEquivalent</key>
-	<string></string>
+	<string></string>
 	<key>name</key>
 	<string>Remove Duplicates in Document / Selection</string>
 	<key>outputCaret</key>
