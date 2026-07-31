@@ -9,6 +9,10 @@ struct AttributedTextView: NSViewRepresentable {
 		let field = NSTextField(frame: .zero)
 		field.isEditable = false
 		field.isSelectable = true
+		// Selecting installs the window's field editor over the field; without this
+		// it is configured for plain text and strips the attributed string's
+		// colors and fonts on the first click.
+		field.allowsEditingTextAttributes = true
 		field.isBordered = false
 		field.drawsBackground = false
 		field.lineBreakMode = .byWordWrapping
