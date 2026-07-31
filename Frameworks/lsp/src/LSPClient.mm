@@ -460,11 +460,18 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 
 - (void)postLog:(NSString*)message source:(NSString*)source
 {
+	// No explicit type: the log panel treats these as Info (LSP MessageType 3)
+	[self postLog:message source:source type:3];
+}
+
+- (void)postLog:(NSString*)message source:(NSString*)source type:(int)type
+{
 	NSLog(@"[%@] %@", self.logPrefix, message);
 	[[NSNotificationCenter defaultCenter] postNotificationName:LSPLogNotification object:self userInfo:@{
 		@"message": message,
 		@"source":  source,
-		@"server":  _serverName ?: @"?"
+		@"server":  _serverName ?: @"?",
+		@"type":    @(type)
 	}];
 }
 
@@ -476,6 +483,12 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 	try {
 		int type = params["type"].get<int>();
 		std::string message = params["message"].get<std::string>();
+
+		// The log panel is where the message body lives — the ShowMessage
+		// notification below only drives the status-bar error flash. Pass
+		// the LSP type through so an Error logs as an error, not as Info.
+		static char const* const typeNames[] = { "?", "Error", "Warning", "Info", "Log" };
+		[self postLog:[NSString stringWithFormat:@"showMessage [%s] %s", typeNames[(type > 0 && type < 5) ? type : 0], message.c_str()] source:@"event" type:type];
 
 		[[NSNotificationCenter defaultCenter] postNotificationName:LSPShowMessageNotification object:self userInfo:@{
 			@"type": @(type),
@@ -723,10 +736,6 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 		}
 		else if(method == "window/showMessage")
 		{
-			std::string text = msg["params"].contains("message") ? msg["params"]["message"].get<std::string>() : "";
-			int type = msg["params"].contains("type") ? msg["params"]["type"].get<int>() : 3;
-			static char const* const typeNames[] = { "?", "Error", "Warning", "Info", "Log" };
-			[self postLog:[NSString stringWithFormat:@"showMessage [%s] %s", typeNames[(type > 0 && type < 5) ? type : 0], text.c_str()] source:@"event"];
 			[self handleShowMessage:msg["params"]];
 		}
 		else if(method == "window/logMessage")

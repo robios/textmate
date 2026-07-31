@@ -8,7 +8,6 @@
 #import "diff_pane_model.h"
 #import "OakReviewBase.h"
 #import "diff_mark_palette.h"
-#import "OakSwiftUI-Swift.h"
 #import <lsp/LSPClient.h>
 #import <lsp/LSPManager.h>
 #import <lsp/CopilotManager.h>
@@ -1602,26 +1601,13 @@ static NSColor* OakTintedMinimapBackground (NSColor* background, BOOL isDark)
 		[_statusBar flashLspError];
 }
 
+// Status changes surface only through the status-bar indicator: its tint and
+// tooltip cover every state, and the quick menu links to the AI pane for
+// sign-in. A floating toast on connect would tell the user nothing the
+// indicator doesn’t already show.
 - (void)copilotStatusDidChange:(NSNotification*)notification
 {
-	CopilotManager* copilot = [CopilotManager sharedManager];
-	[_statusBar setCopilotStatus:copilot.status];
-
-	switch(copilot.status)
-	{
-		case CopilotStatusReady:
-			[OakNotificationManager.shared showWithMessage:
-				[NSString stringWithFormat:@"Copilot: Connected as %@", copilot.username ?: @"unknown"] type:4];
-			break;
-		case CopilotStatusAuthRequired:
-			[OakNotificationManager.shared showWithMessage:@"Copilot: Authentication required" type:2];
-			break;
-		case CopilotStatusError:
-			[OakNotificationManager.shared showWithMessage:@"Copilot: Server error" type:1];
-			break;
-		default:
-			break;
-	}
+	[_statusBar setCopilotStatus:[CopilotManager sharedManager].status];
 }
 
 // The Copilot indicator’s quick menu: the global on/off switch, a server

@@ -70,12 +70,12 @@ static NSString* DedentCodeBlock (NSString* text)
 			[copilot signIn];
 			return;
 		case CopilotStatusDisabled:
-			[OakNotificationManager.shared showWithMessage:@"Copilot: Disabled" type:3];
+			[self showToolTip:@"Copilot: Disabled"];
 			return;
 		case CopilotStatusReady:
 			break;
 		default:
-			[OakNotificationManager.shared showWithMessage:@"Copilot: Not ready" type:3];
+			[self showToolTip:@"Copilot: Not ready"];
 			return;
 	}
 
@@ -95,7 +95,7 @@ static NSString* DedentCodeBlock (NSString* text)
 
 		if(!items || items.count == 0)
 		{
-			[OakNotificationManager.shared showWithMessage:@"Copilot: No suggestions" type:3];
+			[strongSelf showToolTip:@"Copilot: No suggestions"];
 			return;
 		}
 

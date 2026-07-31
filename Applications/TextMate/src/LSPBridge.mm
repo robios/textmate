@@ -23,7 +23,6 @@
 	if(self = [super init])
 	{
 		[[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(handleLog:) name:LSPLogNotification object:nil];
-		[[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(handleShowMessage:) name:LSPShowMessageNotification object:nil];
 		[[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(handleProgress:) name:LSPProgressNotification object:nil];
 		[[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(handleShowMessageRequest:) name:LSPShowMessageRequestNotification object:nil];
 	}
@@ -44,26 +43,6 @@
 
 	dispatch_async(dispatch_get_main_queue(), ^{
 		[OakLogPanel.shared logWithMessage:message level:level source:source];
-
-		if([source isEqualToString:@"response"] && [message containsString:@"initialized"])
-			[OakNotificationManager.shared showWithMessage:@"LSP Server Initialized" type:4];
-	});
-}
-
-- (void)handleShowMessage:(NSNotification*)note
-{
-	NSString* message = [note.userInfo[@"message"] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-	NSNumber* type = note.userInfo[@"type"];
-	if(!message || message.length == 0) return;
-
-	int lspType = type ? type.intValue : 3;
-
-	// LSP type 4 (Log) is too noisy for user-facing toasts — route to log panel only
-	if(lspType == 4)
-		return;
-
-	dispatch_async(dispatch_get_main_queue(), ^{
-		[OakNotificationManager.shared showWithMessage:message type:lspType];
 	});
 }
 
@@ -87,22 +66,27 @@
 
 	int lspType = type ? type.intValue : 3;
 
+	// window/showMessageRequest is a genuine modal question — the server
+	// blocks on the reply — so it gets a real alert, not a toast. A sheet
+	// dismissed by other means (window closing) answers nil, which the
+	// protocol defines as “user dismissed”.
 	dispatch_async(dispatch_get_main_queue(), ^{
-		[OakNotificationManager.shared showInteractiveWithMessage:message type:lspType actions:actionTitles callback:^(NSString* _Nullable selectedTitle) {
-			NSDictionary* selectedAction = nil;
-			if(selectedTitle)
-			{
-				for(NSUInteger i = 0; i < actionTitles.count; i++)
-				{
-					if([actionTitles[i] isEqualToString:selectedTitle])
-					{
-						selectedAction = actions[i];
-						break;
-					}
-				}
-			}
+		NSAlert* alert = [[NSAlert alloc] init];
+		alert.alertStyle = lspType == 1 ? NSAlertStyleCritical : NSAlertStyleWarning;
+		alert.messageText = client.serverName.length ? client.serverName : @"Language Server";
+		alert.informativeText = message;
+		for(NSString* title in actionTitles)
+			[alert addButtonWithTitle:title];
+
+		void(^respond)(NSModalResponse) = ^(NSModalResponse returnCode){
+			NSInteger index = returnCode - NSAlertFirstButtonReturn;
+			NSDictionary* selectedAction = (index >= 0 && (NSUInteger)index < actions.count) ? actions[index] : nil;
 			[client respondToShowMessageRequest:requestId action:selectedAction];
-		}];
+		};
+
+		if(NSWindow* window = [NSApp mainWindow])
+				[alert beginSheetModalForWindow:window completionHandler:respond];
+		else	respond([alert runModal]);
 	});
 }
 

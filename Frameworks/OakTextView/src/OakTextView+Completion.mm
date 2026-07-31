@@ -19,7 +19,7 @@
 	if(![[LSPManager sharedManager] hasClientForDocument:doc])
 	{
 		if(isExplicitTrigger)
-			[OakNotificationManager.shared showWithMessage:@"No LSP server for this document" type:3];
+			[self showToolTip:@"No LSP server for this document"];
 		return;
 	}
 
@@ -49,7 +49,7 @@
 			if(suggestions.count == 0)
 			{
 				if(isExplicitTrigger)
-					[OakNotificationManager.shared showWithMessage:@"No completions available" type:3];
+					[strongSelf showToolTip:@"No completions available"];
 				return;
 			}
 
