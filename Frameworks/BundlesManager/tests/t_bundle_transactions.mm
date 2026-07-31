@@ -901,6 +901,60 @@ void test_trust_reaches_only_the_tap_it_was_given_to ()
 	OAK_ASSERT_EQ(to_s(manager.polled.firstObject), "Catalogue apply=NO");
 }
 
+// §4: the same immediacy through the per-bundle setter, which both the sources
+// table's one-off row and the bundles-table menu go through.
+void test_opting_one_bundle_in_applies_what_is_already_waiting ()
+{
+	RecordingBundleSubscriptionManager* manager = RecordingManagerWithTaps(TemporaryDirectory(), NO);
+	BundleSubscription* subscription = [manager subscriptionWithIdentifier:[[NSUUID alloc] initWithUUIDString:kOtherUUID]];
+
+	__block NSArray<NSString*>* polledWhenReported = nil;
+	__block NSError* error = nil;
+	[manager setAutoUpdate:YES forSubscription:subscription completionHandler:^(NSError* err){
+		error = err;
+		polledWhenReported = [manager.polled copy];
+	}];
+
+	// Exactly the bundle that was opted in, with applying enabled, and already
+	// done by the time the setter reported success
+	OAK_ASSERT_EQ((bool)error, false);
+	OAK_ASSERT_EQ(polledWhenReported.count, 1);
+	OAK_ASSERT_EQ(to_s(polledWhenReported.firstObject), "Other Tap apply=YES");
+
+	// Opting out stops the next application and reaches for nothing. It has to
+	// wait its turn: the operation before it releases the queue on the main
+	// queue, so this one is still pending when the call returns.
+	[manager.polled removeAllObjects];
+
+	dispatch_semaphore_t finished = dispatch_semaphore_create(0);
+	[manager setAutoUpdate:NO forSubscription:subscription completionHandler:^(NSError*){ dispatch_semaphore_signal(finished); }];
+	OAK_ASSERT_EQ((int)dispatch_semaphore_wait(finished, dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC)), 0);
+
+	OAK_ASSERT_EQ((bool)subscription.autoUpdate, false);
+	OAK_ASSERT_EQ(manager.polled.count, 0);
+}
+
+void test_an_opt_in_that_cannot_be_recorded_applies_nothing ()
+{
+	NSString* directory = TemporaryDirectory();
+	RecordingBundleSubscriptionManager* manager = RecordingManagerWithTaps(directory, NO);
+	BundleSubscription* subscription = [manager subscriptionWithIdentifier:[[NSUUID alloc] initWithUUIDString:kOtherUUID]];
+
+	NSString* stateDirectory = [directory stringByAppendingPathComponent:@"State"];
+	SetDirectoryWritable(stateDirectory, NO);
+
+	__block NSError* error = nil;
+	[manager setAutoUpdate:YES forSubscription:subscription completionHandler:^(NSError* err){ error = err; }];
+	SetDirectoryWritable(stateDirectory, YES);
+
+	// The setting was taken back, so there is no setting to act on — installing
+	// on the strength of one the file never held is the whole thing this order
+	// of operations exists to prevent.
+	OAK_ASSERT_EQ((bool)error, true);
+	OAK_ASSERT_EQ((bool)subscription.autoUpdate, false);
+	OAK_ASSERT_EQ(manager.polled.count, 0);
+}
+
 void test_trusting_a_tap_neither_deadlocks_nor_lets_a_queued_change_race_it ()
 {
 	NSString* directory = TemporaryDirectory();

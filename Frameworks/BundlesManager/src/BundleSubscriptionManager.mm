@@ -1168,6 +1168,17 @@ static void DownloadTarball (std::string const& urlString, NSString* directory, 
 // from before the first of them.
 - (void)changeSubscription:(BundleSubscription*)subscription transaction:(dispatch_block_t(^)(void))transaction completionHandler:(void(^)(NSError*))handler
 {
+	[self changeSubscription:subscription transaction:transaction thenApplyUpdates:NO completionHandler:handler];
+}
+
+// One setting — opting a bundle into automatic updates — also has something to
+// do once it is recorded, and it is the same thing trusting a tap does: apply
+// what is already waiting (§4). It belongs here rather than in the setter so
+// that the commit point stays one piece of code, and inside the operation
+// rather than after it so that the applications cannot be raced by whatever was
+// queued behind them.
+- (void)changeSubscription:(BundleSubscription*)subscription transaction:(dispatch_block_t(^)(void))transaction thenApplyUpdates:(BOOL)applyUpdates completionHandler:(void(^)(NSError*))handler
+{
 	[self enqueueOperation:^(dispatch_block_t done){
 		void(^finish)(NSError*) = ^(NSError* error){
 			if(error)
@@ -1186,8 +1197,16 @@ static void DownloadTarball (std::string const& urlString, NSString* directory, 
 		if(![self saveRegistry:&error])
 			undo();
 
+		// Durable before any network work begins — and a change that did not
+		// land is not one anything may be applied on the strength of.
 		[self registryDidChange];
-		finish(error);
+		if(error || !applyUpdates)
+			return finish(error);
+
+		[self pollSubscriptions:@[ subscription ] atIndex:0 applyUpdates:YES completionHandler:^{
+			[self registryDidChange];
+			finish(nil);
+		}];
 	}];
 }
 
@@ -1241,13 +1260,19 @@ static void DownloadTarball (std::string const& urlString, NSString* directory, 
 	[self setAutoUpdate:flag forSubscription:subscription completionHandler:nil];
 }
 
+// Opting in accepts the update already waiting, exactly as trusting a tap does:
+// the argument for that immediacy is about the checkbox, not about which kind
+// of row it is on, and both entry points — the sources table's one-off row and
+// the bundles-table menu — go through here. It does mean *Update Automatically*
+// is no longer only a statement about future polls; reading the pending diff
+// first is what Compare is for. Opting out is not retroactive.
 - (void)setAutoUpdate:(BOOL)flag forSubscription:(BundleSubscription*)subscription completionHandler:(void(^)(NSError*))handler
 {
 	[self changeSubscription:subscription transaction:^dispatch_block_t{
 		BOOL previousFlag = subscription.autoUpdate;
 		subscription.autoUpdate = flag;
 		return ^{ subscription.autoUpdate = previousFlag; };
-	} completionHandler:handler];
+	} thenApplyUpdates:flag completionHandler:handler];
 }
 
 - (NSURL*)compareURLForSubscription:(BundleSubscription*)subscription

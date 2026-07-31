@@ -855,8 +855,12 @@ static NSImage* AttentionToolbarImage (NSImage* base)
 				// A checkmark that cannot be clicked is the statement: the
 				// setting is real, and it belongs to the source below.
 				BundleTap* tap = [manager tapForSubscription:subscription];
+				NSString* tapName = tap.name ?: [tap.url stringByReplacingOccurrencesOfString:@"https://github.com/" withString:@""];
+
 				menuItem.enabled = NO;
-				menuItem.toolTip = [NSString stringWithFormat:@"Updated automatically because ‘%@’ is set to auto-update.", tap.name ?: [tap.url stringByReplacingOccurrencesOfString:@"https://github.com/" withString:@""]];
+				// A tap with neither takes a hand-edited registry, but naming it
+				// ‘(null)’ would be worse than not naming it at all.
+				menuItem.toolTip = tapName ? [NSString stringWithFormat:@"Updated automatically because ‘%@’ is set to auto-update.", tapName] : @"Updated automatically because the source it comes from is set to auto-update.";
 			}
 		}
 		else if(menuItem.action == @selector(didClickOpenHomePage:))

@@ -114,8 +114,12 @@ typedef NS_ENUM(NSInteger, BundleCollisionKind)
 - (void)setRef:(NSString*)ref forSubscription:(BundleSubscription*)subscription completionHandler:(void(^)(NSError* error))handler;
 - (void)followCatalogueForSubscription:(BundleSubscription*)subscription;
 - (void)followCatalogueForSubscription:(BundleSubscription*)subscription completionHandler:(void(^)(NSError* error))handler;
+
+// Like its tap counterpart, opting in also applies the update this bundle is
+// already sitting on; opting out only stops the next one.
 - (void)setAutoUpdate:(BOOL)flag forSubscription:(BundleSubscription*)subscription;
 - (void)setAutoUpdate:(BOOL)flag forSubscription:(BundleSubscription*)subscription completionHandler:(void(^)(NSError* error))handler;
+
 
 // Whether this subscription updates by itself, which two settings can each say
 // on their own: its own flag, or the trust its tap was given. A subscription is
