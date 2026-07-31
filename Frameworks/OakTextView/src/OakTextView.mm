@@ -653,9 +653,12 @@ static std::string shell_quote (std::vector<std::string> paths)
 
 	size_t const size = documentView->size();
 	size_t from = std::min<size_t>([aNotification.userInfo[@"from"] unsignedIntegerValue], size);
-	size_t to   = std::min<size_t>([aNotification.userInfo[@"to"] unsignedIntegerValue], size);
+	// One past the end, not the end: the extent is half-open, and a point
+	// diagnostic on a trailing empty line sits AT size, so clamping to size
+	// would report it as ending where its own row begins — and the row a
+	// half-open extent ends on is deliberately not repainted.
+	size_t to   = std::min<size_t>([aNotification.userInfo[@"to"] unsignedIntegerValue], size + 1);
 
-	// from == to is a zero-width point diagnostic: repaint the row it sits on
 	AUTO_REFRESH;
 	documentView->did_update_diagnostics(from, std::max(from, to));
 }

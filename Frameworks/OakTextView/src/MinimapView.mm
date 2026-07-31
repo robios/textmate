@@ -1,9 +1,11 @@
 #import "MinimapView.h"
 #import "OakTextView.h"
 #import "diff_mark_palette.h"
+#import "minimap_diagnostics.h"
 #import <document/OakDocument.h>
 #import <document/OakDocument Private.h>
 #import <buffer/buffer.h>
+#import <layout/ct.h>
 #import <Preferences/Keys.h>
 #import <algorithm>
 #import <map>
@@ -15,6 +17,19 @@ static CGFloat const kMinimapColumnWidth      = 1;
 static size_t const kMinimapMaxColumns        = 110;
 static CGFloat const kMinimapDiffStripWidth   = 2;
 static CGFloat const kMinimapContentInset     = kMinimapDiffStripWidth + 2; // reserved lane for diff strips; content never enters it
+// Diagnostics take the opposite edge (VS Code’s overview-ruler convention) and
+// overlay the content rather than inset it: a line can be both modified and
+// wrong, and the two systems must never share a pixel or a colour.
+//
+// Both dimensions are set against the diff strip opposite, which is one row
+// tall and two pixels wide. Wider, because that strip has a reserved lane and
+// this one is drawn over the code blocks. Two rows tall, because diff arrives
+// in runs of lines that stack into a bar while a diagnostic is usually one
+// line on its own — and one row alone is a speck. The marker stays centred on
+// its row, so it still points at the line; only its reach grows.
+static CGFloat const kMinimapDiagnosticStripWidth   = 4;
+static CGFloat const kMinimapDiagnosticMarkerHeight = 4;
+static CGFloat const kMinimapDiagnosticOverhang     = (kMinimapDiagnosticMarkerHeight - kMinimapRowHeight) / 2;
 
 @interface MinimapView ()
 - (void)bufferWillReplaceFrom:(size_t)from to:(size_t)to;
@@ -106,6 +121,26 @@ namespace
 		return res;
 	}
 
+	// The squiggle palette, opaque: the lane is a few pixels wide and sits over
+	// the code blocks, so the translucency that keeps an underline from
+	// overpowering the glyphs under it would only wash the strip out here.
+	//
+	// Keyed by the palette colour rather than by the severity, so which
+	// severities exist and which colour each one gets stays known to
+	// ct::diagnostic_color alone — a second copy of that mapping here would be
+	// one more place to fix the day a fourth severity earns its own colour.
+	// Main thread only, like everything drawing does.
+	CGColorRef diagnostic_strip_color (size_t severity)
+	{
+		static std::map<CGColorRef, CGColorRef> opaqueColors;
+
+		CGColorRef const color = ct::diagnostic_color(severity);
+		auto it = opaqueColors.find(color);
+		if(it == opaqueColors.end())
+			it = opaqueColors.emplace(color, CGColorCreateCopyWithAlpha(color, 1)).first;
+		return it->second;
+	}
+
 	struct buffer_callback_t : ng::callback_t
 	{
 		buffer_callback_t (MinimapView* view) : _view(view) { }
@@ -184,6 +219,16 @@ namespace
 	self.needsDisplay = YES;
 }
 
+// Every row invalidation goes through here, and every one of them carries the
+// diagnostic overhang: a marker reaches a pixel past the row it belongs to, so
+// a rect of exactly the rows that changed leaves the ends of one behind. Which
+// rows can hold a marker is not something the callers should have to know.
+- (void)setNeedsDisplayInRowsFrom:(size_t)firstRow to:(size_t)lastRow
+{
+	NSRect const rect = NSMakeRect(0, firstRow * kMinimapRowHeight, NSWidth(self.bounds), (lastRow + 1 - firstRow) * kMinimapRowHeight);
+	[self setNeedsDisplayInRect:NSInsetRect(rect, 0, -kMinimapDiagnosticOverhang)];
+}
+
 - (void)setCaretLine:(NSUInteger)aLine
 {
 	if(_caretLine == aLine)
@@ -195,7 +240,7 @@ namespace
 	for(NSUInteger line : { oldLine, aLine })
 	{
 		if(line != NSNotFound)
-			[self setNeedsDisplayInRect:NSMakeRect(0, line * kMinimapRowHeight, NSWidth(self.bounds), kMinimapRowHeight)];
+			[self setNeedsDisplayInRowsFrom:line to:line];
 	}
 }
 
@@ -346,9 +391,31 @@ namespace
 	if(_document == aDocument)
 		return;
 
+	if(_document)
+		[NSNotificationCenter.defaultCenter removeObserver:self name:OakDocumentDiagnosticsDidChangeNotification object:_document];
+
 	[self detachBuffer];
 	_document = aDocument;
 	[self attachBuffer];
+
+	if(_document)
+		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(documentDiagnosticsDidChange:) name:OakDocumentDiagnosticsDidChangeNotification object:_document];
+}
+
+// A publish moves no text, so no buffer callback fires and nothing else brings
+// the lane back: repaint exactly the rows the changed extent covers.
+- (void)documentDiagnosticsDidChange:(NSNotification*)aNotification
+{
+	if(!_attachedBuffer || _lines.empty())
+		return;
+
+	// A message that changed in place leaves the lane as it was — it says a
+	// line has a problem, not which one.
+	if(![aNotification.userInfo[@"redraw"] boolValue])
+		return;
+
+	auto const rows = minimap::dirty_rows(*_attachedBuffer, [aNotification.userInfo[@"from"] unsignedLongValue], [aNotification.userInfo[@"to"] unsignedLongValue]);
+	[self setNeedsDisplayInRowsFrom:std::min(rows.first, _lines.size()-1) to:std::min(rows.last, _lines.size()-1)];
 }
 
 - (void)attachBuffer
@@ -455,7 +522,10 @@ namespace
 
 	if(_pendingOldSpan == newSpan)
 	{
-		[self setNeedsDisplayInRect:NSMakeRect(0, firstLine * kMinimapRowHeight, NSWidth(self.bounds), (newSpan + 1) * kMinimapRowHeight)];
+		// An edit takes the diagnostics on those rows with it — the buffer has
+		// already shifted or dropped them by the time this runs — so the lane
+		// repaints here too, overhang and all.
+		[self setNeedsDisplayInRowsFrom:firstLine to:firstLine + newSpan];
 	}
 	else
 	{
@@ -482,7 +552,7 @@ namespace
 	for(size_t n = firstLine; n <= lastLine && n < buffer.lines(); ++n)
 		_lines[n] = scan_line(buffer, n, tabSize, [self effectiveTheme]);
 
-	[self setNeedsDisplayInRect:NSMakeRect(0, firstLine * kMinimapRowHeight, NSWidth(self.bounds), (lastLine + 1 - firstLine) * kMinimapRowHeight)];
+	[self setNeedsDisplayInRowsFrom:firstLine to:lastLine];
 }
 
 // ===========
@@ -580,6 +650,31 @@ namespace
 			continue;
 		CGContextSetFillColorWithColor(context, [NSColor colorWithSRGBRed:pass.color.red green:pass.color.green blue:pass.color.blue alpha:1].CGColor);
 		CGContextFillRects(context, pass.rects.data(), pass.rects.size());
+	}
+
+	// Diagnostics at the right edge. No row tint to go with it: the translucent
+	// tint stays diff’s alone, since two blended tints on one row is where the
+	// two systems would actually become unreadable. A modified line with an
+	// error reads left strip = blue, right strip = red, tint = diff’s.
+	if(_attachedBuffer)
+	{
+		// A marker overhangs its row, so the rows just outside this rect can
+		// paint into it — ask for them too and let clipping do the trimming.
+		size_t const overhangRows = ceil(kMinimapDiagnosticOverhang / kMinimapRowHeight);
+		std::vector<CGRect> diagnosticRects[3]; // indexed by severity − 1
+		for(auto const& row : minimap::diagnostic_rows(*_attachedBuffer, firstRow > overhangRows ? firstRow - overhangRows : 0, lastRow + overhangRows))
+			diagnosticRects[row.second - 1].push_back(CGRectMake(maxX - kMinimapDiagnosticStripWidth, row.first * kMinimapRowHeight - kMinimapDiagnosticOverhang, kMinimapDiagnosticStripWidth, kMinimapDiagnosticMarkerHeight));
+
+		// Worst last: markers on neighbouring lines now overlap, and it must be
+		// the error that survives the overlap, not the note under it.
+		for(size_t severity = 3; severity >= 1; --severity)
+		{
+			auto const& rects = diagnosticRects[severity - 1];
+			if(rects.empty())
+				continue;
+			CGContextSetFillColorWithColor(context, diagnostic_strip_color(severity));
+			CGContextFillRects(context, rects.data(), rects.size());
+		}
 	}
 
 	NSRect indicatorRect = NSIntersectionRect([self viewportIndicatorRect], self.bounds);

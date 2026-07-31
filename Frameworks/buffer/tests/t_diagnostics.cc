@@ -209,7 +209,10 @@ void test_diagnostics_points ()
 	auto dirty = buf.set_diagnostics({ diag(4, 4, 1, "expected expression") });
 	OAK_ASSERT(dirty.changed);
 	OAK_ASSERT_EQ(dirty.from, 4);
-	OAK_ASSERT_EQ(dirty.to, 4); // no byte extent, yet the row still has to repaint
+	// A byte past the point, so the extent is half-open like a range's. A point
+	// sits at a line start, and a consumer excluding the end — which is right
+	// for a range that stops where a line begins — would skip its row.
+	OAK_ASSERT_EQ(dirty.to, 5);
 	OAK_ASSERT(buf.has_diagnostics());
 	OAK_ASSERT(buf.diagnostics(1, 0, buf.size()).empty()); // not a drawable range
 	OAK_ASSERT(buf.diagnostic_points(0, buf.size()) == (ranges_t{ { 4, 1 } }));
@@ -232,8 +235,33 @@ void test_diagnostics_points ()
 	dirty = empty.set_diagnostics({ diag(0, 0, 1) });
 	OAK_ASSERT(dirty.changed);
 	OAK_ASSERT_EQ(dirty.from, 0);
-	OAK_ASSERT_EQ(dirty.to, 0);
+	OAK_ASSERT_EQ(dirty.to, 1); // …past the end of the document, which has no byte at all
 	OAK_ASSERT(empty.diagnostic_points(0, 0) == (ranges_t{ { 0, 1 } }));
+}
+
+// The case the half-open point extent exists for: a change with an earlier
+// diagnostic in it, whose furthest point sits at the start of a row. Reported
+// as ending ON that index, the row would fall outside a consumer's [from, to)
+// and keep a marker the server has just moved or withdrawn.
+void test_diagnostics_point_extent_covers_its_row ()
+{
+	ng::buffer_t buf;
+	buf.insert(0, "abc\n\ndef\n"); // line 1 is empty at index 4
+
+	buf.set_diagnostics({ diag(0, 3, 1), diag(4, 4, 1) });
+	auto dirty = buf.set_diagnostics({ diag(1, 3, 1), diag(4, 4, 2) });
+	OAK_ASSERT(dirty.redraw);
+	OAK_ASSERT_EQ(dirty.from, 0);
+	OAK_ASSERT_EQ(dirty.to, 5); // not 4, which is where line 1 begins
+
+	// …and the same for a point on a trailing empty line, whose index is the
+	// size of the buffer: the extent runs one past it
+	ng::buffer_t trailing;
+	trailing.insert(0, "abc\n");
+	trailing.set_diagnostics({ diag(0, 3, 1), diag(4, 4, 1) });
+	dirty = trailing.set_diagnostics({ diag(1, 3, 1), diag(4, 4, 2) });
+	OAK_ASSERT(dirty.redraw);
+	OAK_ASSERT_EQ(dirty.to, trailing.size() + 1);
 }
 
 void test_diagnostics_shift_on_edit ()

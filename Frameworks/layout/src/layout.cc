@@ -643,8 +643,11 @@ namespace ng
 	// Diagnostics change no layout and no scopes, so the affected rows only need
 	// a repaint. Unlike did_update_scopes this starts at the row *containing*
 	// ‘from’: a diagnostic that begins and ends inside one row would otherwise
-	// match no rows at all, and a zero-width point (a problem on an empty line,
-	// where there is no byte extent to describe) still dirties its own row.
+	// match no rows at all. The end stays exclusive, which is what a range
+	// ending at the start of the next line needs — and why a point diagnostic
+	// reports an extent one byte past itself rather than one ending on its own
+	// index. A degenerate ‘from == to’ is still honoured as the row containing
+	// it, defensively: nothing the buffer produces looks like that any more.
 	void layout_t::did_update_diagnostics (size_t from, size_t to)
 	{
 		if(_rows.empty())

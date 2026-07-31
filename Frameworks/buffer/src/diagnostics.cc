@@ -99,7 +99,13 @@ namespace ng
 		size_t dirtyFrom = SIZE_MAX, dirtyTo = 0;
 
 		auto rangeExtent = [](std::pair<size_t, size_t> const& range){ return range; };
-		auto pointExtent = [](std::pair<size_t, size_t> const& point){ return std::make_pair(point.first, point.first); };
+		// Past the point's index, not on it, so the extent is half-open for
+		// ranges and points alike. A consumer that sees only [from, to) cannot
+		// tell the two apart, and one that treats the end as exclusive — as the
+		// layout does, correctly, for a range ending at the start of a line —
+		// would otherwise drop the very row the point sits on. Every point the
+		// bridge publishes sits at a line start, so that was most of them.
+		auto pointExtent = [](std::pair<size_t, size_t> const& point){ return std::make_pair(point.first, point.first + 1); };
 		for(size_t i = 0; i < kSeverityCount; ++i)
 			redraw = fold_difference(oldRanges[i], _ranges[i], rangeExtent, dirtyFrom, dirtyTo) || redraw;
 		redraw = fold_difference(oldPoints, _points, pointExtent, dirtyFrom, dirtyTo) || redraw;

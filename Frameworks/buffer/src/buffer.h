@@ -86,13 +86,15 @@ namespace ng
 		bool operator!= (diagnostic_t const& rhs) const { return !(*this == rhs); }
 	};
 
-	// What a diagnostics update changed.
+	// What a diagnostics update changed, as the half-open byte range
+	// [from, to) — a point contributes one byte, so a consumer reading the
+	// extent cannot tell a point from a range and does not have to.
 	//
 	// ‘changed’ covers the payload as well, because a server can re-publish the
 	// same range with a different message and a surface showing the old one has
 	// to stop. ‘redraw’ is the narrower question — did the drawn ranges or points
-	// move — and it is separate from the extent because a point diagnostic in an
-	// empty buffer has no non-empty extent, yet still needs its row repainted.
+	// move — so a payload-only change is announced with nothing to repaint, and
+	// the extent is meaningful only when ‘redraw’ is set.
 	struct diagnostics_dirty_t
 	{
 		bool changed = false;

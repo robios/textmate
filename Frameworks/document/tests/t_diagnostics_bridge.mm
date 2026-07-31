@@ -168,6 +168,25 @@ void test_diagnostics_bridge ()
 		[doc setDiagnostics:@[ lsp_diagnostic(0, 5, 0, 2, @1) ]];
 		OAK_ASSERT(![doc buffer].has_diagnostics());
 	}
+
+	// The extent a point contributes reaches one byte past it, so a consumer
+	// treating [from, to) as half-open — which the layout does — still repaints
+	// the row the point sits on. Every point the bridge makes sits at a line
+	// start, including the one on the trailing empty line, whose index is the
+	// size of the buffer.
+	{
+		OakDocument* doc = document_with(@"abc\n");
+		__block NSUInteger dirtyTo = 0;
+		id observer = [NSNotificationCenter.defaultCenter addObserverForName:OakDocumentDiagnosticsDidChangeNotification object:doc queue:nil usingBlock:^(NSNotification* notification){
+			dirtyTo = [notification.userInfo[@"to"] unsignedIntegerValue];
+		}];
+
+		[doc setDiagnostics:@[ lsp_diagnostic(0, 0, 0, 3, @1), lsp_diagnostic(1, 0, 1, 0, @1) ]];
+		[doc setDiagnostics:@[ lsp_diagnostic(0, 1, 0, 3, @1), lsp_diagnostic(1, 0, 1, 0, @2) ]];
+		OAK_ASSERT_EQ(dirtyTo, [doc buffer].size() + 1);
+
+		[NSNotificationCenter.defaultCenter removeObserver:observer];
+	}
 }
 
 // A panel row addresses a caret the way the rest of the editor does — a
