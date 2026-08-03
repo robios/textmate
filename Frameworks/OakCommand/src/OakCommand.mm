@@ -37,6 +37,12 @@ static NSString* const kOakFileHandleURLScheme = @"x-txmt-filehandle";
 - (void)showToolTip:(NSString*)aToolTip;
 - (void)showDocument:(OakDocument*)aDocument;
 
+// runLocation: terminal. Preparation adds the terminal integrations to the
+// environment the new session will be spawned with, early enough that
+// requiredCommands is checked against that same environment.
+- (void)prepareEnvironmentForTerminalCommand:(std::map<std::string, std::string>&)environment;
+- (BOOL)runScriptInTerminal:(NSString*)scriptPath environment:(std::map<std::string, std::string> const&)environment workingDirectory:(NSString*)directory;
+
 // Missing requirements and execution failure.
 - (BOOL)presentError:(NSError*)anError;
 @end
@@ -280,6 +286,11 @@ static pid_t run_command (dispatch_group_t rootGroup, std::string const& cmd, in
 	_environment << oak::basic_environment();
 	[self updateEnvironment:_environment];
 
+	// Before requirements, not after: the check searches PATH, and adding to it
+	// later would let it reject an executable the spawned shell could resolve.
+	if(_bundleCommand.run_location == run_location::terminal)
+		[self prepareTerminalEnvironment:_environment];
+
 	[self executeWithInput:(fileHandleForReading ?: [[NSFileHandle alloc] initWithFileDescriptor:open("/dev/null", O_RDONLY|O_CLOEXEC) closeOnDealloc:YES]) outputHandler:handler];
 }
 
@@ -339,6 +350,13 @@ static pid_t run_command (dispatch_group_t rootGroup, std::string const& cmd, in
 		}
 		_didSaveChanges = YES;
 	}
+
+	// Ahead of the HTML-output handling below, not merely ahead of the fork:
+	// outputReuse is one of the keys a terminal command ignores, and reaching
+	// the block below would let an ignored setting stop somebody else’s running
+	// command before we hand off.
+	if(_bundleCommand.run_location == run_location::terminal)
+		return [self runInTerminal];
 
 	bool hasHTMLOutput = _bundleCommand.output == output::new_window && _bundleCommand.output_format == output_format::html;
 	if(_didFindHTMLOutputView == NO)
@@ -504,6 +522,45 @@ static pid_t run_command (dispatch_group_t rootGroup, std::string const& cmd, in
 		_modalEventLoopRunner(self, &didTerminate);
 }
 
+// Hand the command’s script to a terminal instead of forking it. Nothing is
+// captured — the process belongs to the user’s shell from here on — so this is
+// where the command’s life in TextMate ends, exit status and all.
+- (void)runInTerminal
+{
+	std::string const scriptPath = command::create_named_script_path(_bundleCommand.command, _bundleCommand.name);
+	ASSERT(scriptPath != NULL_STR);
+
+	// Deliberately not the in-process rule (which falls back to $TMPDIR): that
+	// cwd is invisible scratch space, this one is the prompt of an interactive
+	// shell the user keeps. NSHomeDirectory() rather than the environment’s
+	// HOME, which a bundle can set — and which is not a safe UI location.
+	std::string directory = format_string::expand("${TM_DIRECTORY:-$TM_PROJECT_DIRECTORY}", _environment);
+	if(directory == NULL_STR || !path::is_directory(directory))
+		directory = to_s(NSHomeDirectory());
+
+	BOOL accepted = NO;
+	if(id target = [self targetForAction:@selector(runScriptInTerminal:environment:workingDirectory:)])
+		accepted = [target runScriptInTerminal:to_ns(scriptPath) environment:_environment workingDirectory:to_ns(directory)];
+
+	if(accepted == NO)
+	{
+		// Defensive only: the application-level route creates a window, so every
+		// context a terminal command can be invoked from has a terminal.
+		NSError* error = [NSError errorWithDomain:OakCommandErrorDomain code:OakCommandTerminalUnavailableError userInfo:@{
+			NSLocalizedDescriptionKey:             [NSString stringWithFormat:@"Unable to run “%@”.", to_ns(_bundleCommand.name)],
+			NSLocalizedRecoverySuggestionErrorKey: @"This command must be run in a window with a terminal.",
+		}];
+		[self presentError:error];
+	}
+
+	if(_terminationHandler)
+		_terminationHandler(self, accepted);
+	[NSNotificationCenter.defaultCenter postNotificationName:OakCommandDidTerminateNotification object:self];
+}
+
+// A terminal command has no process of ours to kill: interrupting it belongs to
+// the shell it is running in. _processIdentifier stays 0 for it, so this is
+// already the no-op it should be.
 - (void)terminate
 {
 	if(_processIdentifier != 0)
@@ -596,6 +653,15 @@ static pid_t run_command (dispatch_group_t rootGroup, std::string const& cmd, in
 		return [target updateEnvironment:res forCommand:self];
 	res = bundles::scope_variables(res); // Bundle items with a shellVariables setting
 	res = variables_for_path(res); // .tm_properties
+}
+
+// Finalise the environment the terminal session will be spawned with. Leaving
+// the base intact when nobody answers is safe: the hand-off then finds no
+// terminal either and reports that instead.
+- (void)prepareTerminalEnvironment:(std::map<std::string, std::string>&)environment
+{
+	if(id target = [self targetForAction:@selector(prepareEnvironmentForTerminalCommand:)])
+		[target prepareEnvironmentForTerminalCommand:environment];
 }
 
 - (void)saveAllEditedDocuments:(BOOL)includeAllFlag completionHandler:(void(^)(BOOL didSave))callback

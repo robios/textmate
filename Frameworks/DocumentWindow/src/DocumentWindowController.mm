@@ -19,6 +19,7 @@
 #import <OakTextView/OakReviewBase.h>
 #import <OakTextView/MarkdownPreviewView.h>
 #import <FileBrowser/FileBrowserViewController.h>
+#import "TerminalEnvironment.h"
 #import <Terminal/TerminalPaneController.h>
 #import <Terminal/TerminalGridView.h>
 #import <AgentBridge/AgentBridge.h>
@@ -2283,24 +2284,18 @@ static NSArray* const kObservedKeyPaths = @[ @"arrayController.arrangedObjects.p
 		env[pair.first] = pair.second;
 	env = variables_for_path(env, to_s(self.selectedDocument.path));
 
-	auto mate = env.find("TM_MATE");
-	if(mate != env.end())
-	{
-		auto path = env.find("PATH");
-		if(path != env.end())
-			path->second += ":" + path::parent(mate->second);
-	}
+	return TerminalEnvironmentByAddingExtras(env);
+}
 
-	// Claude Code IDE integration: a CLI launched inside the terminal pane
-	// auto-connects to the app-global Claude IDE-context server via these
-	// variables (external terminals discover it through the lock file).
-	if(NSUInteger claudeIDEContextPort = [AgentBridge claudeIDEContextServerPort])
-	{
-		env["CLAUDE_CODE_SSE_PORT"]   = std::to_string(claudeIDEContextPort);
-		env["ENABLE_IDE_INTEGRATION"] = "true";
-	}
-
-	return env;
+// A bundle command with runLocation:terminal brings its own environment, so it
+// never passes through -terminalEnvironment above — but the tab it opens lives
+// on as an ordinary interactive shell afterwards and has to carry the same
+// integrations. OakCommand asks for this through the responder chain before it
+// checks requiredCommands, so the requirement check searches the PATH the
+// spawned session will really have.
+- (void)prepareEnvironmentForTerminalCommand:(std::map<std::string, std::string>&)environment
+{
+	environment = TerminalEnvironmentByAddingExtras(environment);
 }
 
 // Like the file browser, showing the terminal grows the window outward on
@@ -2373,6 +2368,16 @@ static NSArray* const kObservedKeyPaths = @[ @"arrayController.arrangedObjects.p
 
 - (void)setTerminalVisible:(BOOL)makeVisibleFlag
 {
+	[self setTerminalVisible:makeVisibleFlag startShellIfNeeded:YES];
+}
+
+// Showing the pane and starting a shell in it are one gesture for every route
+// but one: a bundle command running in the terminal wants the pane created and
+// attached, and then its *own* session — an ordinary first shell would leave it
+// with a tab it never asked for. Such a caller passes NO and takes over from
+// there (spawn parameters, addTerminal, focus).
+- (void)setTerminalVisible:(BOOL)makeVisibleFlag startShellIfNeeded:(BOOL)startShellFlag
+{
 	if(_terminalVisible != makeVisibleFlag)
 	{
 		_terminalVisible = makeVisibleFlag;
@@ -2402,11 +2407,15 @@ static NSArray* const kObservedKeyPaths = @[ @"arrayController.arrangedObjects.p
 				[self observeThemeUUIDIfNeeded];
 			}
 			[self updateTerminalPaneTheme];
-			[self refreshTerminalSpawnParameters];
+			if(startShellFlag)
+				[self refreshTerminalSpawnParameters];
 			self.layoutView.terminalView = self.terminalPane.view;
 			[self adjustWindowFrameForTerminalPane:YES];
-			[self.terminalPane startShellIfNeeded];
-			[self.window makeFirstResponder:self.terminalPane.gridView];
+			if(startShellFlag)
+			{
+				[self.terminalPane startShellIfNeeded];
+				[self.window makeFirstResponder:self.terminalPane.gridView];
+			}
 		}
 		else
 		{
@@ -2487,6 +2496,28 @@ static NSArray* const kObservedKeyPaths = @[ @"arrayController.arrangedObjects.p
 
 	[self.terminalPane runCommandInActiveTerminal:command];
 	[self.window makeFirstResponder:self.terminalPane.gridView];
+}
+
+// A bundle command with runLocation:terminal. Always a new tab, never a session
+// the user is working in — and that is what makes the environment right, not
+// merely polite: a session’s environment is fixed at spawn, so typing into an
+// existing one would hand the command TM_FILEPATH and friends as they were when
+// that tab was opened.
+//
+// The environment arrives final. OakCommand composed it and the responder-chain
+// preparation step (-prepareEnvironmentForTerminalCommand:) added the terminal
+// integrations before requiredCommands was checked against it, so nothing here
+// may layer anything on top — note that refreshTerminalSpawnParameters, which
+// would recompute both from the window, is deliberately not called.
+- (BOOL)runScriptInTerminal:(NSString*)scriptPath environment:(std::map<std::string, std::string> const&)environment workingDirectory:(NSString*)directory
+{
+	[self setTerminalVisible:YES startShellIfNeeded:NO]; // creates/attaches the pane without starting an ordinary session
+	self.terminalPane.workingDirectory = directory;
+	self.terminalPane.environment      = environment;
+	[self.terminalPane addTerminal];                     // exactly one fresh tab, including the pane’s first use
+	[self.terminalPane runCommandInActiveTerminal:[AgentSetup shellQuoted:scriptPath]];
+	[self.window makeFirstResponder:self.terminalPane.gridView];
+	return YES;
 }
 
 // Codex, with the TextMate MCP server registered for this run only, so it can
@@ -3452,6 +3483,13 @@ static NSUInteger DisableSessionSavingCount = 0;
 	// outside a git repository.
 	if(NSString* reviewBase = self.documentView.resolvedReviewBaseRef)
 		res["TM_REVIEW_BASE"] = to_s(reviewBase);
+
+	// The tm_agent CLI, so an ordinary in-process command can hand TextMate’s
+	// editor context to an MCP-capable harness the same way the agent CLIs are
+	// configured to. Not restricted to terminal commands: a command that writes
+	// a project’s agent configuration wants the same path.
+	if(NSString* agentBridge = [AgentSetup commandLineToolPath])
+		res["TM_AGENT_BRIDGE"] = to_s(agentBridge);
 
 	return res;
 }

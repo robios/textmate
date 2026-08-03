@@ -5,3 +5,5 @@ textmate_framework(OakCommand)
 target_link_libraries(OakCommand PUBLIC
   BundleEditor HTMLOutput HTMLOutputWindow OakAppKit OakSystem bundles cf command
   document io ns regexp settings text)
+
+textmate_add_tests(OakCommand)

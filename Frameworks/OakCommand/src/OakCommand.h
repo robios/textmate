@@ -5,7 +5,8 @@ extern NSString* const OakCommandErrorDomain;
 
 NS_ENUM(NSInteger) {
 	OakCommandRequirementsMissingError,
-	OakCommandAbnormalTerminationError
+	OakCommandAbnormalTerminationError,
+	OakCommandTerminalUnavailableError
 };
 
 @class OakHTMLOutputView;

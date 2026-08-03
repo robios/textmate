@@ -10,6 +10,12 @@
 //
 // Deliberately snippet-only: nothing here writes to a user’s configuration.
 @interface AgentSetup : NSObject
+// One shell word, quoted only when it needs to be. Shared with everything else
+// that types a command line into a terminal session (bundle commands running
+// there, not just agents): the line stays visible and editable, so quoting a
+// bare word would only make it harder to read.
++ (NSString*)shellQuoted:(NSString*)value;
+
 // The stable path to the tm_agent CLI (the symlink in Application Support,
 // falling back to this app’s own copy). This is what a configuration file
 // should name — the symlink survives the app moving.

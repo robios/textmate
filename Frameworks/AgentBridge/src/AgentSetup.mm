@@ -7,7 +7,7 @@
 
 static NSString* ShellQuoted (NSString* value)
 {
-	return to_ns(agent_quote::shell(to_s(value)));
+	return [AgentSetup shellQuoted:value];
 }
 
 static NSString* TOMLQuoted (NSString* value)
@@ -16,6 +16,11 @@ static NSString* TOMLQuoted (NSString* value)
 }
 
 @implementation AgentSetup
++ (NSString*)shellQuoted:(NSString*)value
+{
+	return to_ns(agent_quote::shell(to_s(value)));
+}
+
 + (NSString*)commandLineToolPath
 {
 	// AgentBridge keeps this symlink current for whichever app instance

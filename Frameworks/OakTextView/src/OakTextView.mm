@@ -4433,6 +4433,9 @@ static scope::context_t add_modifiers_to_scope (scope::context_t scope, NSUInteg
 
 - (OakCommandRefresher*)existingRefresherForCommand:(bundle_command_t const&)aBundleCommand
 {
+	if(aBundleCommand.run_location != run_location::in_process)
+		return nil; // autoRefresh is one of the keys a terminal command ignores
+
 	OakDocument* doc = aBundleCommand.auto_refresh & (auto_refresh::on_document_change|auto_refresh::on_document_close) ? _document : nil;
 	return [OakCommandRefresher findRefresherForCommandUUID:[[NSUUID alloc] initWithUUIDString:to_ns(aBundleCommand.uuid)] document:doc window:self.window];
 }
@@ -4454,11 +4457,19 @@ static scope::context_t add_modifiers_to_scope (scope::context_t scope, NSUInteg
 
 	std::map<std::string, std::string> variables = initialVariables;
 
-	int stdinRead, stdinWrite;
-	std::tie(stdinRead, stdinWrite) = io::create_pipe();
-
+	// A terminal command reads from its tty, so there is nothing for us to write
+	// — and this is where that has to be decided, since by the time OakCommand
+	// runs the document would already have been copied (and, under
+	// inputFormat: xml, serialised) into a pipe nobody reads.
+	int stdinRead = -1;
 	bool inputWasSelection = false;
-	ng::ranges_t const inputRanges = ng::write_unit_to_fd(buffer, selection, buffer.indent().tab_size(), stdinWrite, aBundleCommand.input, aBundleCommand.input_fallback, aBundleCommand.input_format, aBundleCommand.scope_selector, variables, &inputWasSelection);
+	ng::ranges_t inputRanges;
+	if(aBundleCommand.run_location == run_location::in_process)
+	{
+		int stdinWrite;
+		std::tie(stdinRead, stdinWrite) = io::create_pipe();
+		inputRanges = ng::write_unit_to_fd(buffer, selection, buffer.indent().tab_size(), stdinWrite, aBundleCommand.input, aBundleCommand.input_fallback, aBundleCommand.input_format, aBundleCommand.scope_selector, variables, &inputWasSelection);
+	}
 
 	OakCommand* command = [[OakCommand alloc] initWithBundleCommand:aBundleCommand];
 
@@ -4498,7 +4509,7 @@ static scope::context_t add_modifiers_to_scope (scope::context_t scope, NSUInteg
 	};
 
 	command.terminationHandler = ^(OakCommand* command, BOOL normalExit){
-		if(normalExit && aBundleCommand.auto_refresh != auto_refresh::never)
+		if(normalExit && aBundleCommand.run_location == run_location::in_process && aBundleCommand.auto_refresh != auto_refresh::never)
 		{
 			OakCommandRefresherOptions options = 0;
 			if(aBundleCommand.auto_refresh & auto_refresh::on_document_change)
@@ -4514,7 +4525,7 @@ static scope::context_t add_modifiers_to_scope (scope::context_t scope, NSUInteg
 	};
 
 	command.firstResponder = self;
-	[command executeWithInput:[[NSFileHandle alloc] initWithFileDescriptor:stdinRead closeOnDealloc:YES] variables:variables outputHandler:^(std::string const& out, output::type placement, output_format::type format, output_caret::type outputCaret, std::map<std::string, std::string> const& environment){
+	[command executeWithInput:(stdinRead == -1 ? nil : [[NSFileHandle alloc] initWithFileDescriptor:stdinRead closeOnDealloc:YES]) variables:variables outputHandler:^(std::string const& out, output::type placement, output_format::type format, output_caret::type outputCaret, std::map<std::string, std::string> const& environment){
 		if(outputCaret == output_caret::heuristic)
 		{
 			if(aBundleCommand.input == input::selection && inputWasSelection)

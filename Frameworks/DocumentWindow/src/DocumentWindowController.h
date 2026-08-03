@@ -1,4 +1,6 @@
 #import <bundles/item.h>
+#include <map>
+#include <string>
 
 @class OakDocument;
 
@@ -59,6 +61,14 @@
 - (IBAction)previousTerminal:(id)sender;
 - (IBAction)closeTerminal:(id)sender;
 - (IBAction)toggleMarkdownPreview:(id)sender;
+
+// Run a bundle command’s script in a terminal of its own (runLocation:
+// terminal), reached from OakCommand through the responder chain. The
+// environment is final — see the implementation — and the return value says
+// whether a terminal accepted the command, which is how the caller tells this
+// window apart from a context that owns no terminal at all.
+- (BOOL)runScriptInTerminal:(NSString*)scriptPath environment:(std::map<std::string, std::string> const&)environment workingDirectory:(NSString*)directory;
+- (void)prepareEnvironmentForTerminalCommand:(std::map<std::string, std::string>&)environment;
 
 - (IBAction)moveFocus:(id)sender;
 
