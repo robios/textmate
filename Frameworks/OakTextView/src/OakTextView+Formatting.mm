@@ -141,6 +141,7 @@ static NSString* runCustomFormatter (std::string const& command, NSString* input
 	bool lspFormatOnSave = settings.get(kSettingsLSPFormatOnSaveKey, false);
 
 	std::string formatCommand = settings.get(kSettingsFormatCommandKey, "");
+	bool hasExplicitFormatCommand = !formatCommand.empty();
 	if(formatCommand.empty())
 	{
 		NSString* autoCommand = [[FormatterRegistry sharedInstance] formatCommandForPath:doc.path];
@@ -148,8 +149,9 @@ static NSString* runCustomFormatter (std::string const& command, NSString* input
 			formatCommand = to_s(autoCommand);
 	}
 
-	// formatOnSave defaults to true when an auto-detected formatter is available
-	bool formatOnSave = settings.get(kSettingsFormatOnSaveKey, !formatCommand.empty());
+	// Writing formatCommand in .tm_properties is itself the opt-in; a formatter
+	// merely found on PATH must not rewrite files until formatOnSave says so.
+	bool formatOnSave = settings.get(kSettingsFormatOnSaveKey, hasExplicitFormatCommand);
 
 	if(formatOnSave || lspFormatOnSave)
 	{

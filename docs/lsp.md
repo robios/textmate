@@ -207,13 +207,22 @@ executable was found on your search paths, an editable *Command* column, and a
 **Re-detect** button. These entries apply only when `.tm_properties` does not
 set `formatCommand` for the file; the pane says as much.
 
-**`formatOnSave` defaults to on whenever a `formatCommand` is in play**,
-including one that the Formatters pane detected for you. Set
+**`formatOnSave` defaults to on when `.tm_properties` sets a `formatCommand`
+explicitly** — writing the command is taken as the opt-in. Set
 `formatOnSave = false` for a file type you would rather format by hand:
 
 ```
 [ *.py ]
 formatOnSave = false
+```
+
+A formatter the Formatters pane merely detected on your search paths does
+*not* format on save by itself; it only powers *Text → Format Code*. To
+format on save with a detected formatter, opt in per file type:
+
+```
+[ *.go ]
+formatOnSave = true
 ```
 
 ### Server formatting
