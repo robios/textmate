@@ -7,6 +7,9 @@ set(CMAKE_C_STANDARD 99)
 set(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
 set(CMAKE_CXX_VISIBILITY_PRESET hidden)
 
+# Compilation database for clangd — see .clangd
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 # ObjC flags — one flag per generator expression
 add_compile_options(
   $<$<COMPILE_LANGUAGE:OBJC>:-fobjc-abi-version=3>

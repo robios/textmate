@@ -1,0 +1,5 @@
+# Framework headers are imported as <framework/header.h> and only exist in the
+# build directory, so clangd needs the compilation database CMake writes there.
+# Path is relative to this file; build-debug is what `make debug` generates.
+CompileFlags:
+  CompilationDatabase: build-debug
