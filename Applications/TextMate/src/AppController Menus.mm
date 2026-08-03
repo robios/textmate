@@ -3,6 +3,7 @@
 #import <text/ctype.h>
 #import <text/parse.h>
 #import <bundles/bundles.h>
+#import <command/launcher.h>
 #import <command/parser.h>
 #import <cf/cf.h>
 #import <ns/ns.h>
@@ -60,6 +61,33 @@ static NSString* NameForLocaleIdentifier (NSString* languageCode)
 
 	if(ordered.empty())
 		[aMenu addItemWithTitle:@"No Bundles Loaded" action:@selector(nop:) keyEquivalent:@""];
+}
+
+// ===========================
+// = Terminal Launchers Menu =
+// ===========================
+
+// Bundle commands that run in the terminal instead of inside TextMate, gathered
+// beside the two agent CLIs the Terminal menu already starts. They are reachable
+// without this — the Bundles menu and ⌃⌘T list them like any other command —
+// but “start something in a terminal” is a thing a user looks for under Terminal.
+//
+// Answered here rather than on the window controller so the menu is populated
+// with no window open too, which is the context the application-level route
+// exists for: picking a launcher there opens the window it needs.
+- (void)updateTerminalLaunchersMenu:(NSMenu*)aMenu
+{
+	// The real scope, empty when nothing is open — so a launcher restricted to
+	// the file types it applies to keeps that restriction, here as everywhere.
+	scope::context_t scope = "";
+	if(OakTextView* textView = [NSApp targetForAction:@selector(scopeContext)])
+		scope = [textView scopeContext];
+
+	std::vector<bundles::item_ptr> const items = command::terminal_launchers(scope);
+	OakAddBundlesToMenu(items, true, aMenu, @selector(performBundleItemWithUUIDStringFrom:));
+
+	if(items.empty())
+		[aMenu addItemWithTitle:@"No Launchers" action:@selector(nop:) keyEquivalent:@""];
 }
 
 + (void)initialize

@@ -426,6 +426,8 @@ BOOL HasDocumentWindow (NSArray* windows)
 				// Terminals that start an agent CLI already able to see this window’s editor context
 				{ @"New Claude Code Terminal", @selector(newClaudeCodeTerminal:) },
 				{ @"New Codex Terminal",       @selector(newCodexTerminal:) },
+				// …and the bundle commands that do the same for everything else
+				{ @"Launchers",         .delegate = [MBMenuDelegate delegateUsingSelector:@selector(updateTerminalLaunchersMenu:)] },
 				{ /* -------- */ },
 				{ @"Next Terminal",     @selector(nextTerminal:),     @"]", .modifierFlags = NSEventModifierFlagCommand|NSEventModifierFlagControl },
 				{ @"Previous Terminal", @selector(previousTerminal:), @"[", .modifierFlags = NSEventModifierFlagCommand|NSEventModifierFlagControl },
