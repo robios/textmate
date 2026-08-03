@@ -1,167 +1,157 @@
 #!/usr/bin/env ruby
-# == Synopsis
+# Regenerates Applications/TextMate/about/Contributions.html from the git
+# history of the current checkout. Run from the repository root:
 #
-# Module to assist in building the Contributors page using git commit history.
+#     bin/gen_credits.rb
 #
-require 'digest/md5'
-require 'fileutils'
-require 'net/https'
-require 'uri'
+# Commit and browse links point at REPO_URL. Author names become links to a
+# GitHub profile only when the address is a @users.noreply.github.com one
+# (which encodes the login) or is listed in EMAIL_TO_LOGIN — the email-search
+# API the previous version of this script queried no longer exists.
+
 require 'cgi'
-require 'dbm'
 require 'date'
-require 'yaml'
-require 'set'
+require 'digest/md5'
 
-# Helper class to handle searching for GitHub users
-# by their email address. Caches mappings to a file
-# to avoid exhausting the GitHub API rate limits for
-# anonymous requests.
-class GitHubLookup
+REPO_URL = 'https://github.com/robios/textmate'
+BRANCH   = 'textmate-2.5'
+OUTPUT   = File.expand_path('../Applications/TextMate/about/Contributions.html', __dir__)
 
-  def self.initialize(dbm_file)
-    FileUtils.mkdir_p(File.dirname(dbm_file))
-    @db = DBM.new(dbm_file, 0644, DBM::WRCREAT)
-    # seed with some contributors that don't have an email
-    # address assigned publicly in their account
-    @db['1178ce2f664a6cee9a05a3e11af5d8d2'] = 'aaronbrethorst'
-    @db['3b0ef5e2a5f1aa3ccf3f23a20adf8873'] = 'Hoverbear'
-    @db['ff3502050b3b1b00cb6c810d5c41ffc9'] = 'bradchoate'
-    @db['ee646002e51a3c83e01db85ae42187ff'] = 'dmcdougall'
-    @db['85af9ad71af2dc0166b7c0c5780fa086'] = 'caldwell'
-    @db['fa64968e4a3c8e20364bb92ba7511ff9'] = 'dvennink'
-    @db['0669ff1e3ada91e7f1e7714f6f9a67f6'] = 'etienne'
-    @db['49ed289f3de94dbcd7c10392bcc40b53'] = 'fernando82'
-    @db['7b3ae2214891a47b26b4db98949c1bb0'] = 'gknops'
-    @db['34820bca697fbf1598774b393c5ca4fe'] = 'whitlockjc'
-    @db['ec9254734cd341f1b104d558dc4fc36a'] = 'joachimm'
-    @db['09c16a631eeba332147a8d620e1369cc'] = 'muellerj'
-    @db['6890db3146e20bfb99be3bc7bc3bfeec'] = 'lczekaj'
-    @db['e34425c11547a48a4701c9d1720dadf8'] = 'infininight'
-    @db['65efe3355478c8db96bc82f22fd3aa20'] = 'nathanieltagg'
-    @db['4e89e196a1f8fa34a6bdc6d165f75e5e'] = 'Ralle'
-    @db['ccc5b318408880a67eeebf0d18177fb5'] = 'rhencke'
-    @db['4cf620221f7e622260f8424b8142451f'] = 'ryanmaxwell'
-    @db['5780111eb4b5565816d9388b091e1057'] = 'youngrok'
-    @db['1bafa0ecf5643c71e6d5dea309889d21'] = 'bobrocke'
-    @db['16e62cebf0c65d7018b263d0f8be36c1'] = 'sclukey'
-    @db['bee584c4bc4deac1ee91006b97a8fc53'] = 'mstarke'
-    @db['578b7853042db14893ee5ec2ce043f98'] = 'yyyc514'
-    @db['8838005371ab9c0b1d40f0504bf8832a'] = 'garysweaver'
-    @db['1b97e22672bc2577ebbb63ef895debd4'] = 'jtmkrueger'
-    @db['3413d8cb793e54a6e062391875fd2636'] = 'jacob-carlborg'
-    @db['a8cb0cb6a2406ee9d85ea72f7c040697'] = 'jsuder'
-    @db['af76f04ca3004be2d6b0690bd0a6ff7c'] = 'luikore'
-    @db['bbe6320b030b1bb50349e4554d3169d6'] = 'AJ-Acevedo'
-    @db['a734c5fda1ef1237fa6a26a64940d0b1'] = 'Dirklectisch'
-    @db['7640cae93abde468b73f35d6620a9b04'] = 'caleb'
-    @db['f889181fc58ccb702822b54fe3702d24'] = 'codykrieger'
-    @db['571db4b87bd7d2fec3dcd5524cb7d9ae'] = 'rdwampler'
-    @db['a4c0d688809489ab98a162b10c57381c'] = 'dusek'
-    @db['7e9f543f0ffdb7c9a899e628fe76e7f3'] = 'jtbandes'
-    @db['04581c59babdab9788e932ecb79f9617'] = 'zadr'
-    @db['0ee1291a38e3c76fdfaadb2a0fa3428a'] = 'duanemoody'
-    @db['71c216d75354dda636b879dfc95654fb'] = 'charliepark'
-    @db['c8591aebaf7659f1ff429898345f446a'] = 'olegam'
-    @db['f275727e33d63e05cc0abab1bfc41da7'] = 'sudara'
-    ObjectSpace.define_finalizer(@db, proc {|id| @db.close })
-  end
+# md5(author email) => github login, seeded from the retired lookup cache
+EMAIL_TO_LOGIN = {
+  '1178ce2f664a6cee9a05a3e11af5d8d2' => 'aaronbrethorst',
+  '3b0ef5e2a5f1aa3ccf3f23a20adf8873' => 'Hoverbear',
+  'ff3502050b3b1b00cb6c810d5c41ffc9' => 'bradchoate',
+  'ee646002e51a3c83e01db85ae42187ff' => 'dmcdougall',
+  '85af9ad71af2dc0166b7c0c5780fa086' => 'caldwell',
+  'fa64968e4a3c8e20364bb92ba7511ff9' => 'dvennink',
+  '0669ff1e3ada91e7f1e7714f6f9a67f6' => 'etienne',
+  '49ed289f3de94dbcd7c10392bcc40b53' => 'fernando82',
+  '7b3ae2214891a47b26b4db98949c1bb0' => 'gknops',
+  '34820bca697fbf1598774b393c5ca4fe' => 'whitlockjc',
+  'ec9254734cd341f1b104d558dc4fc36a' => 'joachimm',
+  '09c16a631eeba332147a8d620e1369cc' => 'muellerj',
+  '6890db3146e20bfb99be3bc7bc3bfeec' => 'lczekaj',
+  'e34425c11547a48a4701c9d1720dadf8' => 'infininight',
+  '65efe3355478c8db96bc82f22fd3aa20' => 'nathanieltagg',
+  '4e89e196a1f8fa34a6bdc6d165f75e5e' => 'Ralle',
+  'ccc5b318408880a67eeebf0d18177fb5' => 'rhencke',
+  '4cf620221f7e622260f8424b8142451f' => 'ryanmaxwell',
+  '5780111eb4b5565816d9388b091e1057' => 'youngrok',
+  '1bafa0ecf5643c71e6d5dea309889d21' => 'bobrocke',
+  '16e62cebf0c65d7018b263d0f8be36c1' => 'sclukey',
+  'bee584c4bc4deac1ee91006b97a8fc53' => 'mstarke',
+  '578b7853042db14893ee5ec2ce043f98' => 'yyyc514',
+  '8838005371ab9c0b1d40f0504bf8832a' => 'garysweaver',
+  '1b97e22672bc2577ebbb63ef895debd4' => 'jtmkrueger',
+  '3413d8cb793e54a6e062391875fd2636' => 'jacob-carlborg',
+  'a8cb0cb6a2406ee9d85ea72f7c040697' => 'jsuder',
+  'af76f04ca3004be2d6b0690bd0a6ff7c' => 'luikore',
+  'bbe6320b030b1bb50349e4554d3169d6' => 'AJ-Acevedo',
+  'a734c5fda1ef1237fa6a26a64940d0b1' => 'Dirklectisch',
+  '7640cae93abde468b73f35d6620a9b04' => 'caleb',
+  'f889181fc58ccb702822b54fe3702d24' => 'codykrieger',
+  '571db4b87bd7d2fec3dcd5524cb7d9ae' => 'rdwampler',
+  'a4c0d688809489ab98a162b10c57381c' => 'dusek',
+  '7e9f543f0ffdb7c9a899e628fe76e7f3' => 'jtbandes',
+  '04581c59babdab9788e932ecb79f9617' => 'zadr',
+  '0ee1291a38e3c76fdfaadb2a0fa3428a' => 'duanemoody',
+  '71c216d75354dda636b879dfc95654fb' => 'charliepark',
+  'c8591aebaf7659f1ff429898345f446a' => 'olegam',
+  'f275727e33d63e05cc0abab1bfc41da7' => 'sudara',
+  # fork-era authors
+  'e904dfc2f19fa297256c24c2a620c629' => 'tectiv3',
+  'd6f3935af9c42698b6e33e8f3ae2bc41' => 'tectiv3',
+  'd7e4957767431c67d811a9286c9d01d7' => 'robios',
+}.freeze
 
-  def self.user_by_email(email)
-    emailhash = Digest::MD5.hexdigest(email)
-    if @db.has_key?(emailhash)
-      return @db[emailhash]
-    end
-
-    url = 'https://api.github.com/legacy/user/email/' + email
-    uri = URI.parse(url)
-    http = Net::HTTP.new(uri.host, uri.port)
-    http.use_ssl = true
-    http.verify_mode = OpenSSL::SSL::VERIFY_NONE
-
-    # issue request
-    request = Net::HTTP::Get.new(uri.request_uri, {'User-Agent' => 'curl'})
-    response = http.request(request)
-
-    # we may be rate-limited
-    if response.code == '403'
-      return @db[emailhash] = nil
-    end
-
-    # could be a 404, return nil if so
-    if response.code == '404'
-      return @db[emailhash] = nil
-    end
-
-    user = YAML.load(response.body)
-    return nil if user.nil?
-    # save result to k/v store
-    return @db[emailhash] = user['user']['login']
-  end
-
+def login_for(email)
+  return $1 if email =~ /^(?:\d+\+)?([A-Za-z0-9-]+)@users\.noreply\.github\.com$/
+  EMAIL_TO_LOGIN[Digest::MD5.hexdigest(email)]
 end
 
-def generate_credits(dbm_file, warn=false)
-  GitHubLookup.initialize(dbm_file)
-  did_warn_db = Set.new
+def commit_entry(sha, name, email, date, subject, body)
+  emailhash = Digest::MD5.hexdigest(email)
+  userpic = "https://www.gravatar.com/avatar/#{emailhash}?s=48&amp;d=https://a248.e.akamai.net/assets.github.com%2Fimages%2Fgravatars%2Fgravatar-user-420.png"
+  login = login_for(email)
+  author = login ? "<a href=\"https://github.com/#{login}\">#{CGI.escapeHTML(name)}</a>" : CGI.escapeHTML(name)
 
-  # use git's log command to pull out basic info:
-  # git hash, author name, email address, author date, commit summary
-  cmd = 'git log -z --date=iso --pretty=format:"%H%n%an%n%ae%n%ad%n%s%n%B"'
+  expander = ''
+  desc = ''
+  unless body.empty?
+    expander = "\n      <span class=\"hidden-text-expander inline\"><a href=\"javascript:;\" class=\"js-details-target\">…</a></span>"
+    desc = "\n    <div class=\"commit-desc\"><pre>#{CGI.escapeHTML(body)}\n</pre></div>"
+  end
 
-  `#{cmd}`.split(/\x00/).each {|commit|
-    fields = commit.split(/\n/, 6)
-
-    # omit commits from Allan; he gets enough credit already ;)
-    if fields[1] != 'Allan Odgaard' then
-      # hash email address for referencing Gravatar userpics
-      emailhash = Digest::MD5.hexdigest(fields[2])
-
-      # escape user-supplied bits like name and subject
-      hash = fields[0]
-      name = CGI.escapeHTML(fields[1])
-      # locate the GitHub login for the author's email address
-      user = GitHubLookup.user_by_email(fields[2])
-      date = DateTime.parse(fields[3])
-      subject = CGI.escapeHTML(fields[4])
-      body = CGI.escapeHTML(fields[5].sub(fields[4], '').sub(/[\s\x00]+$/, '').sub(/^[\s\x00]+/, ''))
-      userpic = "https://www.gravatar.com/avatar/#{emailhash}?s=48&amp;d=https://a248.e.akamai.net/assets.github.com%2Fimages%2Fgravatars%2Fgravatar-user-420.png"
-
-      # if we have a github username, populate a link to their
-      # profile.
-      if !user || user == ''
-        user = nil
-
-        key = "#{name} <#{fields[2]}>"
-        unless did_warn_db.include?(key)
-          did_warn_db.add(key)
-          if warn
-            STDERR << "WARNING: failed to find GitHub user for #{key}\n";
-          end
-        end
-      end
-
-      yield(hash, name, subject, body, userpic, date, user)
-    end
-  }
+  <<~HTML
+    <li class="commit commit-group-item">
+        <img class="gravatar" src="#{userpic}" height="36" width="36">
+        <p class="commit-title">
+          <a href="#{REPO_URL}/commit/#{sha}" class="message">#{CGI.escapeHTML(subject)}</a>#{expander}
+        </p>#{desc}
+        <div class="commit-meta">
+          <div class="commit-links">
+            <a href="#{REPO_URL}/commit/#{sha}" class="gobutton">
+              <span class="sha">#{sha[0, 10]}<span class="mini-icon mini-icon-arr-right-mini"></span></span>
+            </a>
+            <a href="#{REPO_URL}/tree/#{sha}" class="browse-button" title="Browse the code at this point in the history" rel="nofollow">Browse code <span class="mini-icon mini-icon-arr-right"></span></a>
+          </div>
+          <div class="authorship">
+            <span class="author-name">#{author}</span>
+            authored <time class="js-relative-date" datetime="#{date.strftime('%FT%T%:z')}" title="#{date.strftime('%F %T')}">#{date.strftime('%B %-d, %Y')}</time>
+          </div>
+        </div>
+    </li>
+  HTML
 end
 
-__END__
-# Contributions
+entries = 0
+groups = []                     # [heading, [entry, …]] in log order
+log = `git log -z --date=iso --pretty=format:"%H%n%an%n%ae%n%ad%n%s%n%b"`
+log.force_encoding(Encoding::UTF_8).scrub.split(/\x00/).each do |commit|
+  sha, name, email, datestr, subject, body = commit.split(/\n/, 6)
+  next if name == 'Allan Odgaard'
+  next if email.nil? || email.empty?
 
-See [commits at GitHub][1].
+  date = DateTime.parse(datestr)
+  body = (body || '').strip
+  heading = date.strftime('%b %-d, %Y')
+  groups << [heading, []] unless groups.last && groups.last[0] == heading
+  groups.last[1] << commit_entry(sha, name, email, date, subject, body)
+  entries += 1
+end
 
-<table width="100%">
-    <tr>
-        <th width="20%">Author</th>
-        <th width="60%">Contribution</th>
-        <th width="20%">Date</th>
-    </tr>
-<%
-require 'bin/gen_credits'
-credits = generate_credits(File.expand_path('~/Library/Caches/com.macromates.TextMate/githubcredits'))
-%>
-<%= credits %>
-</table>
+html = +<<~HEADER
+  <!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01//EN"
+  \t"http://www.w3.org/TR/html4/strict.dtd">
 
-[1]: https://github.com/textmate/textmate/commits/master
+  <html>
+
+  <head>
+  \t<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+  \t<link href="css/stylesheet.css" rel="stylesheet" type="text/css" />
+  \t<link rel="stylesheet" type="text/css" href="css/contributions.css" charset="utf-8" />
+  \t<script type="text/javascript" src="js/contributions.js" charset="utf-8"></script>
+  \t<title>Contributions</title>
+  </head>
+
+  <body>
+  <h1 id="contributions">Contributions</h1>
+
+  <p>See <a href="#{REPO_URL}/commits/#{BRANCH}">commits at GitHub</a>.</p>
+
+  <div>
+
+HEADER
+
+groups.each do |heading, items|
+  html << "\n<h3 class=\"commit-group-heading\">#{heading}</h3>\n\n"
+  html << "<ol class=\"commit-group\">\n\n"
+  html << items.join("\n")
+  html << "\n</ol>\n"
+end
+
+html << "\n</div>\n\n</body>\n</html>\n"
+
+File.write(OUTPUT, html)
+puts "#{OUTPUT}: #{entries} commits, #{groups.size} day groups"
