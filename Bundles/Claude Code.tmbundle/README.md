@@ -37,5 +37,5 @@ nothing is sent.
 
 These commands are Claude-specific because `at_mentioned` and the discovery
 lock file are part of Claude Code’s IDE protocol. Other agents use TextMate’s
-provider-neutral `tm_agent mcp` route instead. See `AGENT_BUNDLE.md` at the
-repository root for the design.
+provider-neutral `tm_agent mcp` route instead. See `docs/ai-companion.md` for
+how to register it.

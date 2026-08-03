@@ -222,7 +222,7 @@ static NSString* clientKey (NSString* root, std::string const& lspCommand)
 	scope::context_t const scopeContext = scope::scope_t(fileType);
 
 	// Settings from .tm_properties take precedence; language bundles may
-	// provide defaults via scoped Preferences items (see LSP_BUNDLE_CONFIG.md).
+	// provide defaults via scoped Preferences items (see docs/lsp-bundle-config.md).
 	std::string lspCommand = lsp::setting_with_bundle_fallback(kSettingsLSPCommandKey, settings, scopeContext);
 	if(lspCommand.empty())
 		return nil;

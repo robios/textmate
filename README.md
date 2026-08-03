@@ -1,97 +1,140 @@
-# TextMate
+# TextMate 2.5
 
-## Download
+A continuation of [TextMate 2][upstream] for current macOS.
 
-You can [download TextMate from here](https://macromates.com/download).
+TextMate 2 is a fine editor whose upstream development stopped. This fork picks
+it up: the build system is CMake and ninja, the external dependencies are gone,
+the deprecated frameworks are off, and the things a 2020s editor is expected to
+do — language servers, completion, diagnostics, an integrated terminal — are
+built in. What has *not* changed is the part worth keeping: scopes, bundles,
+snippets, grammars, themes and the `.tm_properties` settings system all work the
+way they always did, and existing bundles keep working.
 
-## Feedback
+Requires macOS 14 (Sonoma) or later.
 
-You can use [the TextMate mailing list](https://lists.macromates.com/listinfo/textmate) or [#textmate][] IRC channel on [freenode.net][] for questions, comments, and bug reports.
+![The editor with the minimap, the Markdown preview on the right, and an agent
+running in the terminal pane below](docs/images/overview.png)
 
-You can also [contact MacroMates](https://macromates.com/support).
+## What is in it
 
-Before you submit a bug report please read the [writing bug reports](https://github.com/textmate/textmate/wiki/writing-bug-reports) instructions.
+**Language servers.** An LSP client with completion (⌥⇥), hover, go to
+definition, find references, rename, code actions and formatting. Diagnostics
+appear as squiggles, as counts in the status bar, in a minimap lane, and in a
+workspace-wide diagnostics pane. A server takes one setting, `lspCommand`,
+scoped like everything else in TextMate — or shipped as a default by the
+language bundle. → [docs/lsp.md](docs/lsp.md)
 
-## Screenshot
+**GitHub Copilot.** Inline suggestions as ghost text, off by default, driven by
+`copilot-language-server`. → [docs/lsp.md](docs/lsp.md#github-copilot)
 
-![textmate](https://raw.github.com/textmate/textmate/gh-pages/images/screenshot.png)
+**Command palette.** ⇧⌘P over commands, symbols, recent projects, bundle items,
+lines and editor settings, ranked by what you actually use. →
+[docs/command-palette.md](docs/command-palette.md)
 
-# Building
+**Terminal pane.** A terminal in the document window, several sessions, drag
+and drop, and a `runLocation` property so a bundle command that wants a TTY
+gets one instead of having its output captured. →
+[docs/terminal.md](docs/terminal.md)
 
-## Setup
+**Markdown preview.** A live cmark-gfm preview beside the editor, GitHub-style
+tables, scroll sync, its own theme or the editor's — and the same renderer as a
+CLI for bundles to use. → [docs/markdown-preview.md](docs/markdown-preview.md)
 
-To build TextMate, you need the following:
+**Minimap.** With a source-control lane on one edge and a diagnostics lane on
+the other. → [docs/minimap.md](docs/minimap.md)
 
- * [boost][]            — portable C++ source libraries
- * [Cap’n Proto][capnp] — serialization library
- * [multimarkdown][]    — marked-up plain text compiler
- * [ninja][]            — build system similar to `make`
- * [ragel][]            — state machine compiler
- * [sparsehash][]       — a cache friendly `hash_map`
+**Bundle taps.** Subscribe to a bundle repository, or to a tap that publishes a
+catalogue of them, and install straight from GitHub — with an explicit trust
+model, because nothing fetched from GitHub is signed. →
+[docs/bundle-taps.md](docs/bundle-taps.md)
 
-All this can be installed using either [Homebrew][] or [MacPorts][]:
+**Reviewing changes.** A diff pane and a movable review base that the gutter,
+the minimap and the file browser all follow — read twenty commits as one diff.
+→ [docs/version-control.md](docs/version-control.md)
+
+![The diff pane reviewing several commits against an older base, with the
+minimap's change lane alongside](docs/images/diff-pane.png)
+
+**AI companion.** A bridge that lets an agent CLI in the terminal pane see what
+you have open — selection, open files, diagnostics — plus agent terminals for
+Claude Code and Codex. → [docs/ai-companion.md](docs/ai-companion.md)
+
+**Under the hood.** CMake and ninja in place of the old `rave` build; boost,
+Cap'n Proto, sparsehash, ragel and multimarkdown all removed; the deprecated
+`WebView` replaced with `WKWebView`; SwiftUI for the newer panels; and an
+asset-catalog app icon for current macOS.
+
+## Install
+
+Builds are published on this repository's [releases page][releases], signed and
+notarized. Download the archive and move `TextMate.app` to `/Applications`.
+
+Otherwise build it yourself — it needs no dependencies beyond `cmake` and
+`ninja`.
+
+Once it is running, add the `robios/tm-bundles` tap under *Preferences →
+Bundles*: a catalogue of language bundles maintained alongside this fork,
+updated for its features where the official index has fallen behind. Adding
+the tap installs nothing by itself — its bundles appear in the list and you
+tick the ones you want. → [docs/bundle-taps.md](docs/bundle-taps.md)
+
+## Building
 
 ```sh
-# Homebrew
-brew install boost capnp google-sparsehash multimarkdown ninja ragel
-
-# MacPorts
-sudo port install boost capnproto multimarkdown ninja ragel sparsehash
-```
-
-After installing dependencies, make sure you have a full checkout (including submodules) and then run `./configure` followed by `ninja`, for example:
-
-```sh
-git clone --recursive https://github.com/textmate/textmate.git
+git clone --recursive https://github.com/robios/textmate.git
 cd textmate
-./configure && ninja TextMate/run
+make run
 ```
 
-The `./configure` script simply checks that all dependencies can be found, and then calls `bin/rave` to bootstrap a `build.ninja` file with default config set to `release` and default target set to `TextMate`.
+[docs/building.md](docs/building.md) has the prerequisites, the release build,
+the CMake presets and the packaging steps.
 
-## Building from within TextMate
+## Documentation
 
-You should install the [Ninja][NinjaBundle] bundle which can be installed via _Preferences_ → _Bundles_.
+[docs/](docs/README.md) covers what this fork adds or changes.
 
-After this you can press ⌘B to build from within TextMate. In case you haven't already you also need to set up the `PATH` variable either in _Preferences_ → _Variables_ or `~/.tm_properties` so it can find `ninja` and related tools; an example could be `$PATH:/usr/local/bin`.
+For TextMate itself — scopes and scope selectors, bundles, grammars, snippets,
+commands, themes, `.tm_properties` — the [TextMate manual][manual] is still the
+reference, and still accurate. Almost nothing in it has been invalidated here.
 
-The default target (set in `.tm_properties`) is `TextMate/run`. This will relaunch TextMate but when called from within TextMate, a dialog will appear before the current instance is killed. As there is full session restore, it is safe to relaunch even with unsaved changes.
+## Acknowledgments
 
-If the current file is a test file then the target to build is changed to build the library to which the test belongs (this is done by setting `TM_NINJA_TARGET` in the `.tm_properties` file found in the root of the source tree).
+**TextMate is Allan Odgaard's, at [MacroMates][macromates].** He wrote it,
+opened its source, and designed the bundle and scope system that everything
+here rests on. This fork is a continuation of [textmate/textmate][upstream] and
+would not exist without it. TextMate is a trademark of Allan Odgaard.
 
-Similarly, if the current file belongs to an application target (other than `TextMate.app`) then `TM_NINJA_TARGET` is set to build and run this application.
+**[tectiv3][tectiv3] carried it into the present.** This branch is built
+directly on their fork: roughly 190 of their commits form its foundation, and
+their authorship is preserved throughout the git history rather than squashed
+away. That work includes
 
-## Build Targets
+* the CMake and ninja build system, and the removal of every external
+  dependency the old build needed,
+* the LSP client framework — completion, hover, definitions, references,
+  rename, code actions, formatting, the log panel, the status bar — together
+  with the SwiftUI completion popup and panels it drives,
+* the GitHub Copilot integration,
+* the command palette,
+* the migration from the deprecated `WebView` to `WKWebView`,
+* the Formatters and Advanced preference panes,
+* and a long tail of crash fixes, main-thread deadlock fixes and performance
+  work — the least visible and most valuable part of it.
 
-For the `TextMate.app` application there are two symbolic build targets:
+**Everyone else in the history.** Fixes from other upstream contributors are
+cherry-picked into this branch as well. They are not named here individually
+because `git log` credits them properly, which is the reason the history was
+kept intact rather than flattened.
 
-```sh
-ninja TextMate      # Build and sign TextMate
-ninja TextMate/run  # Build, sign, and (re)launch TextMate
-```
+## License
 
-To clean everything run:
+GPL v3, the same as upstream: released under the GNU General Public License as
+published by the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version. See [COPYING](COPYING) and the full text in
+[LICENSE](LICENSE).
 
-```sh
-ninja -t clean
-```
-
-Or simply delete `~/build/TextMate`.
-
-# Legal
-
-The source for TextMate is released under the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
-
-TextMate is a trademark of Allan Odgaard.
-
-[boost]:         http://www.boost.org/
-[ninja]:         https://ninja-build.org/
-[multimarkdown]: http://fletcherpenney.net/multimarkdown/
-[ragel]:         https://www.colm.net/open-source/ragel/
-[capnp]:         https://github.com/capnproto/capnproto.git
-[MacPorts]:      http://www.macports.org/
-[Homebrew]:      http://brew.sh/
-[NinjaBundle]:   https://github.com/textmate/ninja.tmbundle
-[sparsehash]:    https://code.google.com/p/sparsehash/
-[#textmate]:     irc://irc.freenode.net/#textmate
-[freenode.net]:  http://freenode.net/
+[upstream]:   https://github.com/textmate/textmate
+[tectiv3]:    https://github.com/tectiv3/textmate
+[macromates]: https://macromates.com/
+[manual]:     https://macromates.com/textmate/manual/
+[releases]:   https://github.com/robios/textmate/releases
