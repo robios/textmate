@@ -51,6 +51,7 @@ struct bundle_command_t
 bundle_command_t parse_command (bundles::item_ptr bundleItem);
 bundle_command_t parse_command (plist::dictionary_t const& plist);
 bundle_command_t parse_drag_command (bundles::item_ptr bundleItem);
+bundle_command_t parse_drag_command (plist::dictionary_t const& plist);
 plist::dictionary_t convert_command_from_v1 (plist::dictionary_t plist);
 
 #endif /* end of include guard: COMMAND_PARSER_H_NXZKS6AZ */

@@ -1,6 +1,7 @@
 #import "BundleEditor.h"
 #import "PropertiesViewController.h"
 #import "OakRot13Transformer.h"
+#import "OakRunLocationTransformer.h"
 #import "be_entry.h"
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <OakFoundation/NSString Additions.h>
@@ -165,6 +166,7 @@ static be::entry_ptr parent_for_column (NSBrowser* aBrowser, NSInteger aColumn, 
 		};
 
 		[OakRot13Transformer register];
+		[OakRunLocationTransformer register];
 		for(auto const& converter : converters)
 			[OakStringListTransformer createTransformerWithName:converter.name andObjectsArray:converter.array];
 	});
@@ -793,7 +795,12 @@ static be::entry_ptr parent_for_column (NSBrowser* aBrowser, NSInteger aColumn, 
 
 - (void)setBundleItemProperties:(NSMutableDictionary*)someProperties
 {
-	static std::string const BindingKeys[] = { bundles::kFieldIsDisabled, bundles::kFieldName, bundles::kFieldKeyEquivalent, bundles::kFieldTabTrigger, bundles::kFieldScopeSelector, bundles::kFieldSemanticClass, bundles::kFieldContentMatch, bundles::kFieldHideFromUser, bundles::kFieldDropExtension, bundles::kFieldGrammarExtension, bundles::kFieldGrammarFirstLineMatch, bundles::kFieldGrammarScope, bundles::kFieldGrammarInjectionSelector, "beforeRunningCommand", "input", "inputFormat", "outputLocation", "outputFormat", "outputCaret", "autoScrollOutput", "contactName", "contactEmailRot13", "description", "disableAutoIndent", "useGlobalClipboard", "author", "comment" };
+	// The keys added alongside runLocation that no control in either pane writes
+	// — fallbackInput, outputReuse, autoRefresh, disableOutputAutoIndent,
+	// disableJavaScriptAPI — are here for the ignored-settings warning: a command
+	// can only have got them by being written by hand, and the warning has to
+	// answer for those as well as for what the popups set.
+	static std::string const BindingKeys[] = { bundles::kFieldIsDisabled, bundles::kFieldName, bundles::kFieldKeyEquivalent, bundles::kFieldTabTrigger, bundles::kFieldScopeSelector, bundles::kFieldSemanticClass, bundles::kFieldContentMatch, bundles::kFieldHideFromUser, bundles::kFieldDropExtension, bundles::kFieldGrammarExtension, bundles::kFieldGrammarFirstLineMatch, bundles::kFieldGrammarScope, bundles::kFieldGrammarInjectionSelector, "beforeRunningCommand", "runLocation", "input", "fallbackInput", "inputFormat", "outputLocation", "outputFormat", "outputCaret", "outputReuse", "autoRefresh", "autoScrollOutput", "disableOutputAutoIndent", "disableJavaScriptAPI", "contactName", "contactEmailRot13", "description", "disableAutoIndent", "useGlobalClipboard", "author", "comment" };
 
 	NSMutableDictionary* oldProperties = _bundleItemProperties;
 	_bundleItemProperties = someProperties;
@@ -989,6 +996,7 @@ static NSMutableDictionary* DictionaryForPropertyList (plist::dictionary_t const
 	if(info.view_controller)
 	{
 		_extraPropertiesViewController = [[PropertiesViewController alloc] initWithName:info.view_controller];
+		_extraPropertiesViewController.usesDragCommandDefaults = info.kind == bundles::kItemTypeDragCommand;
 		[_extraPropertiesViewController setProperties:_bundleItemProperties];
 
 		NSView* extraView = [_extraPropertiesViewController view];

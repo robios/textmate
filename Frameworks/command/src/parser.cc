@@ -150,14 +150,18 @@ bundle_command_t parse_command (bundles::item_ptr bundleItem)
 	return parse_command(convert_command_from_v1(bundleItem->plist()));
 }
 
-bundle_command_t parse_drag_command (bundles::item_ptr bundleItem)
+bundle_command_t parse_drag_command (plist::dictionary_t const& plist)
 {
 	bundle_command_t res = { };
 	res.input         = res.input_fallback = input::nothing;
 	res.output        = output::at_caret;
 	res.output_format = output_format::snippet;
 
-	plist::dictionary_t const& plist = bundleItem->plist();
 	setup_fields(plist, res);
 	return res;
+}
+
+bundle_command_t parse_drag_command (bundles::item_ptr bundleItem)
+{
+	return parse_drag_command(bundleItem->plist());
 }
