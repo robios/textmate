@@ -2,7 +2,6 @@
 #import <OakAppKit/OakUIConstructionFunctions.h>
 #import <OakFoundation/OakFoundation.h>
 #import <OakFoundation/NSString Additions.h>
-#import <BundlesManager/BundlesManager.h>
 #import <license/LicenseManager.h>
 #import <ns/ns.h>
 
@@ -61,7 +60,7 @@ static NSData* Digest (NSString* someString)
 	NSWindow* win = [[NSPanel alloc] initWithContentRect:rect styleMask:(NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskResizable|NSWindowStyleMaskMiniaturizable|NSWindowStyleMaskFullSizeContentView) backing:NSBackingStoreBuffered defer:NO];
 	if((self = [super initWithWindow:win]))
 	{
-		_segmentLabels    = @[ @"About", @"Changes", @"Bundles", @"Registration", @"Legal", @"Contributions" ];
+		_segmentLabels    = @[ @"About", @"Changes", @"Registration", @"Legal", @"Contributions" ];
 		_segmentedControl = [NSSegmentedControl segmentedControlWithLabels:_segmentLabels trackingMode:NSSegmentSwitchTrackingSelectOne target:self action:@selector(takeSelectedSegmentFrom:)];
 
 		self.toolbar = [[NSToolbar alloc] initWithIdentifier:@"About TextMate"];
@@ -159,7 +158,6 @@ static NSData* Digest (NSString* someString)
 	NSDictionary* pages = @{
 		@"About":         @"About/About",
 		@"Changes":       @"About/Changes",
-		@"Bundles":       @"About/Bundles",
 		@"Registration":  @"About/Registration",
 		@"Legal":         @"About/Legal",
 		@"Contributions": @"About/Contributions"
@@ -227,64 +225,6 @@ static NSData* Digest (NSString* someString)
 // =============
 // = WKWebView =
 // =============
-
-static NSDictionary* RemoveOldCommits (NSDictionary* src)
-{
-	NSMutableDictionary* res = [src mutableCopy];
-	NSMutableArray* commits = [NSMutableArray array];
-
-	NSInteger year = [[[[NSCalendar alloc] initWithCalendarIdentifier:NSCalendarIdentifierGregorian] components:NSCalendarUnitYear fromDate:[NSDate date]] year];
-	NSMutableArray* years = [NSMutableArray array];
-	for(size_t i = year-2; i <= year; ++i)
-		[years addObject:[NSString stringWithFormat:@"%4zu-", i]];
-
-	for(NSDictionary* commit in src[@"commits"])
-	{
-		NSString* dateString = commit[@"date"];
-		for(NSString* prefix in years)
-		{
-			if([dateString hasPrefix:prefix]) // this is significantly faster than having to parse the date
-				[commits addObject:commit];
-		}
-	}
-
-	res[@"commits"] = commits;
-	return res;
-}
-
-- (void)webView:(WKWebView*)webView didFinishNavigation:(WKNavigation*)navigation
-{
-	if(![_selectedPage isEqualToString:@"Bundles"])
-		return;
-
-	bool first = true;
-	NSMutableString* str = [NSMutableString stringWithString:@"{\"bundles\":["];
-	for(Bundle* bundle in BundlesManager.sharedInstance.bundles)
-	{
-		if(!bundle.installed || !bundle.path)
-			continue;
-
-		NSError* err = NULL;
-		if(NSString* content = [NSString stringWithContentsOfFile:[bundle.path stringByAppendingPathComponent:@"Changes.json"] encoding:NSUTF8StringEncoding error:&err])
-		{
-			if(NSDictionary* obj = [NSJSONSerialization JSONObjectWithData:[content dataUsingEncoding:NSUTF8StringEncoding] options:0 error:&err])
-			{
-				if(NSData* data = [NSJSONSerialization dataWithJSONObject:RemoveOldCommits(obj) options:0 error:&err])
-				{
-					if(!std::exchange(first, false))
-						[str appendString:@","];
-
-					[str appendString:[[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding]];
-					continue;
-				}
-			}
-		}
-		NSLog(@"%@: %@", bundle.name, err.localizedDescription);
-	}
-	[str appendString:@"]}"];
-
-	[self.webView evaluateJavaScript:[NSString stringWithFormat:@"setJSON(%@);", [self javaScriptEscapedString:str]] completionHandler:^(id res, NSError* error){ }];
-}
 
 - (NSString*)javaScriptEscapedString:(NSString*)src
 {
