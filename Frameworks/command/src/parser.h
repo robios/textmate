@@ -15,6 +15,12 @@ namespace output_caret  { enum type { after_output = 0, select_output, interpola
 namespace output_reuse  { enum type { reuse_available = 0, reuse_none, reuse_busy, abort_and_reuse_busy }; }
 namespace auto_refresh  { enum type { never = 0, on_document_change = (1 << 0), on_document_save = (1 << 1), on_document_close = (1 << 2) }; }
 
+// Where the command runs, as opposed to where its output goes. A terminal
+// command owns a pty: TextMate neither feeds it stdin nor sees its output, so
+// every input/output key above is meaningless for it — see the ignored-key
+// table the Bundle Editor makes visible.
+namespace run_location  { enum type { in_process = 0, terminal }; }
+
 struct bundle_command_t
 {
 	std::string name = NULL_STR;
@@ -32,6 +38,8 @@ struct bundle_command_t
 	output_format::type output_format = output_format::text;
 	output_caret::type output_caret   = output_caret::after_output;
 	output_reuse::type output_reuse   = output_reuse::reuse_available;
+
+	run_location::type run_location   = run_location::in_process;
 
 	int auto_refresh                  = auto_refresh::never;
 

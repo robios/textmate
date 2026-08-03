@@ -156,11 +156,46 @@ namespace command
 		return output;
 	}
 
-	std::string create_script_path (std::string const& command)
+	// A command name as one filename component: everything a shell would make
+	// the user quote (or that would hide the file) becomes an underscore, and
+	// the result is capped so a verbose command name cannot crowd out the
+	// digest that follows it.
+	static NSString* sanitized_name (std::string const& name)
+	{
+		static size_t const kMaxLength = 32;
+
+		std::string res;
+		for(char const ch : (name == NULL_STR ? std::string() : name))
+		{
+			bool const safe = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '-' || ch == '.';
+			if(safe)
+				res += ch;
+			else if(!res.empty() && res.back() != '_')
+				res += '_';
+
+			if(res.size() == kMaxLength)
+				break;
+		}
+
+		// Also at the front: a leading dot would hide the file, and a leading
+		// separator just reads as damage.
+		auto is_edge = [](char ch){ return ch == '_' || ch == '.'; };
+		while(!res.empty() && is_edge(res.back()))
+			res.resize(res.size()-1);
+		res.erase(res.begin(), std::find_if_not(res.begin(), res.end(), is_edge));
+
+		return res.empty() ? @"command" : [NSString stringWithUTF8String:res.c_str()];
+	}
+
+	static std::string create_script_path (std::string const& command, NSString* fileName)
 	{
 		NSData* data = [NSData dataWithBytesNoCopy:(void*)command.data() length:command.size() freeWhenDone:NO];
 
-		NSString* scriptPath = [NSString pathWithComponents:@[ NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject, NSBundle.mainBundle.bundleIdentifier, @"Scripts", hash(data) ]];
+		// The identifier is nil outside an app bundle — in a test runner, say,
+		// where +pathWithComponents: would otherwise throw on the nil element and
+		// abort the whole process.
+		NSString* container = NSBundle.mainBundle.bundleIdentifier ?: NSProcessInfo.processInfo.processName;
+		NSString* scriptPath = [NSString pathWithComponents:@[ NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject, container, @"Scripts", fileName ?: hash(data) ]];
 		if(![NSFileManager.defaultManager isExecutableFileAtPath:scriptPath])
 		{
 			[NSFileManager.defaultManager createDirectoryAtPath:scriptPath.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nullptr];
@@ -170,6 +205,22 @@ namespace command
 		}
 
 		return scriptPath.fileSystemRepresentation;
+	}
+
+	std::string create_script_path (std::string const& command)
+	{
+		return create_script_path(command, nil);
+	}
+
+	// Same content-addressed cache, but with the command’s name in front of the
+	// digest: this path is typed into a terminal the user keeps, so it lands in
+	// their scrollback and their history for good. The digest stays whole —
+	// the cache reuses an existing executable without comparing its contents,
+	// so a truncated hash would eventually run somebody else’s script.
+	std::string create_named_script_path (std::string const& command, std::string const& name)
+	{
+		NSData* data = [NSData dataWithBytesNoCopy:(void*)command.data() length:command.size() freeWhenDone:NO];
+		return create_script_path(command, [NSString stringWithFormat:@"%@-%@", sanitized_name(name), hash(data)]);
 	}
 
 	// ==================
@@ -272,16 +323,22 @@ namespace command
 
 		if(_did_detach)
 		{
-			__block bool shouldWait = true;
-			CFRunLoopRef runLoop = CFRunLoopGetCurrent();
-
-			dispatch_group_notify(_dispatch_group, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-				shouldWait = false;
-				CFRunLoopStop(runLoop);
-			});
-
-			while(shouldWait)
-				CFRunLoopRun();
+			// Wait for the completion to have *run*, which is what did_exit
+			// clears _process_id from — the same condition wait() above uses.
+			//
+			// Not for the dispatch group that schedules it: run_command() posts
+			// the completion to this run loop and only then leaves the group, so
+			// an empty group still means the delegate has been handed nothing and
+			// done() has not fired. Waiting on the group also let a short command
+			// finish before the first check, returning without ever spinning the
+			// loop and leaving its own completion for whatever ran next.
+			while(_process_id != -1)
+			{
+				// A run loop with no sources of its own returns at once rather
+				// than waiting out the timeout, so back off instead of spinning.
+				if(CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.05, false) == kCFRunLoopRunFinished)
+					usleep(1000);
+			}
 		}
 		else
 		{

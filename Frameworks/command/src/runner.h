@@ -13,6 +13,10 @@ namespace command
 	void fix_shebang (std::string* command);
 	std::string create_script_path (std::string const& command);
 
+	// For a script whose path the user will see: the same cache entry, named
+	// “«command name»-«sha1»” instead of the bare digest.
+	std::string create_named_script_path (std::string const& command, std::string const& name);
+
 	struct delegate_t;
 	struct runner_t;
 

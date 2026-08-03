@@ -141,3 +141,31 @@ void test_html_error ()
 	OAK_ASSERT_EQ(res->err, "Error\n");
 	OAK_ASSERT_EQ(res->rc, 1);
 }
+
+// A detached command's output and completion are delivered on the run loop,
+// while the dispatch group that schedules them empties first. wait_for_command()
+// therefore has to wait for the completion to have run, not for the group: give
+// the command time to finish before waiting, and the two orderings become
+// visible — waiting on the group returns here with nothing delivered and the
+// runner still claiming to run, leaving its own completion to whatever spins a
+// run loop next.
+void test_wait_for_finished_detached_command ()
+{
+	plist::dictionary_t plist;
+	plist["command"] = std::string("#!/bin/sh\necho Hello\n");
+	plist["name"]    = std::string("Test Command");
+	plist["input"]   = std::string("none");
+	plist["output"]  = std::string("showAsHTML");
+
+	delegate_ptr delegate(new delegate_t);
+	command::runner_ptr runner = command::runner(parse_command(convert_command_from_v1(plist)), ng::buffer_t(), ng::ranges_t(), variables_for_path(oak::basic_environment()), delegate);
+	runner->launch();
+
+	usleep(500 * 1000); // outlives the process, its pipes, and the group
+
+	runner->wait_for_command();
+
+	OAK_ASSERT_EQ(runner->running(), false);
+	OAK_ASSERT_EQ(delegate->html, "Hello\n");
+	OAK_ASSERT_EQ(delegate->rc, 0);
+}

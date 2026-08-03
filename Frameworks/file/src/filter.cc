@@ -8,6 +8,51 @@
 #include <io/path.h>
 #include <oak/debug.h>
 
+// Import/export filters are run by command::runner, which forks the script and
+// reads back its output — there is no terminal to route to and no way to hand
+// the converted content back from one. A command declaring runLocation:terminal
+// is therefore not a filter candidate at all; silently treating it as an
+// in-process filter would run it with a document on its stdin.
+static bool is_in_process_command (bundles::item_ptr const& item)
+{
+	return parse_command(item).run_location == run_location::in_process;
+}
+
+// The eligible candidates for an event, best scope match first.
+//
+// Ineligibility has to be settled *before* the scope-rank cutoff, not after it.
+// bundles::query keeps only the highest-ranked matches by default, so a
+// narrowly-scoped terminal command would carry the cutoff away with it and hide
+// a broadly-scoped filter that should have been chosen — leaving binary import
+// with no candidate at all. Ask for every match instead, drop the ineligible
+// ones, and apply the same cutoff to what remains.
+//
+// The ranks come back from does_match() rather than from query(), which does
+// not expose them. They are the same numbers query() sorted by: the one case
+// where it stores a rank measured against something other than `event` is a
+// resolved proxy item, and kind = kItemTypeCommand never matches a proxy.
+static std::vector<bundles::item_ptr> path_filters (std::string const& event, std::string const& pathAttributes)
+{
+	std::vector<bundles::item_ptr> res;
+	std::optional<double> topRank;
+	for(auto const& item : bundles::query(bundles::kFieldSemanticClass, event, pathAttributes, bundles::kItemTypeCommand, oak::uuid_t(), false /* filter */))
+	{
+		if(!is_in_process_command(item))
+			continue;
+
+		std::optional<double> rank = item->does_match(bundles::kFieldSemanticClass, event, pathAttributes, bundles::kItemTypeCommand, oak::uuid_t());
+		if(!rank)
+			continue;
+		if(!topRank)
+			topRank = rank;
+		else if(*rank != *topRank)
+			break;
+
+		res.push_back(item);
+	}
+	return res;
+}
+
 static std::vector<bundles::item_ptr> binary_filters (std::string const& event, std::string const& pathAttributes, io::bytes_ptr content)
 {
 	std::string contentAsString = "";
@@ -20,7 +65,7 @@ static std::vector<bundles::item_ptr> binary_filters (std::string const& event, 
 	}
 
 	std::multimap<ssize_t, bundles::item_ptr> ordering;
-	for(auto const& item : bundles::query(bundles::kFieldSemanticClass, event, pathAttributes, bundles::kItemTypeCommand))
+	for(auto const& item : path_filters(event, pathAttributes))
 	{
 		for(auto const& pattern : item->values_for_field(bundles::kFieldContentMatch))
 		{
@@ -29,11 +74,6 @@ static std::vector<bundles::item_ptr> binary_filters (std::string const& event, 
 		}
 	}
 	return ordering.empty() ? std::vector<bundles::item_ptr>() : std::vector<bundles::item_ptr>(1, ordering.begin()->second);
-}
-
-static std::vector<bundles::item_ptr> path_filters (std::string const& event, std::string const& pathAttributes)
-{
-	return bundles::query(bundles::kFieldSemanticClass, event, pathAttributes, bundles::kItemTypeCommand);
 }
 
 // ==========================

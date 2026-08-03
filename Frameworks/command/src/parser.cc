@@ -114,6 +114,7 @@ static void setup_fields (plist::dictionary_t const& plist, bundle_command_t& re
 	parse(plist, "outputLocation",       &res.output,         "replaceInput", "replaceDocument", "atCaret", "afterInput", "newWindow", "toolTip", "discard", "replaceSelection");
 	parse(plist, "outputCaret",          &res.output_caret,   "afterOutput", "selectOutput", "interpolateByChar", "interpolateByLine", "heuristic");
 	parse(plist, "outputReuse",          &res.output_reuse,   "reuseAvailable", "reuseNone", "reuseBusy", "reuseBusyAutoAbort");
+	parse(plist, "runLocation",          &res.run_location,   "inProcess", "terminal");
 
 	plist::array_t autoRefreshArray;
 	if(plist::get_key_path(plist, "autoRefresh", autoRefreshArray))

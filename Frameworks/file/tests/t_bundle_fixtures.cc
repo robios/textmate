@@ -77,6 +77,52 @@ void setup_fixtures ()
 		"	uuid   = 'E2C42B70-5823-49A7-A259-A1622EBD191C';\n"
 		"}\n";
 
+	// A narrowly-scoped terminal command and a broadly-scoped ordinary filter
+	// competing for the same event — the arrangement in which an ineligible
+	// candidate could take the scope-rank cutoff away from an eligible one (see
+	// t_filter.cc). Their scope keeps them out of every other test's way: no
+	// real path carries ‘attr.test.filter-ordering’.
+	static std::string TerminalImportCommand =
+		"{	command       = \"#!/bin/sh\ntrue\n\";\n"
+		"	semanticClass = 'callback.document.import';\n"
+		"	name          = 'Terminal Import Command';\n"
+		"	runLocation   = 'terminal';\n"
+		"	scope         = 'attr.test.filter-ordering.specific';\n"
+		"	uuid          = 'AC1D0B4E-0000-4000-8000-000000000001';\n"
+		"}\n";
+
+	static std::string InProcessImportFilter =
+		"{	command       = \"#!/bin/cat\n\";\n"
+		"	semanticClass = 'callback.document.import';\n"
+		"	input         = 'document';\n"
+		"	name          = 'In Process Import Filter';\n"
+		"	output        = 'replaceDocument';\n"
+		"	scope         = 'attr.test.filter-ordering';\n"
+		"	uuid          = 'AC1D0B4E-0000-4000-8000-000000000002';\n"
+		"}\n";
+
+	// Same pair for the binary route, which additionally selects on content.
+	static std::string TerminalBinaryImportCommand =
+		"{	command       = \"#!/bin/sh\ntrue\n\";\n"
+		"	semanticClass = 'callback.document.binary-import';\n"
+		"	contentMatch  = 'FILTERTEST';\n"
+		"	name          = 'Terminal Binary Import Command';\n"
+		"	runLocation   = 'terminal';\n"
+		"	scope         = 'attr.test.filter-ordering.specific';\n"
+		"	uuid          = 'AC1D0B4E-0000-4000-8000-000000000003';\n"
+		"}\n";
+
+	static std::string InProcessBinaryImportFilter =
+		"{	command       = \"#!/bin/cat\n\";\n"
+		"	semanticClass = 'callback.document.binary-import';\n"
+		"	contentMatch  = 'FILTERTEST';\n"
+		"	input         = 'document';\n"
+		"	name          = 'In Process Binary Import Filter';\n"
+		"	output        = 'replaceDocument';\n"
+		"	scope         = 'attr.test.filter-ordering';\n"
+		"	uuid          = 'AC1D0B4E-0000-4000-8000-000000000004';\n"
+		"}\n";
+
 	test::bundle_index_t bundleIndex;
 	bundleIndex.add(bundles::kItemTypeGrammar, TextLanguageGrammar);
 	bundleIndex.add(bundles::kItemTypeGrammar, CLanguageGrammar);
@@ -87,5 +133,9 @@ void setup_fixtures ()
 	bundleIndex.add(bundles::kItemTypeGrammar, GitConfigGrammar);
 	bundleIndex.add(bundles::kItemTypeGrammar, ASCIIPlistGrammar);
 	bundleIndex.add(bundles::kItemTypeCommand, ExportSHA1Command);
+	bundleIndex.add(bundles::kItemTypeCommand, TerminalImportCommand);
+	bundleIndex.add(bundles::kItemTypeCommand, InProcessImportFilter);
+	bundleIndex.add(bundles::kItemTypeCommand, TerminalBinaryImportCommand);
+	bundleIndex.add(bundles::kItemTypeCommand, InProcessBinaryImportFilter);
 	bundleIndex.commit();
 }
