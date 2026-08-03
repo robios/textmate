@@ -216,7 +216,10 @@ static NSButton* OakCreateImageToggleButton (NSImage* image, NSString* accessibi
 		// two collapse independently instead of needing a set per combination.
 		self.reviewBaseVisibleConstraints = ({
 			NSMutableArray* c = [NSMutableArray new];
-			[c addObjectsFromArray:[NSLayoutConstraint constraintsWithVisualFormat:@"H:[symbol]-4-[dividerSeven(==1)]-2-[reviewBase]-4-[dividerEight(==1)]-2-[agent]" options:0 metrics:nil views:views]];
+			// The floors mirror the popup's neighbours: without them reviewBase is
+			// the only compressible view in the bar, so a narrow window squeezes
+			// it to a sliver while everything else keeps its minimum.
+			[c addObjectsFromArray:[NSLayoutConstraint constraintsWithVisualFormat:@"H:[symbol]-4-[dividerSeven(==1)]-2-[reviewBase(>=90@450,>=45)]-4-[dividerEight(==1)]-2-[agent]" options:0 metrics:nil views:views]];
 			[c addObjectsFromArray:[NSLayoutConstraint constraintsWithVisualFormat:@"V:|-5-[dividerSeven(==15,==dividerEight)]-5-|" options:0 metrics:nil views:views]];
 			// The vertical format positions only the first rule and gives the
 			// second its height, so the second still needs placing.
