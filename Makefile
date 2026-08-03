@@ -1,4 +1,4 @@
-.PHONY: all debug release clean clean-debug clean-release run package swift-build-debug swift-build-release
+.PHONY: all debug release clean clean-debug clean-release run package patch minor swift-build-debug swift-build-release
 
 all: debug
 
@@ -27,7 +27,16 @@ release: swift-build-release
 	ninja -C build-release
 
 package:
+	@set -- $(filter patch minor,$(MAKECMDGOALS)); \
+	if [ "$$#" -gt 1 ]; then \
+		echo "ERROR: pass only one bump target: patch or minor"; \
+		exit 1; \
+	fi; \
+	ruby scripts/prepare_release.rb "$${1:-patch}"
 	@bash scripts/package.sh
+
+patch minor:
+	@:
 
 run: debug
 	open build-debug/Applications/TextMate/TextMate.app

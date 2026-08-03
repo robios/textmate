@@ -8,9 +8,9 @@ NOTARY_TEAM_ID="${NOTARY_TEAM_ID:?Set NOTARY_TEAM_ID env var to your Apple team 
 NOTARY_APPLE_ID="${NOTARY_APPLE_ID:?Set NOTARY_APPLE_ID env var to your Apple ID email}"
 NOTARY_PASSWORD="${NOTARY_PASSWORD:?Set NOTARY_PASSWORD env var (app-specific password from appleid.apple.com)}"
 
-GIT_TAG=$(git describe --tags --abbrev=0 2>/dev/null || true)
+GIT_TAG=$(git describe --tags --exact-match 2>/dev/null || true)
 if [ -z "$GIT_TAG" ]; then
-  echo "ERROR: No git tag found. Tag a release first: git tag v3.1"
+  echo "ERROR: HEAD is not tagged. Run make package [patch|minor] to prepare a release tag."
   exit 1
 fi
 VERSION="${GIT_TAG#v}"
@@ -73,15 +73,23 @@ tar -czf "$TGZ_PATH" -C "$(dirname "$APP_PATH")" "$APP_NAME.app"
 TGZ_SHA=$(shasum -a 256 "$TGZ_PATH" | awk '{print $1}')
 
 # ── GitHub Release ───────────────────────────────────────────────────
-if command -v gh &>/dev/null; then
-  echo "==> Creating GitHub release and uploading"
-  gh release create "$GIT_TAG" "$TGZ_PATH" \
-    --title "$APP_NAME $VERSION" \
-    --generate-notes
-else
-  echo "==> gh CLI not found — upload manually"
-  echo "    $TGZ_PATH"
+if ! command -v gh &>/dev/null; then
+  echo "ERROR: gh CLI not found"
+  echo "       $TGZ_PATH was created but the release was not published."
+  exit 1
 fi
+
+UPSTREAM=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}')
+REMOTE="${UPSTREAM%%/*}"
+
+echo "==> Pushing branch and tag"
+git push "$REMOTE" HEAD
+git push "$REMOTE" "$GIT_TAG"
+
+echo "==> Creating GitHub release and uploading"
+gh release create "$GIT_TAG" "$TGZ_PATH" \
+  --title "$APP_NAME $VERSION" \
+  --generate-notes
 
 # ── Done ─────────────────────────────────────────────────────────────
 echo ""
