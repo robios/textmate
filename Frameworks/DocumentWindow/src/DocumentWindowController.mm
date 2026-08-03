@@ -117,8 +117,10 @@ static void show_command_error (std::string const& message, oak::uuid_t const& u
 
 @property (nonatomic) TerminalPaneController*     terminalPane;
 @property (nonatomic) BOOL                        terminalKillConfirmed; // one-shot: the “process is still running” sheet was answered with Close
+@property (nonatomic) NSString*                   terminalPlacement; // the window edge the current frame’s outward growth is on, which lags the user default until the frame follows
 
 @property (nonatomic) MarkdownPreviewView*        markdownPreviewPane;
+@property (nonatomic) NSString*                   markdownPreviewPlacement; // the window edge the current frame’s outward growth is on, which lags the user default until the frame follows
 @property (nonatomic) BOOL                        observingThemeUUID; // terminal pane and markdown preview share the themeUUID observation
 
 @property (nonatomic) NSSegmentedControl*         previousNextTouchBarControl;
@@ -419,6 +421,20 @@ static NSArray* const kObservedKeyPaths = @[ @"arrayController.arrangedObjects.p
 	self.htmlOutputInWindow = [[NSUserDefaults.standardUserDefaults stringForKey:kUserDefaultsHTMLOutputPlacementKey] isEqualToString:@"window"];
 	self.terminalPane.placement = [NSUserDefaults.standardUserDefaults stringForKey:kUserDefaultsTerminalPlacementKey]; // no-op until the pane exists; the status bar normalizes non-left/bottom to “right”
 	self.disableFileBrowserWindowResize = [NSUserDefaults.standardUserDefaults boolForKey:kUserDefaultsDisableFileBrowserWindowResizeKey];
+
+	// ProjectLayoutView observes the same defaults and has already relocated the
+	// panes by now (it registers first), so the placement the current frame was
+	// grown for has to be remembered here rather than read back from the layout.
+	NSString* terminalPlacement = [ProjectLayoutView terminalPlacementFromUserDefaults];
+	if(_terminalPlacement && ![_terminalPlacement isEqualToString:terminalPlacement] && self.terminalVisible)
+		[self adjustWindowFrameForTerminalPaneMovedFrom:_terminalPlacement to:terminalPlacement];
+	_terminalPlacement = terminalPlacement;
+
+	NSString* markdownPreviewPlacement = [ProjectLayoutView markdownPreviewPlacementFromUserDefaults];
+	if(_markdownPreviewPlacement && ![_markdownPreviewPlacement isEqualToString:markdownPreviewPlacement] && self.markdownPreviewVisible)
+		[self adjustWindowFrameForMarkdownPreviewPaneMovedFrom:_markdownPreviewPlacement to:markdownPreviewPlacement];
+	_markdownPreviewPlacement = markdownPreviewPlacement;
+
 	self.autoRevealFile = [NSUserDefaults.standardUserDefaults boolForKey:kUserDefaultsAutoRevealFileKey];
 	self.documentView.hideStatusBar = [NSUserDefaults.standardUserDefaults boolForKey:kUserDefaultsHideStatusBarKey];
 
@@ -2302,13 +2318,13 @@ static NSArray* const kObservedKeyPaths = @[ @"arrayController.arrangedObjects.p
 // the pane’s edge (and hiding shrinks it back) instead of squeezing the
 // editor, screen space permitting. The frame math lives in its own method
 // because the session snapshot must apply the exact same shrink (see
-// sessionInfoIncludingUntitledDocuments:).
-- (NSRect)windowFrame:(NSRect)windowFrame adjustedForTerminalPaneVisible:(BOOL)makeVisibleFlag
+// sessionInfoIncludingUntitledDocuments:), and moving the pane to another
+// edge composes the two directions (see the placement-change method below).
+- (NSRect)windowFrame:(NSRect)windowFrame adjustedForTerminalPaneVisible:(BOOL)makeVisibleFlag placement:(NSString*)placement
 {
 	if(self.disableFileBrowserWindowResize || ([self.window styleMask] & NSWindowStyleMaskFullScreen) == NSWindowStyleMaskFullScreen)
 		return windowFrame;
 
-	NSString* placement = self.layoutView.terminalPlacement;
 	BOOL bottom = [placement isEqualToString:@"bottom"];
 	BOOL left   = [placement isEqualToString:@"left"];
 	CGFloat delta = (bottom ? self.terminalSize.height : self.terminalSize.width) + 1;
@@ -2359,9 +2375,31 @@ static NSArray* const kObservedKeyPaths = @[ @"arrayController.arrangedObjects.p
 	return windowFrame;
 }
 
+- (NSRect)windowFrame:(NSRect)windowFrame adjustedForTerminalPaneVisible:(BOOL)makeVisibleFlag
+{
+	return [self windowFrame:windowFrame adjustedForTerminalPaneVisible:makeVisibleFlag placement:self.layoutView.terminalPlacement];
+}
+
 - (void)adjustWindowFrameForTerminalPane:(BOOL)makeVisibleFlag
 {
 	NSRect windowFrame = [self windowFrame:self.window.frame adjustedForTerminalPaneVisible:makeVisibleFlag];
+	if(!NSEqualRects(windowFrame, self.window.frame))
+		[self.window setFrame:windowFrame display:YES];
+}
+
+// Relocating a visible pane moves its outward growth from one window edge to
+// another, so undo the growth on the edge it leaves and add it on the edge it
+// arrives at — the hide and show math verbatim, screen clamping included.
+// Left ↔ right keeps the growth on the same axis, and both sides grow by the
+// same terminalSize.width, so the frame is left alone rather than sliding the
+// window sideways by a width it never gained or lost.
+- (void)adjustWindowFrameForTerminalPaneMovedFrom:(NSString*)oldPlacement to:(NSString*)newPlacement
+{
+	if([oldPlacement isEqualToString:@"bottom"] == [newPlacement isEqualToString:@"bottom"])
+		return;
+
+	NSRect windowFrame = [self windowFrame:self.window.frame adjustedForTerminalPaneVisible:NO placement:oldPlacement];
+	windowFrame = [self windowFrame:windowFrame adjustedForTerminalPaneVisible:YES placement:newPlacement];
 	if(!NSEqualRects(windowFrame, self.window.frame))
 		[self.window setFrame:windowFrame display:YES];
 }
@@ -2589,13 +2627,15 @@ static NSArray* const kObservedKeyPaths = @[ @"arrayController.arrangedObjects.p
 // Like the terminal, showing the preview grows the window outward on the
 // pane’s edge (and hiding shrinks it back) instead of squeezing the editor,
 // screen space permitting. The frame math lives in its own method because
-// new-window frames must apply the exact same shrink (see windowFrame).
-- (NSRect)windowFrame:(NSRect)windowFrame adjustedForMarkdownPreviewPaneVisible:(BOOL)makeVisibleFlag
+// new-window frames must apply the exact same shrink (see windowFrame), and
+// moving the pane to another edge composes the two directions (see the
+// placement-change method below).
+- (NSRect)windowFrame:(NSRect)windowFrame adjustedForMarkdownPreviewPaneVisible:(BOOL)makeVisibleFlag placement:(NSString*)placement
 {
 	if(self.disableFileBrowserWindowResize || ([self.window styleMask] & NSWindowStyleMaskFullScreen) == NSWindowStyleMaskFullScreen)
 		return windowFrame;
 
-	BOOL bottom = [self.layoutView.markdownPreviewPlacement isEqualToString:@"bottom"];
+	BOOL bottom = [placement isEqualToString:@"bottom"];
 	CGFloat delta = (bottom ? self.markdownPreviewSize.height : self.markdownPreviewSize.width) + 1;
 
 	NSRect screenFrame = [[self.window screen] visibleFrame];
@@ -2638,9 +2678,30 @@ static NSArray* const kObservedKeyPaths = @[ @"arrayController.arrangedObjects.p
 	return windowFrame;
 }
 
+- (NSRect)windowFrame:(NSRect)windowFrame adjustedForMarkdownPreviewPaneVisible:(BOOL)makeVisibleFlag
+{
+	return [self windowFrame:windowFrame adjustedForMarkdownPreviewPaneVisible:makeVisibleFlag placement:self.layoutView.markdownPreviewPlacement];
+}
+
 - (void)adjustWindowFrameForMarkdownPreviewPane:(BOOL)makeVisibleFlag
 {
 	NSRect windowFrame = [self windowFrame:self.window.frame adjustedForMarkdownPreviewPaneVisible:makeVisibleFlag];
+	if(!NSEqualRects(windowFrame, self.window.frame))
+		[self.window setFrame:windowFrame display:YES];
+}
+
+// Relocating a visible pane moves its outward growth from one window edge to
+// another, so undo the growth on the edge it leaves and add it on the edge it
+// arrives at — the hide and show math verbatim, screen clamping included.
+// Unlike the terminal there is no same-axis move: the preview only knows
+// right and bottom, so a placement change always crosses the axis.
+- (void)adjustWindowFrameForMarkdownPreviewPaneMovedFrom:(NSString*)oldPlacement to:(NSString*)newPlacement
+{
+	if([oldPlacement isEqualToString:@"bottom"] == [newPlacement isEqualToString:@"bottom"])
+		return;
+
+	NSRect windowFrame = [self windowFrame:self.window.frame adjustedForMarkdownPreviewPaneVisible:NO placement:oldPlacement];
+	windowFrame = [self windowFrame:windowFrame adjustedForMarkdownPreviewPaneVisible:YES placement:newPlacement];
 	if(!NSEqualRects(windowFrame, self.window.frame))
 		[self.window setFrame:windowFrame display:YES];
 }

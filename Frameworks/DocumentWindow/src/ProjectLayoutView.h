@@ -15,7 +15,9 @@
 
 @property (nonatomic) NSSize terminalSize;
 @property (nonatomic) NSString* terminalPlacement; // left / right / bottom
++ (NSString*)terminalPlacementFromUserDefaults;    // the user default, normalized to one of the three
 
 @property (nonatomic) NSSize markdownPreviewSize;
-@property (nonatomic) NSString* markdownPreviewPlacement; // right / bottom
+@property (nonatomic) NSString* markdownPreviewPlacement;  // right / bottom
++ (NSString*)markdownPreviewPlacementFromUserDefaults;     // the user default, normalized to one of the two
 @end

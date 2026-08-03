@@ -57,19 +57,29 @@ NSString* const kUserDefaultsMarkdownPreviewViewSizeKey   = @"markdownPreviewVie
 	[NSNotificationCenter.defaultCenter removeObserver:self];
 }
 
++ (NSString*)terminalPlacementFromUserDefaults
+{
+	NSString* res = [NSUserDefaults.standardUserDefaults stringForKey:kUserDefaultsTerminalPlacementKey];
+	if(![res isEqualToString:@"left"] && ![res isEqualToString:@"bottom"])
+		res = @"right";
+	return res;
+}
+
++ (NSString*)markdownPreviewPlacementFromUserDefaults
+{
+	NSString* res = [NSUserDefaults.standardUserDefaults stringForKey:kUserDefaultsMarkdownPreviewPlacementKey];
+	if(![res isEqualToString:@"bottom"])
+		res = @"right";
+	return res;
+}
+
 - (void)userDefaultsDidChange:(NSNotification*)aNotification
 {
 	self.htmlOutputOnRight = [[NSUserDefaults.standardUserDefaults stringForKey:kUserDefaultsHTMLOutputPlacementKey] isEqualToString:@"right"];
 
-	NSString* terminalPlacement = [NSUserDefaults.standardUserDefaults stringForKey:kUserDefaultsTerminalPlacementKey];
-	if(![terminalPlacement isEqualToString:@"left"] && ![terminalPlacement isEqualToString:@"bottom"])
-		terminalPlacement = @"right";
-	self.terminalPlacement = terminalPlacement;
+	self.terminalPlacement = [ProjectLayoutView terminalPlacementFromUserDefaults];
 
-	NSString* markdownPreviewPlacement = [NSUserDefaults.standardUserDefaults stringForKey:kUserDefaultsMarkdownPreviewPlacementKey];
-	if(![markdownPreviewPlacement isEqualToString:@"bottom"])
-		markdownPreviewPlacement = @"right";
-	self.markdownPreviewPlacement = markdownPreviewPlacement;
+	self.markdownPreviewPlacement = [ProjectLayoutView markdownPreviewPlacementFromUserDefaults];
 }
 
 - (BOOL)terminalAtBottom { return _terminalView && [_terminalPlacement isEqualToString:@"bottom"]; }
