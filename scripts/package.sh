@@ -3,10 +3,15 @@ set -euo pipefail
 
 # ── Configuration ────────────────────────────────────────────────────
 APP_NAME="TextMate"
-IDENTITY="Developer ID Application"
-NOTARY_TEAM_ID="${NOTARY_TEAM_ID:?Set NOTARY_TEAM_ID env var to your Apple team ID}"
-NOTARY_APPLE_ID="${NOTARY_APPLE_ID:?Set NOTARY_APPLE_ID env var to your Apple ID email}"
-NOTARY_PASSWORD="${NOTARY_PASSWORD:?Set NOTARY_PASSWORD env var (app-specific password from appleid.apple.com)}"
+# Machine-local overrides (untracked); can set CS_IDENTITY and NOTARY_PROFILE.
+CONF="$(cd "$(dirname "$0")" && pwd)/package.conf"
+[ -f "$CONF" ] && source "$CONF"
+# With several Developer ID certs in the keychain the bare prefix is
+# ambiguous and codesign refuses it — set the full string in package.conf.
+IDENTITY="${CS_IDENTITY:-Developer ID Application}"
+# One-time setup: xcrun notarytool store-credentials notarytool \
+#   --apple-id <apple-id> --team-id <team-id>   (prompts for app-specific password)
+NOTARY_PROFILE="${NOTARY_PROFILE:-notarytool}"
 
 GIT_TAG=$(git describe --tags --exact-match 2>/dev/null || true)
 if [ -z "$GIT_TAG" ]; then
@@ -39,9 +44,7 @@ ditto -c -k --keepParent "$APP_PATH" "$NOTARIZE_ZIP"
 
 echo "==> Submitting for notarization (this may take a few minutes)"
 NOTARY_OUTPUT=$(xcrun notarytool submit "$NOTARIZE_ZIP" \
-  --apple-id "$NOTARY_APPLE_ID" \
-  --team-id "$NOTARY_TEAM_ID" \
-  --password "$NOTARY_PASSWORD" \
+  --keychain-profile "$NOTARY_PROFILE" \
   --wait 2>&1) || true
 echo "$NOTARY_OUTPUT"
 
@@ -52,9 +55,7 @@ if ! echo "$NOTARY_OUTPUT" | grep -q "status: Accepted"; then
   echo "Notarization failed. Fetching log..."
   if [ -n "$NOTARY_ID" ]; then
     xcrun notarytool log "$NOTARY_ID" \
-      --apple-id "$NOTARY_APPLE_ID" \
-      --team-id "$NOTARY_TEAM_ID" \
-      --password "$NOTARY_PASSWORD" 2>&1 || true
+      --keychain-profile "$NOTARY_PROFILE" 2>&1 || true
   fi
   exit 1
 fi

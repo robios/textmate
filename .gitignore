@@ -6,3 +6,4 @@ build*/
 CMakeUserPresets.json
 build-output.log
 *.bak
+scripts/package.conf
