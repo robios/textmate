@@ -74,7 +74,7 @@ function(textmate_codesign TARGET IDENTITY)
   add_custom_command(TARGET ${TARGET} POST_BUILD
     COMMAND xcrun codesign --sign "${IDENTITY}" ${_flags}
       "$<TARGET_BUNDLE_DIR:${TARGET}>"
-    COMMENT "Codesign: ${TARGET}")
+    COMMENT "Codesign: ${TARGET}" VERBATIM)
 endfunction()
 
 # Sign a plain executable or dylib (non-bundle) after it is built
@@ -87,7 +87,7 @@ function(textmate_codesign_file TARGET IDENTITY FILE_PATH)
   endif()
   add_custom_command(TARGET ${TARGET} POST_BUILD
     COMMAND xcrun codesign --sign "${IDENTITY}" ${_flags} "${FILE_PATH}"
-    COMMENT "Codesign file: ${FILE_PATH}")
+    COMMENT "Codesign file: ${FILE_PATH}" VERBATIM)
 endfunction()
 
 # Embed a target into an app bundle.
