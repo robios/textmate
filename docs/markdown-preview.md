@@ -23,6 +23,47 @@ re-renders the buffer rather than reloading a page.
 *Preferences → Projects → Show Markdown preview* chooses whether the pane sits
 to the right of the text view or below it.
 
+## Math
+
+TeX math renders through [KaTeX](https://katex.org), which is vendored inside
+the app — the preview works fully offline, nothing is fetched from a CDN. The
+delimiters are GitHub's:
+
+* **Display math** is block-position `$$…$$`: either a line whose only
+  non-whitespace content is `$$…$$`, or a standalone `$$` line opening the
+  block and another closing it, with the formula on the lines between. `$$`
+  embedded in prose stays literal.
+* **Inline math** is `$…$`, where the opening `$` is not followed by
+  whitespace or a digit and the closing `$` is not preceded by whitespace.
+  Empty spans don't count. The digit rule keeps prices like "$5 and $10" out
+  of math.
+* `\$` is a literal dollar sign.
+* Code spans and code blocks (fenced or indented) are immune — a `$` inside
+  them is never a delimiter.
+
+Unsupported TeX renders as the source text in KaTeX's error color rather than
+failing the page. Long display equations scroll horizontally inside their own
+box, like wide tables.
+
+Because the math pipeline lives in the shared renderer, `tm_markdown`
+fragments now carry math as elements like
+`<span data-tm-math="inline">\alpha_i^2</span>` (a `div` with
+`data-tm-math="display"` for display math), whose text content is the
+HTML-escaped TeX source. A page that embeds a fragment without loading KaTeX
+shows the raw TeX as plain text.
+
+A fragment may also carry macro definitions for KaTeX in a single
+
+    <script type="application/json" id="tm-katex-macros">{"\\R": "\\mathbb{R}"}</script>
+
+element — at most one per fragment, a JSON object mapping macro names to
+replacement strings, which the preview passes to KaTeX as its `macros`
+option. The JSON must be HTML-safe-serialized: every `<` in string values
+encoded as `\u003c` (likewise U+2028/U+2029), so a value containing
+`</script>` cannot terminate the element during HTML parsing. A malformed,
+duplicate, or wrongly shaped element is ignored with a console warning; the
+fragment itself still displays.
+
 ## Preview themes
 
 By default the preview uses the editor's theme, so a dark editor gets a dark

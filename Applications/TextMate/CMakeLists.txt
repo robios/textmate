@@ -98,6 +98,9 @@ target_xib_sources(TextMate "English.lproj"
 #     --output-partial-info-plist /dev/null --minimum-deployment-target 14.0 \
 #     --platform macosx --target-device mac
 # (then delete the stray resources/AppIcon.icns actool also emits)
+# Directories in resources/ are copied into the bundle wholesale ("TextMate
+# Help", and resources/katex — the vendored KaTeX the Markdown preview loads
+# for math rendering; version and trim notes in resources/katex/VERSION).
 file(GLOB _icons icons/*.icns)
 file(GLOB _resources resources/*)
 set(_all_resources ${_icons} ${_resources})

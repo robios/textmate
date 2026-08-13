@@ -1,0 +1,6 @@
+KaTeX 0.16.40 (https://katex.org, https://github.com/KaTeX/KaTeX)
+
+Vendored from the npm package `katex` 0.16.40: dist/katex.min.css,
+dist/katex.min.js, dist/fonts/*.woff2, and the MIT LICENSE. The .woff and
+.ttf font fallbacks are dropped — WebKit on macOS 14+ (our minimum) always
+selects the woff2 source from the CSS @font-face lists.

@@ -1,4 +1,5 @@
 #include "markdown_render.h"
+#include "math_spans.h"
 
 #include <cmark-gfm.h>
 #include <cmark-gfm-extension_api.h>
@@ -9,6 +10,10 @@ namespace markdown
 {
 	std::string to_html (std::string const& markdown, bool sourcePositions)
 	{
+		// Mask TeX math before cmark runs so emphasis parsing can’t split it;
+		// the tokens come back as data-tm-math elements after rendering.
+		math_extraction_t const extraction = extract_math(markdown);
+
 		// UNSAFE passes raw HTML through, mirroring GitHub’s pipeline where the
 		// tagfilter extension then neuters the dangerous tags.
 		int const options = CMARK_OPT_UNSAFE | (sourcePositions ? CMARK_OPT_SOURCEPOS : 0);
@@ -30,7 +35,7 @@ namespace markdown
 				cmark_parser_attach_syntax_extension(parser, extension);
 		}
 
-		cmark_parser_feed(parser, markdown.data(), markdown.size());
+		cmark_parser_feed(parser, extraction.source.data(), extraction.source.size());
 		cmark_node* document = cmark_parser_finish(parser);
 
 		char* html = cmark_render_html(document, options, cmark_parser_get_syntax_extensions(parser));
@@ -40,7 +45,7 @@ namespace markdown
 		cmark_node_free(document);
 		cmark_parser_free(parser);
 
-		return res;
+		return restore_math(std::move(res), extraction.spans, sourcePositions);
 	}
 
 } /* markdown */

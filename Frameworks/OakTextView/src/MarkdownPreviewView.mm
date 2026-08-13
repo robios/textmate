@@ -224,14 +224,40 @@ namespace
 	};
 }
 
+// Percent-encoded tm-file URL for an absolute path, so spaces in the app’s
+// location survive the trip through the shell’s href/src attributes.
+static NSString* TMFileURLString (NSString* path)
+{
+	NSURLComponents* components = [NSURLComponents new];
+	components.scheme = @"tm-file";
+	components.host   = @"";
+	components.path   = path;
+	return components.URL.absoluteString;
+}
+
 // The static page loaded once per baseURL; all updates patch #content. CSS
 // falls back to prefers-color-scheme palettes unless the editor theme has
 // injected --tm-bg/--tm-fg. TMPreview.scrollToLine implements the one-way
 // editor → preview sync via cmark’s data-sourcepos attributes, and stands
 // down for a second whenever the user scrolls the preview themselves.
-static NSString* const kMarkdownPreviewShell =
-	@"<!DOCTYPE html><html><head><meta charset='utf-8'>"
-	 "<style>"
+// Assembled at runtime because the KaTeX tags reference the app bundle’s
+// Resources/katex by absolute tm-file:// URL — same scheme handler that
+// serves relative images; the assets load once per shell load, so per-render
+// cost is zero. Math arrives in fragments as data-tm-math elements (see
+// docs/markdown-preview.md) and is rendered by setContent’s math pass;
+// missing KaTeX assets degrade to the raw TeX as plain text.
+static NSString* MarkdownPreviewShell ()
+{
+	static NSString* shell;
+	static dispatch_once_t onceToken;
+	dispatch_once(&onceToken, ^{
+		NSString* katexDir = [NSBundle.mainBundle.resourceURL URLByAppendingPathComponent:@"katex" isDirectory:YES].path;
+		NSString* head = [NSString stringWithFormat:@"<!DOCTYPE html><html><head><meta charset='utf-8'>"
+			"<link rel=\"stylesheet\" href=\"%@\"><script src=\"%@\"></script>",
+			TMFileURLString([katexDir stringByAppendingPathComponent:@"katex.min.css"]),
+			TMFileURLString([katexDir stringByAppendingPathComponent:@"katex.min.js"])];
+		shell = [head stringByAppendingString:
+	@"<style>"
 	 ":root { color-scheme: light dark; --bg: #ffffff; --fg: #1f2328; --muted: #59636e; --border: #d1d9e0; --code-bg: rgba(129,139,152,0.15); }"
 	 "@media (prefers-color-scheme: dark) { :root { --bg: #1e1e1e; --fg: #e8e8e8; --muted: #9198a1; --border: #3d444d; } }"
 	 "html { background: var(--tm-bg, var(--bg)); }"
@@ -258,10 +284,31 @@ static NSString* const kMarkdownPreviewShell =
 	 "img { max-width: 100%; }"
 	 "hr { border: none; border-top: 1px solid var(--border); }"
 	 "ul.contains-task-list { list-style: none; padding-left: 1em; }"
+	 "[data-tm-math='display'] { margin: 1em 0; text-align: center; overflow-x: auto; }" // long equations scroll in their own box, like wide tables — the page never scrolls horizontally
+	 ".katex-display { margin: 0; }" // the display margin lives on our wrapper; KaTeX’s own would double it
 	 "</style>"
 	 "<script>"
 	 "window.TMPreview = {"
-	 "  setContent: function(html) { document.getElementById('content').innerHTML = html; },"
+	 "  setContent: function(html) {"
+	 "    document.getElementById('content').innerHTML = html;"
+	 "    if(!window.katex) return;" // assets missing: leave the raw TeX as plain text, never touch the console
+	 "    var macros = {};"
+	 "    var scripts = document.querySelectorAll('#content script#tm-katex-macros');" // at most one per fragment; anything else is ignored wholesale
+	 "    if(scripts.length == 1) {"
+	 "      try {"
+	 "        var parsed = JSON.parse(scripts[0].textContent);"
+	 "        if(parsed && parsed.constructor === Object && Object.values(parsed).every(function(v) { return typeof v === 'string'; }))"
+	 "            macros = parsed;"
+	 "        else  console.warn('tm-katex-macros: expected an object with string values');"
+	 "      } catch(e) { console.warn('tm-katex-macros: ' + e.message); }"
+	 "    } else if(scripts.length > 1) {"
+	 "      console.warn('tm-katex-macros: more than one element');"
+	 "    }"
+	 "    document.querySelectorAll('#content [data-tm-math]').forEach(function(el) {"
+	 "      try { katex.render(el.textContent, el, { displayMode: el.dataset.tmMath === 'display', throwOnError: false, macros: macros }); }"
+	 "      catch(e) { console.warn('katex: ' + e.message); }" // throwOnError:false already shows bad input in the error color; anything past that must not kill the remaining spans
+	 "    });"
+	 "  },"
 	 "  scrollToLine: function(line, atEnd) {"
 	 "    if(Date.now() < (window.__tmUserScrollUntil || 0)) return;"
 	 "    if(atEnd) { window.scrollTo(0, document.body.scrollHeight); return; }"
@@ -283,7 +330,10 @@ static NSString* const kMarkdownPreviewShell =
 	 "  var el = ev.target.closest('[data-sourcepos]');"
 	 "  if(el) webkit.messageHandlers.tmPreview.postMessage(el.getAttribute('data-sourcepos').split('-')[0]);" // start of range, “line:column”
 	 "});"
-	 "</script></head><body><article id='content'></article></body></html>";
+	 "</script></head><body><article id='content'></article></body></html>"];
+	});
+	return shell;
+}
 
 static NSString* JSONStringLiteral (NSString* aString)
 {
@@ -485,7 +535,7 @@ static NSString* CSSColorString (NSColor* aColor)
 		return;
 	_shellLoaded = NO;
 	_baseURL = [self documentBaseURL];
-	[_webView loadHTMLString:kMarkdownPreviewShell baseURL:_baseURL];
+	[_webView loadHTMLString:MarkdownPreviewShell() baseURL:_baseURL];
 }
 
 - (NSURL*)documentBaseURL
