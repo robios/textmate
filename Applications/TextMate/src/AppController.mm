@@ -312,7 +312,7 @@ BOOL HasDocumentWindow (NSArray* windows)
 		},
 		{ @"Navigate",
 			.submenu = {
-				{ @"Command Palette…", @selector(showCommandPalette:), @"P", .modifierFlags = NSEventModifierFlagCommand|NSEventModifierFlagShift },
+				{ @"Command Palette…", @selector(showCommandPalette:), @"c", .modifierFlags = NSEventModifierFlagCommand|NSEventModifierFlagControl },
 				{ /* -------- */ },
 				{ @"Jump to Line…",              @selector(orderFrontGoToLinePanel:),      @"l" },
 				{ @"Jump to Symbol…",            @selector(showSymbolChooser:),            @"T" },

@@ -1,6 +1,6 @@
 # Command Palette
 
-*Navigate → Command Palette…* (⇧⌘P) opens a fuzzy-search field over the front
+*Navigate → Command Palette…* (⌃⌘C) opens a fuzzy-search field over the front
 window. It is one field with several modes; the first character of the query
 picks the mode.
 

@@ -27,7 +27,7 @@ language bundle. → [docs/lsp.md](docs/lsp.md)
 **GitHub Copilot.** Inline suggestions as ghost text, off by default, driven by
 `copilot-language-server`. → [docs/lsp.md](docs/lsp.md#github-copilot)
 
-**Command palette.** ⇧⌘P over commands, symbols, recent projects, bundle items,
+**Command palette.** ⌃⌘C over commands, symbols, recent projects, bundle items,
 lines and editor settings, ranked by what you actually use. →
 [docs/command-palette.md](docs/command-palette.md)
 
