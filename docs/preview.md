@@ -168,6 +168,12 @@ the pane was just switched to a different document and that document fails
 before producing any good render, the page is cleared: the previous
 document's body must not sit under the new document's header.
 
+The ⚠︎ follows the newest result rather than what is on screen: it appears when
+a run fails and stands down when a later run succeeds. A good render that only
+reaches the page after the failure — because it was still waiting for the
+preview page itself to finish loading — leaves the ⚠︎ up, so a body older than
+the failure is never shown as though it were current.
+
 A converter runs only while the preview pane is open — never on merely
 opening a file — and closing the pane kills it. `previewCommand` executes
 bundle-provided code at the same trust level as every bundle command.

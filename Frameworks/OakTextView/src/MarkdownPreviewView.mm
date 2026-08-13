@@ -849,7 +849,10 @@ static NSString* CSSColorString (NSColor* aColor)
 			dispatch_async(dispatch_get_main_queue(), ^{
 				MarkdownPreviewView* strongSelf = weakSelf;
 				if(strongSelf && generation == strongSelf->_renderGeneration)
+				{
+					[strongSelf setExternalDiagnostic:nil]; // this render is the newer word on the document, from the moment it arrives — not from the moment it reaches the page
 					[strongSelf applyContent:html];
+				}
 			});
 		});
 		return;
@@ -925,6 +928,7 @@ static NSString* CSSColorString (NSColor* aColor)
 {
 	if(result.status == preview::run_result_t::status_t::success)
 	{
+		[self setExternalDiagnostic:nil]; // as above: the run that succeeded supersedes the last failure here, where it is received
 		[self applyContent:to_ns(result.html)];
 	}
 	else if(result.status != preview::run_result_t::status_t::cancelled) // cancellation of a stale generation is silent
@@ -947,9 +951,13 @@ static NSString* CSSColorString (NSColor* aColor)
 	}
 }
 
+// Puts a render in the page, or — before the shell is up — keeps it until there
+// is a page to put it in. It says nothing about the ⚠︎ on purpose: which render
+// is the newest word on the document is settled when results are received, and
+// the pending apply after a shell load replays a render received earlier, which
+// must not take down a failure that arrived after it.
 - (void)applyContent:(NSString*)html
 {
-	[self setExternalDiagnostic:nil]; // fresh content supersedes the last failure
 	if(!_shellLoaded)
 	{
 		_pendingContent = html;

@@ -1168,11 +1168,25 @@ void test_pending_survives_same_document_failure_before_shell_loads ()
 				// shell finishes it is what shows — not the FAIL buffer. On the
 				// pre-fix code the failure would have cleared the pending render and
 				// the shell load would render the FAIL buffer instead, so `good`
-				// would never appear. (Applying the pending render clears the
-				// diagnostic, so the warning is not asserted here — see the report.)
+				// would never appear.
 				NSString* html = wait_for_content(pane, good, 20);
 				OAK_ASSERT_NE([html rangeOfString:good].location, NSNotFound);
 				OAK_ASSERT_EQ([html rangeOfString:@"FAIL-TRANSIENT"].location, NSNotFound);
+
+				// …and showing it does not take the ⚠︎ down with it: the failure is
+				// the newer information — the render now on screen was received
+				// before it — and the reader has to be told that what they are
+				// looking at is not the current buffer. Nothing renders after this
+				// point (the immediate render replaced the debounced one), so the
+				// state is settled, not merely not-yet-updated.
+				OAK_ASSERT(pane_state(pane).hasDiagnostic);
+
+				__block BOOL warned = NO;
+				on_main(^{
+					NSButton* button = warning_button_in(pane);
+					warned = button && !button.hidden;
+				});
+				OAK_ASSERT(warned);
 			}
 
 			on_main(^{
