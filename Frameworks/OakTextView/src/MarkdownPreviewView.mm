@@ -446,6 +446,7 @@ static NSString* CSSColorString (NSColor* aColor)
 	BOOL _shellLoaded;
 	NSURL* _baseURL;
 	NSString* _pendingContent;
+	NSUUID* _pendingContentDocumentIdentifier; // whose render is waiting for the shell to load — paired with _pendingContent, set and cleared together
 	NSUUID* _renderedDocumentIdentifier; // whose render the page shows — nil while the page is empty; decides whether a failure may keep it
 
 	std::unique_ptr<preview_buffer_callback_t> _bufferCallback;
@@ -647,6 +648,8 @@ static NSString* CSSColorString (NSColor* aColor)
 		return;
 	_shellLoaded = NO;
 	_renderedDocumentIdentifier = nil; // the fresh shell shows nobody’s render
+	_pendingContent = nil;             // and nobody’s render is waiting for it either
+	_pendingContentDocumentIdentifier = nil;
 	_baseURL = [self documentBaseURL];
 	[_webView loadHTMLString:MarkdownPreviewShell() baseURL:_baseURL];
 }
@@ -896,6 +899,7 @@ static NSString* CSSColorString (NSColor* aColor)
 	++_renderGeneration;
 	[self cancelExternalRender];
 	_pendingContent = nil; // rendered for the page being left, not the one loading
+	_pendingContentDocumentIdentifier = nil;
 }
 
 // Any thread; never waits on the render queue — the runner’s cancel is
@@ -921,10 +925,16 @@ static NSString* CSSColorString (NSColor* aColor)
 	{
 		// A failure never paints content — no modal, no flash; the header’s ⚠︎
 		// and the log carry the diagnostic. The page only keeps what it shows
-		// when that is this document’s own last good render: content rendered
-		// from a previously previewed document is cleared instead, so a failing
-		// first render never leaves this document’s header over its body.
-		if(![_renderedDocumentIdentifier isEqual:_document.identifier])
+		// when that belongs to this document — its displayed render, or a good
+		// render of it still waiting for the shell to load (before that first
+		// load nothing is displayed yet, so the pending render is the only
+		// record of this document’s own content). Content rendered from a
+		// previously previewed document matches neither and is cleared, so a
+		// failing first render never leaves another document’s body under this
+		// one’s header.
+		BOOL const keepsDisplayed = [_renderedDocumentIdentifier isEqual:_document.identifier];
+		BOOL const keepsPending   = [_pendingContentDocumentIdentifier isEqual:_document.identifier];
+		if(!keepsDisplayed && !keepsPending)
 			[self clearContent];
 		os_log_error(OS_LOG_DEFAULT, "Preview command failed: %{public}s", result.diagnostic.c_str());
 		[self setExternalDiagnostic:to_ns(result.diagnostic) ?: @"Preview command failed."];
@@ -937,6 +947,7 @@ static NSString* CSSColorString (NSColor* aColor)
 	if(!_shellLoaded)
 	{
 		_pendingContent = html;
+		_pendingContentDocumentIdentifier = _document.identifier; // whose render this is, so a failure before the shell loads can tell it is this document’s own
 		return;
 	}
 	_renderedDocumentIdentifier = _document.identifier;
@@ -961,6 +972,7 @@ static NSString* CSSColorString (NSColor* aColor)
 - (void)clearContent
 {
 	_pendingContent = nil; // rendered for the page being left — a cleared page must not resurrect it on shell load
+	_pendingContentDocumentIdentifier = nil;
 	_renderedDocumentIdentifier = _document.identifier;
 	if(_shellLoaded)
 		[_webView evaluateJavaScript:@"TMPreview.setContent('');" completionHandler:nil];
@@ -1258,9 +1270,16 @@ static NSString* DiagnosticPageHTML (NSString* title, NSString* diagnostic)
 
 	if(_pendingContent)
 	{
-		NSString* content = _pendingContent;
+		NSString* content         = _pendingContent;
+		NSUUID* contentIdentifier = _pendingContentDocumentIdentifier;
 		_pendingContent = nil;
+		_pendingContentDocumentIdentifier = nil;
 		[self applyContent:content];
+		// applyContent attributes the page to the current document; the pending
+		// render belongs to whoever produced it (the same document in every real
+		// flow, since a switch drops pending — but attribute it explicitly).
+		if(contentIdentifier)
+			_renderedDocumentIdentifier = contentIdentifier;
 	}
 	else if(_active && !_attachedBuffer)
 	{

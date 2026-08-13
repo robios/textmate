@@ -171,6 +171,33 @@ static NSString* wait_for_pasteboard (NSString* expected, NSTimeInterval timeout
 	return value;
 }
 
+// A snapshot of the pane’s private state. Reproducing the reviewer’s ordering
+// — a good render going pending and a same-document failure both arriving
+// before the shell finishes loading — needs finer observation than the DOM
+// offers: pending content is not in the page, and the window is a few tens of
+// milliseconds. KVC reaches the ivars directly (accessInstanceVariablesDirectly
+// defaults to YES), read in one main-thread hop for a consistent snapshot.
+struct pane_state_t { BOOL shellLoaded; BOOL hasPending; BOOL hasRendered; BOOL hasDiagnostic; };
+
+static pane_state_t pane_state (MarkdownPreviewView* pane)
+{
+	__block pane_state_t state = {};
+	on_main(^{
+		state.shellLoaded   = [[pane valueForKey:@"shellLoaded"] boolValue];
+		state.hasPending    = [pane valueForKey:@"pendingContent"] != nil;
+		state.hasRendered   = [pane valueForKey:@"renderedDocumentIdentifier"] != nil;
+		state.hasDiagnostic = [pane valueForKey:@"externalDiagnostic"] != nil;
+	});
+	return state;
+}
+
+// Spins the main run loop for up to `seconds`, so queued render completions run
+// while the (asynchronous) shell load is deliberately left mid-flight.
+static void pump_run_loop (NSTimeInterval seconds)
+{
+	on_main(^{ [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:seconds]]; });
+}
+
 static NSString* page_content (MarkdownPreviewView* pane)
 {
 	id value = evaluate_js(pane, @"(document.getElementById('content') || {}).innerHTML || ''");
@@ -904,4 +931,115 @@ void test_page_world_spoof_cannot_write_pasteboard ()
 		window.contentView = nil;
 		[doc close];
 	});
+}
+
+// The reviewer’s ordering: while the shell is still loading, document A’s render
+// succeeds and goes pending; before the shell finishes, A’s next render fails.
+// The failure must judge itself against the pending render’s document — which is
+// A’s own — and keep it, so the good render survives to be shown once the shell
+// loads. Nothing is displayed yet at failure time, so without the pending
+// identity the failure would read “another document’s first render failed” and
+// clear the page.
+//
+// The window is a race against the asynchronous shell load, so each attempt runs
+// only if it actually reproduced the ordering (a failure judged while the shell
+// was still unloaded and nothing displayed); mis-timed attempts retry. Against
+// the pre-fix code the ordering never reproduces — the failure always clears the
+// pending render and stamps the page as the current document — so `reproduced`
+// stays false and the test fails.
+void test_pending_survives_same_document_failure_before_shell_loads ()
+{
+	BOOL reproduced = NO;
+
+	for(int attempt = 0; attempt < 60 && !reproduced; ++attempt)
+	{
+		@autoreleasepool
+		{
+			NSString* good = [NSString stringWithFormat:@"PENDING-GOOD-%d", attempt];
+
+			__block NSWindow* window;
+			__block MarkdownPreviewView* pane;
+			__block OakDocument* doc;
+
+			on_main(^{
+				window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 400, 600) styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+				pane = [[MarkdownPreviewView alloc] initWithFrame:NSMakeRect(0, 0, 400, 600)];
+				window.contentView = pane;
+
+				doc = [OakDocument documentWithString:good fileType:@"source.pane-test-flaky" customName:@"pending-fail-test"];
+				[doc loadModalForWindow:nil completionHandler:nil];
+
+				pane.document = doc;   // render #1 (generation N), a success
+				pane.active   = YES;
+			});
+
+			// Let render #1’s success reach applyContent — which, with the shell
+			// still loading, stores it as pending. render #1 completes well before
+			// the shell finishes, so this settles into “pending, nothing shown,
+			// shell unloaded” without the shell winning.
+			pane_state_t state = {};
+			NSDate* deadline = [NSDate dateWithTimeIntervalSinceNow:5];
+			while([deadline timeIntervalSinceNow] > 0)
+			{
+				pump_run_loop(0.002);
+				state = pane_state(pane);
+				if(state.hasPending || state.shellLoaded)
+					break;
+			}
+
+			BOOL const pendingBeforeShell = state.hasPending && !state.shellLoaded && !state.hasRendered;
+			if(pendingBeforeShell)
+			{
+				// Fail the SAME document before the shell finishes: change the
+				// buffer to a FAIL word and drive an immediate (non-debounced)
+				// render through the save path.
+				on_main(^{
+					doc.content = @"FAIL-TRANSIENT";
+					[NSNotificationCenter.defaultCenter postNotificationName:OakDocumentDidSaveNotification object:doc]; // render #2 (generation N+1), a failure
+				});
+
+				// Watch the failure land. Reproduced only if it is judged while
+				// nothing is displayed and the shell is still unloaded (the pending
+				// path): the fix keeps the pending render, so no rendered id and no
+				// page appear from the failure itself. If the shell loads first the
+				// failure is judged against displayed content instead — retry.
+				deadline = [NSDate dateWithTimeIntervalSinceNow:5];
+				while([deadline timeIntervalSinceNow] > 0)
+				{
+					pump_run_loop(0.002);
+					state = pane_state(pane);
+					if(state.hasDiagnostic && !state.hasRendered && !state.shellLoaded)
+					{
+						reproduced = YES;
+						break;
+					}
+					if(state.shellLoaded || state.hasRendered)
+						break; // shell (or a clear) won the race — not the pending path
+				}
+			}
+
+			if(reproduced)
+			{
+				// The warning did appear (the reproduced gate required the failure’s
+				// diagnostic), and the pending good render survived it: once the
+				// shell finishes it is what shows — not the FAIL buffer. On the
+				// pre-fix code the failure would have cleared the pending render and
+				// the shell load would render the FAIL buffer instead, so `good`
+				// would never appear. (Applying the pending render clears the
+				// diagnostic, so the warning is not asserted here — see the report.)
+				NSString* html = wait_for_content(pane, good, 20);
+				OAK_ASSERT_NE([html rangeOfString:good].location, NSNotFound);
+				OAK_ASSERT_EQ([html rangeOfString:@"FAIL-TRANSIENT"].location, NSNotFound);
+			}
+
+			on_main(^{
+				pane.active = NO;
+				pane.document = nil;
+				window.contentView = nil;
+				[doc close];
+			});
+		}
+	}
+
+	OAK_ASSERT(reproduced);
 }
