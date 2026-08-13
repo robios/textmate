@@ -383,10 +383,15 @@ static NSString* MarkdownPreviewShell ()
 // read its text — but shares no JS objects with the page, and the tmPreviewCopy
 // message channel it posts to is registered ONLY in this world, so page-world
 // JS (including anything a document injects through CMARK_OPT_UNSAFE) cannot
-// reach it. The app calls TMPreviewCopy.decorate() after each setContent; the
-// button never calls stopPropagation, so the page-world click listener still
-// sees the click and holds off scroll sync — it just ignores the .tm-copy
-// target instead of jumping.
+// reach it. What the shared DOM does leave open is the button itself: page-world
+// script can click it and have this listener post on its behalf, which is why
+// the listener copies only for a trusted event — one WebKit made from a real
+// user gesture. Scripted clicks (.click(), a synthesized MouseEvent) are not
+// trusted in any world, and isTrusted cannot be forged.
+// The app calls TMPreviewCopy.decorate() after each setContent; the button never
+// calls stopPropagation, so the page-world click listener still sees the click
+// and holds off scroll sync — it just ignores the .tm-copy target instead of
+// jumping.
 static NSString* MarkdownPreviewCopyWorldScript ()
 {
 	return
@@ -406,6 +411,7 @@ static NSString* MarkdownPreviewCopyWorldScript ()
 		 "      button.innerHTML = '<svg class=\"tm-copy-icon\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect x=\"5.5\" y=\"5.5\" width=\"8\" height=\"8\" rx=\"1.5\"/><path d=\"M10.5 3.5v-1a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h1\"/></svg>'"
 		 "                       + '<svg class=\"tm-copy-check\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M3 8.5l3.5 3.5L13 4.5\"/></svg>';"
 		 "      button.addEventListener('click', function(ev) {"
+		 "        if(!ev.isTrusted) return;" // the worlds share the DOM, so page-world script can find this button and click it — a copy the reader never asked for; isTrusted is the one property no script in any world can set, so it is the boundary
 		 "        try { webkit.messageHandlers.tmPreviewCopy.postMessage(text); }"
 		 "        catch(e) { return; }" // no handler, no feedback: the checkmark must not claim a copy that never happened
 		 "        button.classList.add('tm-copied');"

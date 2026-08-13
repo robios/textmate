@@ -139,6 +139,66 @@ static id evaluate_js_in_world (MarkdownPreviewView* pane, WKContentWorld* world
 	return value;
 }
 
+// The copy control is created by the copy world’s decorate pass, one round
+// trip behind the content it belongs to — polled from that world, whose DOM it
+// is (a document script can shadow the page world’s querySelector).
+static BOOL wait_for_copy_button (MarkdownPreviewView* pane, NSTimeInterval timeout)
+{
+	NSDate* deadline = [NSDate dateWithTimeIntervalSinceNow:timeout];
+	while([deadline timeIntervalSinceNow] > 0)
+	{
+		id value = evaluate_js_in_world(pane, [WKContentWorld worldWithName:kCopyWorldName], @"!!document.querySelector('#content button.tm-copy')");
+		if([value respondsToSelector:@selector(boolValue)] && [value boolValue])
+			return YES;
+		usleep(100'000);
+	}
+	return NO;
+}
+
+// A real click on the copy control. Scripted clicks are inert by design, so the
+// only way to exercise the legitimate path is to hand WebKit native mouse
+// events and let it produce the DOM click itself — that is what makes the event
+// trusted. The button’s viewport rect is read in the copy world, then mapped
+// through the web view’s flippedness to window coordinates, which is the frame
+// NSEvent carries.
+static BOOL native_click_copy_button (MarkdownPreviewView* pane)
+{
+	id value = evaluate_js_in_world(pane, [WKContentWorld worldWithName:kCopyWorldName],
+		@"(function(){"
+		 "  var button = document.querySelector('#content button.tm-copy');"
+		 "  if(!button) return '';"
+		 "  var rect = button.getBoundingClientRect();"
+		 "  return JSON.stringify([rect.left + rect.width / 2, rect.top + rect.height / 2]);"
+		 "})()");
+	if(![value isKindOfClass:[NSString class]] || ![(NSString*)value length])
+		return NO;
+
+	NSArray* center = [NSJSONSerialization JSONObjectWithData:[(NSString*)value dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
+	if(center.count != 2)
+		return NO;
+
+	__block BOOL delivered = NO;
+	on_main(^{
+		WKWebView* webView = web_view_in(pane);
+		NSWindow* window   = webView.window;
+		if(!webView || !window)
+			return;
+
+		CGFloat const x = [center[0] doubleValue], y = [center[1] doubleValue];
+		NSPoint const viewPoint = webView.isFlipped ? NSMakePoint(x, y) : NSMakePoint(x, NSHeight(webView.bounds) - y);
+		NSPoint const location  = [webView convertPoint:viewPoint toView:nil];
+
+		NSEvent* (^mouseEvent)(NSEventType) = ^NSEvent*(NSEventType type){
+			return [NSEvent mouseEventWithType:type location:location modifierFlags:0 timestamp:NSProcessInfo.processInfo.systemUptime windowNumber:window.windowNumber context:nil eventNumber:0 clickCount:1 pressure:type == NSEventTypeLeftMouseDown ? 1 : 0];
+		};
+
+		[webView mouseDown:mouseEvent(NSEventTypeLeftMouseDown)];
+		[webView mouseUp:mouseEvent(NSEventTypeLeftMouseUp)];
+		delivered = YES;
+	});
+	return delivered;
+}
+
 // Seeds the general pasteboard with `sentinel`, from the main run loop.
 static void seed_pasteboard (NSString* sentinel)
 {
@@ -671,7 +731,9 @@ void test_warning_click_opens_diagnostic_window ()
 
 // Each rendered code block gains exactly one copy control, whose click ends
 // with the block’s text on the general pasteboard: the app side writes it,
-// because navigator.clipboard is unreliable in a custom-scheme page.
+// because navigator.clipboard is unreliable in a custom-scheme page. The click
+// has to be a real one — delivered as native mouse events, since only WebKit
+// can produce the trusted DOM event the control requires.
 void test_copy_button_copies_code_block ()
 {
 	__block NSWindow* window;
@@ -708,14 +770,18 @@ void test_copy_button_copies_code_block ()
 	std::lock_guard<std::mutex> lock(pasteboard_mutex());
 	seed_pasteboard(@"sentinel-before-copy");
 
-	// A page-world .click() still reaches the button’s listener, which now lives
-	// in the isolated world: it flips to the checkmark and posts the block text
-	// on its own channel, and the app writes the pasteboard asynchronously.
-	id clicked = evaluate_js(pane, @"(function(){ var button = document.querySelector('#content button.tm-copy'); button.click(); return button.classList.contains('tm-copied'); })()");
-	OAK_ASSERT([clicked respondsToSelector:@selector(boolValue)] && [clicked boolValue]);
+	OAK_ASSERT(wait_for_copy_button(pane, 10));
+	OAK_ASSERT(native_click_copy_button(pane));
 
+	// The listener posts the block text on the copy world’s own channel and the
+	// app writes the pasteboard, asynchronously.
 	NSString* pasteboard = wait_for_pasteboard(@"copy me XYZ789", 10);
 	OAK_ASSERT_EQ(to_s(pasteboard), "copy me XYZ789");
+
+	// …and the click is confirmed in the page: the checkmark is added right
+	// after the post, so it is there by the time the write has landed.
+	id checked = evaluate_js_in_world(pane, [WKContentWorld worldWithName:kCopyWorldName], @"!!document.querySelector('#content button.tm-copy.tm-copied')");
+	OAK_ASSERT([checked respondsToSelector:@selector(boolValue)] && [checked boolValue]);
 
 	on_main(^{
 		pane.active = NO;
@@ -751,11 +817,13 @@ void test_selection_click_does_not_jump ()
 	NSString* html = wait_for_content(pane, @"select me PQR456", 20);
 	OAK_ASSERT_NE([html rangeOfString:@"select me PQR456"].location, NSNotFound);
 
-	// The copy button’s click (last step) now runs its listener in the isolated
-	// world and writes the pasteboard, so keep it off the other pasteboard
-	// tests. The page-world shim only sees page-world posts: the selected click
-	// posts nothing, the plain click posts its sourcepos, and the copy click —
-	// ignored by the page-world jump listener via .tm-copy — posts nothing here.
+	// The copy button’s click (last step) is scripted, so the copy control
+	// refuses it and nothing reaches the pasteboard — the lock is held anyway,
+	// so that were that boundary ever to break, the write could not land inside
+	// another test’s sentinel window. The page-world shim only sees page-world
+	// posts: the selected click posts nothing, the plain click posts its
+	// sourcepos, and the copy click — ignored by the page-world jump listener
+	// via .tm-copy — posts nothing here.
 	std::lock_guard<std::mutex> lock(pasteboard_mutex());
 	id result = evaluate_js(pane,
 		@"(function(){"
@@ -787,11 +855,14 @@ void test_selection_click_does_not_jump ()
 	});
 }
 
-// The legitimate copy path, driven inside the copy control’s own world: the
-// test obtains that world by name (worldWithName: is idempotent), clicks the
-// button there, and the block’s text lands on the pasteboard through the
-// isolated tmPreviewCopy channel.
-void test_copy_control_isolated_world_copies ()
+// The world boundary keeps the copy channel out of the page’s reach, but the
+// DOM is shared: page-world script can find the control and click it, either
+// through .click() or a MouseEvent of its own. Neither is a user gesture, so
+// neither copies — and neither gets the checkmark that would claim it had. A
+// script click inside the copy world itself (obtained by name, worldWithName:
+// being idempotent) is refused on the same grounds: the gesture is what the
+// control trusts, not the world the click came from.
+void test_scripted_click_cannot_copy_code_block ()
 {
 	__block NSWindow* window;
 	__block MarkdownPreviewView* pane;
@@ -802,28 +873,49 @@ void test_copy_control_isolated_world_copies ()
 		pane = [[MarkdownPreviewView alloc] initWithFrame:NSMakeRect(0, 0, 400, 600)];
 		window.contentView = pane;
 
-		doc = [OakDocument documentWithString:@"isolated copy LMN321" fileType:@"source.pane-test" customName:@"isolated-copy-test"];
+		doc = [OakDocument documentWithString:@"scripted click LMN321" fileType:@"source.pane-test" customName:@"scripted-click-test"];
 		[doc loadModalForWindow:nil completionHandler:nil];
 
 		pane.document = doc;
 		pane.active   = YES;
 	});
 
-	NSString* html = wait_for_content(pane, @"isolated copy LMN321", 20);
-	OAK_ASSERT_NE([html rangeOfString:@"isolated copy LMN321"].location, NSNotFound);
+	NSString* html = wait_for_content(pane, @"scripted click LMN321", 20);
+	OAK_ASSERT_NE([html rangeOfString:@"scripted click LMN321"].location, NSNotFound);
 
 	WKContentWorld* copyWorld = [WKContentWorld worldWithName:kCopyWorldName];
+	OAK_ASSERT(wait_for_copy_button(pane, 10));
 
 	std::lock_guard<std::mutex> lock(pasteboard_mutex());
-	seed_pasteboard(@"sentinel-before-isolated-copy");
+	seed_pasteboard(@"sentinel-vs-scripted-click");
 
-	// Clicking the button in its own world runs the very listener a user click
-	// would, and flips it to the checkmark.
-	id clicked = evaluate_js_in_world(pane, copyWorld, @"(function(){ var button = document.querySelector('#content button.tm-copy'); if(!button) return false; button.click(); return button.classList.contains('tm-copied'); })()");
-	OAK_ASSERT([clicked respondsToSelector:@selector(boolValue)] && [clicked boolValue]);
+	// The listener runs synchronously inside dispatch, so the checkmark it would
+	// add is already decided when the evaluation returns.
+	id pageClicked = evaluate_js(pane,
+		@"(function(){"
+		 "  var button = document.querySelector('#content button.tm-copy');"
+		 "  if(!button) return true;" // no button is no proof of a refusal
+		 "  button.click();"
+		 "  button.dispatchEvent(new MouseEvent('click', { bubbles: true }));"
+		 "  return button.classList.contains('tm-copied');"
+		 "})()");
+	OAK_ASSERT([pageClicked respondsToSelector:@selector(boolValue)] && ![pageClicked boolValue]);
 
-	NSString* pasteboard = wait_for_pasteboard(@"isolated copy LMN321", 10);
-	OAK_ASSERT_EQ(to_s(pasteboard), "isolated copy LMN321");
+	id worldClicked = evaluate_js_in_world(pane, copyWorld,
+		@"(function(){"
+		 "  var button = document.querySelector('#content button.tm-copy');"
+		 "  if(!button) return true;"
+		 "  button.click();"
+		 "  return button.classList.contains('tm-copied');"
+		 "})()");
+	OAK_ASSERT([worldClicked respondsToSelector:@selector(boolValue)] && ![worldClicked boolValue]);
+
+	// Give any clipboard write time to land, then confirm none did.
+	for(size_t i = 0; i < 5; ++i)
+	{
+		OAK_ASSERT_EQ(to_s(pasteboard_string()), "sentinel-vs-scripted-click");
+		usleep(100'000);
+	}
 
 	on_main(^{
 		pane.active = NO;
@@ -870,6 +962,57 @@ void test_document_payload_cannot_write_pasteboard ()
 	for(size_t i = 0; i < 5; ++i)
 	{
 		OAK_ASSERT_EQ(to_s(pasteboard_string()), "sentinel-vs-payload");
+		usleep(100'000);
+	}
+
+	on_main(^{
+		pane.active = NO;
+		pane.document = nil;
+		window.contentView = nil;
+		[doc close];
+	});
+}
+
+// The same document-derived handler, aimed at the control instead of the
+// channel: it cannot post to tmPreviewCopy, but it shares the DOM with the
+// world that can, so it waits for the copy button to be decorated onto its own
+// code block and clicks it — a payload that supplies both the text to copy and
+// the click. The clipboard is the user’s, and no click the user did not make
+// reaches it: the sentinel stands however long the payload keeps trying.
+void test_document_payload_click_cannot_write_pasteboard ()
+{
+	__block NSWindow* window;
+	__block MarkdownPreviewView* pane;
+	__block OakDocument* doc;
+
+	std::lock_guard<std::mutex> lock(pasteboard_mutex());
+	seed_pasteboard(@"sentinel-vs-payload-click");
+
+	on_main(^{
+		window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 400, 600) styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+		pane = [[MarkdownPreviewView alloc] initWithFrame:NSMakeRect(0, 0, 400, 600)];
+		window.contentView = pane;
+
+		doc = [OakDocument documentWithString:
+			@"```\nPWNED-BY-PAYLOAD-CLICK\n```\n\n"
+			 "<img src=x onerror=\"var n = 0; var t = setInterval(function(){ var b = document.querySelector('#content button.tm-copy'); if(b) b.click(); if(++n > 300) clearInterval(t); }, 10)\">"
+			fileType:@"text.html.markdown" customName:@"payload-click.md"];
+		[doc loadModalForWindow:nil completionHandler:nil];
+
+		pane.document = doc;
+		pane.active   = YES;
+	});
+
+	NSString* html = wait_for_content(pane, @"onerror", 20);
+	OAK_ASSERT_NE([html rangeOfString:@"onerror"].location, NSNotFound);
+
+	// The payload has a target from here on — anything it does with it happens
+	// inside the window watched below.
+	OAK_ASSERT(wait_for_copy_button(pane, 10));
+
+	for(size_t i = 0; i < 10; ++i)
+	{
+		OAK_ASSERT_EQ(to_s(pasteboard_string()), "sentinel-vs-payload-click");
 		usleep(100'000);
 	}
 
