@@ -4,6 +4,21 @@
 #import <test/jail.h>
 #import <ns/ns.h>
 #import <WebKit/WebKit.h>
+#import <mutex>
+
+// The name the pane registers its copy world under; worldWithName: hands the
+// tests the very same world, so a test can drive the isolated copy channel.
+static NSString* const kCopyWorldName = @"com.macromates.markdown-preview.copy";
+
+// gen_test runs a suite’s tests in parallel; several here read and write the
+// one general pasteboard. Each holds this around its pasteboard-critical
+// section so a “still holds the sentinel” assertion can’t see another test’s
+// write.
+static std::mutex& pasteboard_mutex ()
+{
+	static std::mutex mutex;
+	return mutex;
+}
 
 // Drives the real pane end to end against the ‘source.pane-test’ converter
 // committed by t_preview_converter.cc’s setup: activation loads the shell in
@@ -101,6 +116,59 @@ static id evaluate_js (MarkdownPreviewView* pane, NSString* script)
 	__block WKWebView* webView = nil;
 	on_main(^{ webView = web_view_in(pane); });
 	return evaluate_js_in_web_view(webView, script);
+}
+
+// Runs `script` in `world` (e.g. the copy control’s isolated world), from the
+// main run loop — the page world sees a different global scope.
+static id evaluate_js_in_world (MarkdownPreviewView* pane, WKContentWorld* world, NSString* script)
+{
+	__block WKWebView* webView = nil;
+	on_main(^{ webView = web_view_in(pane); });
+
+	__block id value = nil;
+	dispatch_semaphore_t done = dispatch_semaphore_create(0);
+	on_main(^{
+		[webView evaluateJavaScript:script inFrame:nil inContentWorld:world completionHandler:^(id result, NSError* error){
+			value = result;
+			dispatch_semaphore_signal(done);
+		}];
+		if(!webView)
+			dispatch_semaphore_signal(done);
+	});
+	dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC));
+	return value;
+}
+
+// Seeds the general pasteboard with `sentinel`, from the main run loop.
+static void seed_pasteboard (NSString* sentinel)
+{
+	on_main(^{
+		[NSPasteboard.generalPasteboard clearContents];
+		[NSPasteboard.generalPasteboard setString:sentinel forType:NSPasteboardTypeString];
+	});
+}
+
+static NSString* pasteboard_string ()
+{
+	__block NSString* value = nil;
+	on_main(^{ value = [NSPasteboard.generalPasteboard stringForType:NSPasteboardTypeString]; });
+	return value;
+}
+
+// Polls the pasteboard until it equals `expected`, up to `timeout`. Returns the
+// last value seen, so a failed assertion shows what was actually there.
+static NSString* wait_for_pasteboard (NSString* expected, NSTimeInterval timeout)
+{
+	NSString* value = nil;
+	NSDate* deadline = [NSDate dateWithTimeIntervalSinceNow:timeout];
+	while([deadline timeIntervalSinceNow] > 0)
+	{
+		value = pasteboard_string();
+		if([value isEqualToString:expected])
+			break;
+		usleep(100'000);
+	}
+	return value;
 }
 
 static NSString* page_content (MarkdownPreviewView* pane)
@@ -567,6 +635,270 @@ void test_warning_click_opens_diagnostic_window ()
 
 	on_main(^{
 		[diagnosticWindow close];
+		pane.active = NO;
+		pane.document = nil;
+		window.contentView = nil;
+		[doc close];
+	});
+}
+
+// Each rendered code block gains exactly one copy control, whose click ends
+// with the block’s text on the general pasteboard: the app side writes it,
+// because navigator.clipboard is unreliable in a custom-scheme page.
+void test_copy_button_copies_code_block ()
+{
+	__block NSWindow* window;
+	__block MarkdownPreviewView* pane;
+	__block OakDocument* doc;
+
+	on_main(^{
+		window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 400, 600) styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+		pane = [[MarkdownPreviewView alloc] initWithFrame:NSMakeRect(0, 0, 400, 600)];
+		window.contentView = pane;
+
+		doc = [OakDocument documentWithString:@"copy me ABC123" fileType:@"source.pane-test" customName:@"copy-test"];
+		[doc loadModalForWindow:nil completionHandler:nil];
+
+		pane.document = doc;
+		pane.active   = YES;
+	});
+
+	NSString* html = wait_for_content(pane, @"copy me ABC123", 20);
+	OAK_ASSERT_NE([html rangeOfString:@"copy me ABC123"].location, NSNotFound);
+
+	// One control per block, attached to a wrapper — inside the pre it would
+	// scroll with the code and leak into a manual select-all copy.
+	id counts = evaluate_js(pane, @"JSON.stringify([document.querySelectorAll('#content pre').length, document.querySelectorAll('#content .tm-pre > button.tm-copy').length, document.querySelectorAll('#content button.tm-copy').length])");
+	OAK_ASSERT_EQ(to_s((NSString*)counts), "[1,1,1]");
+
+	// Decoration is per-render: a re-render must not stack a second button.
+	on_main(^{ doc.content = @"copy me XYZ789"; });
+	html = wait_for_content(pane, @"copy me XYZ789", 20);
+	OAK_ASSERT_NE([html rangeOfString:@"copy me XYZ789"].location, NSNotFound);
+	counts = evaluate_js(pane, @"JSON.stringify([document.querySelectorAll('#content pre').length, document.querySelectorAll('#content button.tm-copy').length])");
+	OAK_ASSERT_EQ(to_s((NSString*)counts), "[1,1]");
+
+	std::lock_guard<std::mutex> lock(pasteboard_mutex());
+	seed_pasteboard(@"sentinel-before-copy");
+
+	// A page-world .click() still reaches the button’s listener, which now lives
+	// in the isolated world: it flips to the checkmark and posts the block text
+	// on its own channel, and the app writes the pasteboard asynchronously.
+	id clicked = evaluate_js(pane, @"(function(){ var button = document.querySelector('#content button.tm-copy'); button.click(); return button.classList.contains('tm-copied'); })()");
+	OAK_ASSERT([clicked respondsToSelector:@selector(boolValue)] && [clicked boolValue]);
+
+	NSString* pasteboard = wait_for_pasteboard(@"copy me XYZ789", 10);
+	OAK_ASSERT_EQ(to_s(pasteboard), "copy me XYZ789");
+
+	on_main(^{
+		pane.active = NO;
+		pane.document = nil;
+		window.contentView = nil;
+		[doc close];
+	});
+}
+
+// The click that ends a drag-selection must stay in the preview — no jump,
+// no focus loss — while a plain click still jumps, and the copy button’s
+// click never reaches the jump listener. Observed through a webkit shim, so
+// the test sees exactly what would have been posted without a partner text
+// view; the sourcepos hold-off must fire either way.
+void test_selection_click_does_not_jump ()
+{
+	__block NSWindow* window;
+	__block MarkdownPreviewView* pane;
+	__block OakDocument* doc;
+
+	on_main(^{
+		window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 400, 600) styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+		pane = [[MarkdownPreviewView alloc] initWithFrame:NSMakeRect(0, 0, 400, 600)];
+		window.contentView = pane;
+
+		doc = [OakDocument documentWithString:@"select me PQR456" fileType:@"source.pane-test" customName:@"selection-test"];
+		[doc loadModalForWindow:nil completionHandler:nil];
+
+		pane.document = doc;
+		pane.active   = YES;
+	});
+
+	NSString* html = wait_for_content(pane, @"select me PQR456", 20);
+	OAK_ASSERT_NE([html rangeOfString:@"select me PQR456"].location, NSNotFound);
+
+	// The copy button’s click (last step) now runs its listener in the isolated
+	// world and writes the pasteboard, so keep it off the other pasteboard
+	// tests. The page-world shim only sees page-world posts: the selected click
+	// posts nothing, the plain click posts its sourcepos, and the copy click —
+	// ignored by the page-world jump listener via .tm-copy — posts nothing here.
+	std::lock_guard<std::mutex> lock(pasteboard_mutex());
+	id result = evaluate_js(pane,
+		@"(function(){"
+		 "  var saved = window.webkit;"
+		 "  var posts = [];"
+		 "  window.webkit = { messageHandlers: { tmPreview: { postMessage: function(m){ posts.push(typeof m === 'string' ? m : 'copy:' + m.text); } } } };"
+		 "  var el = document.querySelector('#content [data-sourcepos]');"
+		 "  var range = document.createRange();"
+		 "  range.selectNodeContents(el);"
+		 "  var selection = window.getSelection();"
+		 "  selection.removeAllRanges();"
+		 "  selection.addRange(range);"
+		 "  el.dispatchEvent(new MouseEvent('click', { bubbles: true }));"
+		 "  var postsWhileSelected = posts.length;"
+		 "  var scrollHeldWhileSelected = Date.now() < window.__tmUserScrollUntil;"
+		 "  selection.removeAllRanges();"
+		 "  el.dispatchEvent(new MouseEvent('click', { bubbles: true }));"
+		 "  document.querySelector('#content button.tm-copy').click();"
+		 "  window.webkit = saved;"
+		 "  return JSON.stringify([postsWhileSelected, scrollHeldWhileSelected].concat(posts));"
+		 "})()");
+	OAK_ASSERT_EQ(to_s((NSString*)result), "[0,true,\"1:1\"]");
+
+	on_main(^{
+		pane.active = NO;
+		pane.document = nil;
+		window.contentView = nil;
+		[doc close];
+	});
+}
+
+// The legitimate copy path, driven inside the copy control’s own world: the
+// test obtains that world by name (worldWithName: is idempotent), clicks the
+// button there, and the block’s text lands on the pasteboard through the
+// isolated tmPreviewCopy channel.
+void test_copy_control_isolated_world_copies ()
+{
+	__block NSWindow* window;
+	__block MarkdownPreviewView* pane;
+	__block OakDocument* doc;
+
+	on_main(^{
+		window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 400, 600) styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+		pane = [[MarkdownPreviewView alloc] initWithFrame:NSMakeRect(0, 0, 400, 600)];
+		window.contentView = pane;
+
+		doc = [OakDocument documentWithString:@"isolated copy LMN321" fileType:@"source.pane-test" customName:@"isolated-copy-test"];
+		[doc loadModalForWindow:nil completionHandler:nil];
+
+		pane.document = doc;
+		pane.active   = YES;
+	});
+
+	NSString* html = wait_for_content(pane, @"isolated copy LMN321", 20);
+	OAK_ASSERT_NE([html rangeOfString:@"isolated copy LMN321"].location, NSNotFound);
+
+	WKContentWorld* copyWorld = [WKContentWorld worldWithName:kCopyWorldName];
+
+	std::lock_guard<std::mutex> lock(pasteboard_mutex());
+	seed_pasteboard(@"sentinel-before-isolated-copy");
+
+	// Clicking the button in its own world runs the very listener a user click
+	// would, and flips it to the checkmark.
+	id clicked = evaluate_js_in_world(pane, copyWorld, @"(function(){ var button = document.querySelector('#content button.tm-copy'); if(!button) return false; button.click(); return button.classList.contains('tm-copied'); })()");
+	OAK_ASSERT([clicked respondsToSelector:@selector(boolValue)] && [clicked boolValue]);
+
+	NSString* pasteboard = wait_for_pasteboard(@"isolated copy LMN321", 10);
+	OAK_ASSERT_EQ(to_s(pasteboard), "isolated copy LMN321");
+
+	on_main(^{
+		pane.active = NO;
+		pane.document = nil;
+		window.contentView = nil;
+		[doc close];
+	});
+}
+
+// A document-derived onerror handler — carried into the page verbatim because
+// the Markdown renderer runs cmark UNSAFE — tries to drive the clipboard, once
+// through the page-world tmPreview channel (with the old copy dict body) and
+// once by naming the isolated channel from the page world. Neither reaches the
+// pasteboard: the dict body is no longer honored, and tmPreviewCopy does not
+// exist in the page world. The sentinel stands.
+void test_document_payload_cannot_write_pasteboard ()
+{
+	__block NSWindow* window;
+	__block MarkdownPreviewView* pane;
+	__block OakDocument* doc;
+
+	std::lock_guard<std::mutex> lock(pasteboard_mutex());
+	seed_pasteboard(@"sentinel-vs-payload");
+
+	on_main(^{
+		window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 400, 600) styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+		pane = [[MarkdownPreviewView alloc] initWithFrame:NSMakeRect(0, 0, 400, 600)];
+		window.contentView = pane;
+
+		// A broken image whose onerror fires as soon as the fragment is inserted.
+		doc = [OakDocument documentWithString:@"<img src=x onerror=\"try{webkit.messageHandlers.tmPreview.postMessage({action:'copy',text:'PWNED-BY-PAYLOAD'})}catch(e){}; try{webkit.messageHandlers.tmPreviewCopy.postMessage('PWNED-BY-PAYLOAD')}catch(e){}\">" fileType:@"text.html.markdown" customName:@"payload.md"];
+		[doc loadModalForWindow:nil completionHandler:nil];
+
+		pane.document = doc;
+		pane.active   = YES;
+	});
+
+	// The image element (with its onerror) reaches #content, so the handler has
+	// certainly run by the time it does.
+	NSString* html = wait_for_content(pane, @"onerror", 20);
+	OAK_ASSERT_NE([html rangeOfString:@"onerror"].location, NSNotFound);
+
+	// Give any clipboard write time to land, then confirm none did.
+	for(size_t i = 0; i < 5; ++i)
+	{
+		OAK_ASSERT_EQ(to_s(pasteboard_string()), "sentinel-vs-payload");
+		usleep(100'000);
+	}
+
+	on_main(^{
+		pane.active = NO;
+		pane.document = nil;
+		window.contentView = nil;
+		[doc close];
+	});
+}
+
+// The same boundary against a script evaluating directly in the page world:
+// posting the old copy dict to tmPreview is ignored, and tmPreviewCopy is not
+// exposed there at all (a TypeError, swallowed). The sentinel is untouched.
+void test_page_world_spoof_cannot_write_pasteboard ()
+{
+	__block NSWindow* window;
+	__block MarkdownPreviewView* pane;
+	__block OakDocument* doc;
+
+	on_main(^{
+		window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 400, 600) styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+		pane = [[MarkdownPreviewView alloc] initWithFrame:NSMakeRect(0, 0, 400, 600)];
+		window.contentView = pane;
+
+		doc = [OakDocument documentWithString:@"spoof target STU654" fileType:@"source.pane-test" customName:@"spoof-test"];
+		[doc loadModalForWindow:nil completionHandler:nil];
+
+		pane.document = doc;
+		pane.active   = YES;
+	});
+
+	NSString* html = wait_for_content(pane, @"spoof target STU654", 20);
+	OAK_ASSERT_NE([html rangeOfString:@"spoof target STU654"].location, NSNotFound);
+
+	std::lock_guard<std::mutex> lock(pasteboard_mutex());
+	seed_pasteboard(@"sentinel-vs-page-spoof");
+
+	// Both spoof attempts run in the page world; tmPreviewCopy is absent there,
+	// so the second throws — caught, so evaluation still returns cleanly.
+	id ran = evaluate_js(pane,
+		@"(function(){"
+		 "  try { webkit.messageHandlers.tmPreview.postMessage({ action: 'copy', text: 'PWNED-BY-PAGE' }); } catch(e) {}"
+		 "  var reachedCopyChannel = false;"
+		 "  try { webkit.messageHandlers.tmPreviewCopy.postMessage('PWNED-BY-PAGE'); reachedCopyChannel = true; } catch(e) {}"
+		 "  return reachedCopyChannel;"
+		 "})()");
+	OAK_ASSERT([ran respondsToSelector:@selector(boolValue)] && ![ran boolValue]); // the copy channel is not reachable from the page world
+
+	for(size_t i = 0; i < 5; ++i)
+	{
+		OAK_ASSERT_EQ(to_s(pasteboard_string()), "sentinel-vs-page-spoof");
+		usleep(100'000);
+	}
+
+	on_main(^{
 		pane.active = NO;
 		pane.document = nil;
 		window.contentView = nil;

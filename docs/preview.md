@@ -21,6 +21,14 @@ a re-render so typing at the end of a document keeps the bottom in view.
 Links open in your default browser. *Reload* in the preview's context menu
 re-renders the buffer rather than reloading a page.
 
+Clicking an element in the preview places the caret at its source position in
+the editor — unless the click ends a drag-selection: selecting is not
+navigating, so the preview keeps focus and ⌘C copies what you selected. Code
+blocks get a copy button in their top-right corner on hover, which puts the
+block's text on the clipboard and confirms with a brief checkmark. Both work
+the same for the built-in Markdown renderer and for external converters,
+since they live in the shared preview page.
+
 *Preferences → Projects → Show preview* chooses whether the pane sits to the
 right of the text view or below it.
 

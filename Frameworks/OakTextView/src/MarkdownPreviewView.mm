@@ -292,6 +292,20 @@ static NSString* MarkdownPreviewShell ()
 	 "code { background: var(--code-bg); border-radius: 4px; padding: 0.15em 0.3em; }"
 	 "pre { background: var(--code-bg); border-radius: 6px; padding: 1em; overflow-x: auto; }"
 	 "pre code { background: none; padding: 0; }"
+	 // The copy control floats over the block’s top-right corner from a wrapper
+	 // around the pre — inside the pre it would ride along with its horizontal
+	 // scrolling. Colors come from the same variables as the page, so both
+	 // custom preview themes and the fallback palettes carry it.
+	 ".tm-pre { position: relative; }"
+	 ".tm-copy { position: absolute; top: 6px; right: 6px; width: 26px; height: 26px; padding: 0;"
+	 "  display: flex; align-items: center; justify-content: center;"
+	 "  color: var(--tm-fg, var(--fg)); background: var(--tm-bg, var(--bg)); border: 1px solid var(--border); border-radius: 6px;"
+	 "  opacity: 0; transition: opacity 0.1s; cursor: pointer; -webkit-user-select: none; }"
+	 ".tm-pre:hover .tm-copy, .tm-copy.tm-copied { opacity: 1; }"
+	 ".tm-copy svg { width: 14px; height: 14px; display: block; }"
+	 ".tm-copy .tm-copy-check { display: none; }"
+	 ".tm-copy.tm-copied .tm-copy-icon { display: none; }"
+	 ".tm-copy.tm-copied .tm-copy-check { display: block; }"
 	 "blockquote { margin: 0; padding-left: 1em; border-left: 0.25em solid var(--border); color: var(--muted); }"
 	 "table { display: block; width: max-content; max-width: 100%; overflow-x: auto;"
 	 "  border-collapse: collapse; margin: 1em 0; }"
@@ -311,23 +325,29 @@ static NSString* MarkdownPreviewShell ()
 	 "window.TMPreview = {"
 	 "  setContent: function(html) {"
 	 "    document.getElementById('content').innerHTML = html;"
-	 "    if(!window.katex) return;" // assets missing: leave the raw TeX as plain text, never touch the console
-	 "    var macros = {};"
-	 "    var scripts = document.querySelectorAll('#content script#tm-katex-macros');" // at most one per fragment; anything else is ignored wholesale
-	 "    if(scripts.length == 1) {"
-	 "      try {"
-	 "        var parsed = JSON.parse(scripts[0].textContent);"
-	 "        if(parsed && parsed.constructor === Object && Object.values(parsed).every(function(v) { return typeof v === 'string'; }))"
-	 "            macros = parsed;"
-	 "        else  console.warn('tm-katex-macros: expected an object with string values');"
-	 "      } catch(e) { console.warn('tm-katex-macros: ' + e.message); }"
-	 "    } else if(scripts.length > 1) {"
-	 "      console.warn('tm-katex-macros: more than one element');"
+	 "    if(window.katex) {" // assets missing: leave the raw TeX as plain text, never touch the console
+	 "      var macros = {};"
+	 "      var scripts = document.querySelectorAll('#content script#tm-katex-macros');" // at most one per fragment; anything else is ignored wholesale
+	 "      if(scripts.length == 1) {"
+	 "        try {"
+	 "          var parsed = JSON.parse(scripts[0].textContent);"
+	 "          if(parsed && parsed.constructor === Object && Object.values(parsed).every(function(v) { return typeof v === 'string'; }))"
+	 "              macros = parsed;"
+	 "          else  console.warn('tm-katex-macros: expected an object with string values');"
+	 "        } catch(e) { console.warn('tm-katex-macros: ' + e.message); }"
+	 "      } else if(scripts.length > 1) {"
+	 "        console.warn('tm-katex-macros: more than one element');"
+	 "      }"
+	 "      document.querySelectorAll('#content [data-tm-math]').forEach(function(el) {"
+	 "        try { katex.render(el.textContent, el, { displayMode: el.dataset.tmMath === 'display', throwOnError: false, macros: macros }); }"
+	 "        catch(e) { console.warn('katex: ' + e.message); }" // throwOnError:false already shows bad input in the error color; anything past that must not kill the remaining spans
+	 "      });"
 	 "    }"
-	 "    document.querySelectorAll('#content [data-tm-math]').forEach(function(el) {"
-	 "      try { katex.render(el.textContent, el, { displayMode: el.dataset.tmMath === 'display', throwOnError: false, macros: macros }); }"
-	 "      catch(e) { console.warn('katex: ' + e.message); }" // throwOnError:false already shows bad input in the error color; anything past that must not kill the remaining spans
-	 "    });"
+	 // The code-block copy control is decorated and handled in a separate
+	 // WKContentWorld (MarkdownPreviewCopyWorldScript), driven by the app after
+	 // each setContent — never here. A handler reachable from page-world JS
+	 // would let document-derived scripts write the clipboard, so the copy UI
+	 // lives where the page cannot reach its message channel.
 	 "  },"
 	 "  scrollToLine: function(line, atEnd) {"
 	 "    if(Date.now() < (window.__tmUserScrollUntil || 0)) return;"
@@ -346,6 +366,9 @@ static NSString* MarkdownPreviewShell ()
 	 "window.addEventListener('wheel', function() { window.__tmUserScrollUntil = Date.now() + 1000; }, { passive: true });"
 	 "document.addEventListener('click', function(ev) {"
 	 "  window.__tmUserScrollUntil = Date.now() + 1000;" // clicking is interacting — hold off editor → preview sync
+	 "  if(ev.target.closest && ev.target.closest('.tm-copy')) return;" // the copy control runs in its own world and never navigates — the page listener must not treat its clicks as a jump
+	 "  var selection = window.getSelection();" // the click ending a drag-selection selects, it does not navigate — and a jump would move focus off the page, killing the ⌘C it was selected for
+	 "  if(selection && !selection.isCollapsed) return;"
 	 "  if(!ev.target.closest || ev.target.closest('a')) return;" // links open in the browser instead
 	 "  var el = ev.target.closest('[data-sourcepos]');"
 	 "  if(el) webkit.messageHandlers.tmPreview.postMessage(el.getAttribute('data-sourcepos').split('-')[0]);" // start of range, “line:column”
@@ -353,6 +376,53 @@ static NSString* MarkdownPreviewShell ()
 	 "</script></head><body><article id='content'></article></body></html>"];
 	});
 	return shell;
+}
+
+// Runs in the copy control’s isolated WKContentWorld (see -copyContentWorld):
+// it shares the DOM with the page — so it can find #content pre, wrap it, and
+// read its text — but shares no JS objects with the page, and the tmPreviewCopy
+// message channel it posts to is registered ONLY in this world, so page-world
+// JS (including anything a document injects through CMARK_OPT_UNSAFE) cannot
+// reach it. The app calls TMPreviewCopy.decorate() after each setContent; the
+// button never calls stopPropagation, so the page-world click listener still
+// sees the click and holds off scroll sync — it just ignores the .tm-copy
+// target instead of jumping.
+static NSString* MarkdownPreviewCopyWorldScript ()
+{
+	return
+		@"window.TMPreviewCopy = {"
+		 "  decorate: function() {"
+		 "    document.querySelectorAll('#content pre').forEach(function(pre) {"
+		 "      if(pre.closest('.tm-pre')) return;" // idempotent: never wrap a block twice
+		 "      var text = pre.textContent;" // captured before any decoration, so the button can never leak into what it copies
+		 "      var wrap = document.createElement('div');"
+		 "      wrap.className = 'tm-pre';"
+		 "      pre.parentNode.insertBefore(wrap, pre);"
+		 "      wrap.appendChild(pre);"
+		 "      var button = document.createElement('button');"
+		 "      button.type = 'button';"
+		 "      button.className = 'tm-copy';"
+		 "      button.title = 'Copy';"
+		 "      button.innerHTML = '<svg class=\"tm-copy-icon\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect x=\"5.5\" y=\"5.5\" width=\"8\" height=\"8\" rx=\"1.5\"/><path d=\"M10.5 3.5v-1a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h1\"/></svg>'"
+		 "                       + '<svg class=\"tm-copy-check\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M3 8.5l3.5 3.5L13 4.5\"/></svg>';"
+		 "      button.addEventListener('click', function(ev) {"
+		 "        try { webkit.messageHandlers.tmPreviewCopy.postMessage(text); }"
+		 "        catch(e) { return; }" // no handler, no feedback: the checkmark must not claim a copy that never happened
+		 "        button.classList.add('tm-copied');"
+		 "        clearTimeout(button.__tmCopyTimer);"
+		 "        button.__tmCopyTimer = setTimeout(function() { button.classList.remove('tm-copied'); }, 1500);"
+		 "      });"
+		 "      wrap.appendChild(button);"
+		 "    });"
+		 "  }"
+		 "};";
+}
+
+// The isolated world the copy control lives in. worldWithName: returns the
+// same world for the same name, so the pane and its tests name the one world.
+static WKContentWorld* MarkdownPreviewCopyContentWorld ()
+{
+	return [WKContentWorld worldWithName:@"com.macromates.markdown-preview.copy"];
 }
 
 static NSString* JSONStringLiteral (NSString* aString)
@@ -514,6 +584,7 @@ static NSString* CSSColorString (NSColor* aColor)
 		[self invalidateRenders]; // a converter only ever runs while the pane is open — closing the pane kills it
 
 		[_webView.configuration.userContentController removeScriptMessageHandlerForName:@"tmPreview"];
+		[_webView.configuration.userContentController removeScriptMessageHandlerForName:@"tmPreviewCopy" contentWorld:MarkdownPreviewCopyContentWorld()];
 		[_webView removeFromSuperview];
 		_webView.navigationDelegate = nil;
 		_webView = nil;
@@ -532,10 +603,21 @@ static NSString* CSSColorString (NSColor* aColor)
 	// tm-file scheme handler HTMLOutput uses.
 	[config setURLSchemeHandler:[OakFileURLSchemeHandler new] forURLScheme:@"tm-file"];
 
-	// Clicking an element jumps the editor to its data-sourcepos line.
+	// Clicking an element jumps the editor to its data-sourcepos line. Page
+	// world only: a string sourcepos, never a clipboard request.
 	MarkdownPreviewWeakMessageHandler* messageHandler = [MarkdownPreviewWeakMessageHandler new];
 	messageHandler.target = self;
 	[config.userContentController addScriptMessageHandler:messageHandler name:@"tmPreview"];
+
+	// The copy control’s channel and its DOM decoration live in a dedicated
+	// content world. A handler added only to that world is not exposed to
+	// page-world JS (webkit.messageHandlers.tmPreviewCopy does not exist there),
+	// so the world boundary — not an action name or a nonce a page can read —
+	// is what keeps document-derived scripts off the clipboard.
+	MarkdownPreviewWeakMessageHandler* copyHandler = [MarkdownPreviewWeakMessageHandler new];
+	copyHandler.target = self;
+	[config.userContentController addScriptMessageHandler:copyHandler contentWorld:MarkdownPreviewCopyContentWorld() name:@"tmPreviewCopy"];
+	[config.userContentController addUserScript:[[WKUserScript alloc] initWithSource:MarkdownPreviewCopyWorldScript() injectionTime:WKUserScriptInjectionTimeAtDocumentStart forMainFrameOnly:YES inContentWorld:MarkdownPreviewCopyContentWorld()]];
 
 	// Seed the theme CSS variables before the shell’s first paint — applying
 	// them from didFinishNavigation would flash the page’s fallback palette.
@@ -859,7 +941,18 @@ static NSString* CSSColorString (NSColor* aColor)
 	}
 	_renderedDocumentIdentifier = _document.identifier;
 	[_webView evaluateJavaScript:[NSString stringWithFormat:@"TMPreview.setContent(%@);", JSONStringLiteral(html)] completionHandler:nil];
+	[self decorateCopyControls]; // re-decorate the fresh #content in the copy world — setContent replaced it wholesale
 	[self scheduleScrollSync]; // content height changed — re-anchor (e.g. keep the bottom pinned while typing at the end)
+}
+
+// Runs the copy world’s decorate pass over the just-swapped #content. Issued
+// right after the page-world setContent: JS evaluations on one web view run in
+// order, so the pres exist by the time this lands. Every content swap comes
+// through applyContent (including the pending apply after a shell load), so
+// this is the single place decoration is triggered.
+- (void)decorateCopyControls
+{
+	[_webView evaluateJavaScript:@"if(window.TMPreviewCopy) TMPreviewCopy.decorate();" inFrame:nil inContentWorld:MarkdownPreviewCopyContentWorld() completionHandler:nil];
 }
 
 // Empties the page and hands the (empty) content to the current document, so
@@ -977,7 +1070,23 @@ static NSString* DiagnosticPageHTML (NSString* title, NSString* diagnostic)
 
 - (void)userContentController:(WKUserContentController*)userContentController didReceiveScriptMessage:(WKScriptMessage*)message
 {
-	if(![message.name isEqualToString:@"tmPreview"] || ![message.body isKindOfClass:[NSString class]])
+	// The copy control’s channel, reachable only from its isolated world: its
+	// body is the block text to place on the clipboard. Page-world JS cannot
+	// post here, which is the whole point — the clipboard write is gated by the
+	// world, not by trusting the message body.
+	if([message.name isEqualToString:@"tmPreviewCopy"])
+	{
+		if([message.body isKindOfClass:[NSString class]])
+		{
+			[NSPasteboard.generalPasteboard clearContents];
+			[NSPasteboard.generalPasteboard setString:message.body forType:NSPasteboardTypeString];
+		}
+		return;
+	}
+
+	if(![message.name isEqualToString:@"tmPreview"])
+		return;
+	if(![message.body isKindOfClass:[NSString class]])
 		return;
 	if(!_textView) // the text view shows a different document — never jump the wrong buffer
 		return;
