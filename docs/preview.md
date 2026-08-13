@@ -1,8 +1,8 @@
 # Preview
 
-*View → Show Preview* opens a live preview beside the editor. There is no key
-equivalent. The item is enabled whenever the document has a preview — Markdown
-out of the box, any other format whose bundle declares a
+*View → Show Preview* (⌃⌥⌘P) opens a live preview beside the editor. The item
+is enabled whenever the document has a preview — Markdown out of the box, any
+other format whose bundle declares a
 [`previewCommand`](#other-formats--previewcommand) — and stays enabled while
 the pane is open so you can close it from any tab.
 

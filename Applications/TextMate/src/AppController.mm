@@ -250,7 +250,7 @@ BOOL HasDocumentWindow (NSArray* windows)
 				{ @"Show Terminal",          @selector(toggleTerminal:),       @"`", .modifierFlags = NSEventModifierFlagControl },
 				{ @"Show Line Numbers",      @selector(toggleLineNumbers:),    @"l", .modifierFlags = NSEventModifierFlagCommand|NSEventModifierFlagOption },
 				{ @"Show Minimap",           @selector(toggleMinimap:)                },
-				{ @"Show Preview",           @selector(toggleMarkdownPreview:)        },
+				{ @"Show Preview",           @selector(toggleMarkdownPreview:), @"p", .modifierFlags = NSEventModifierFlagCommand|NSEventModifierFlagOption|NSEventModifierFlagControl },
 				{ @"Show Diff",              @selector(toggleDiffPane:),       @"g", .modifierFlags = NSEventModifierFlagCommand|NSEventModifierFlagOption|NSEventModifierFlagControl },
 				{ @"Show Diagnostics",       @selector(toggleDiagnosticsPane:) },
 				{ /* -------- */ },
