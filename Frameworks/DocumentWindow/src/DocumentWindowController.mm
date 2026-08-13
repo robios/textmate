@@ -18,6 +18,7 @@
 #import <OakTextView/OakDocumentView.h>
 #import <OakTextView/OakReviewBase.h>
 #import <OakTextView/MarkdownPreviewView.h>
+#import <OakTextView/preview_converter.h>
 #import <FileBrowser/FileBrowserViewController.h>
 #import "TerminalEnvironment.h"
 #import <Terminal/TerminalPaneController.h>
@@ -934,7 +935,7 @@ static NSArray* const kObservedKeyPaths = @[ @"arrayController.arrangedObjects.p
 	}
 
 	if([keyPath isEqualToString:@"selectedDocument.fileType"])
-		[self updateMarkdownPreviewDocument]; // re-target when the active document is (or becomes) Markdown
+		[self updateMarkdownPreviewDocument]; // re-target when the active document gains, loses, or swaps its preview converter
 
 	OakDocument* document = self.selectedDocument;
 	if([keyPath isEqualToString:@"selectedDocument.path"] || [keyPath isEqualToString:@"selectedDocument.displayName"])
@@ -2745,18 +2746,21 @@ static NSArray* const kObservedKeyPaths = @[ @"arrayController.arrangedObjects.p
 	[[self class] scheduleSessionBackup:self];
 }
 
-// The pane follows the active document while that document is Markdown;
-// switching to a non-Markdown tab keeps the last Markdown document’s preview
-// on screen (the way VS Code’s preview and Marked behave). Scroll sync and
-// click-to-jump only run while the text view shows the previewed document.
+// The pane follows the active document while that document has a preview
+// converter — built-in Markdown or a bundle-declared previewCommand;
+// switching to a tab without one keeps the last previewable document’s
+// preview on screen (the way VS Code’s preview and Marked behave). Scroll
+// sync and click-to-jump only run while the text view shows the previewed
+// document.
 - (void)updateMarkdownPreviewDocument
 {
 	if(!self.markdownPreviewPane)
 		return;
 
 	OakDocument* doc = self.selectedDocument;
-	if(doc && [doc.fileType hasPrefix:@"text.html.markdown"])
-		self.markdownPreviewPane.document = doc;
+	if(doc && self.markdownPreviewPane.document != doc && preview::converter_for_file_type(to_s(doc.fileType)))
+			self.markdownPreviewPane.document = doc;
+	else	[self.markdownPreviewPane refreshConverter]; // same document — a file-type change may have attached, detached, or swapped its converter
 
 	self.markdownPreviewPane.textView = self.markdownPreviewPane.document == doc ? self.textView : nil;
 }
@@ -3102,11 +3106,12 @@ static NSArray* const kObservedKeyPaths = @[ @"arrayController.arrangedObjects.p
 		active = self.terminalVisible && self.terminalPane.numberOfTerminals > 0;
 	else if([menuItem action] == @selector(toggleMarkdownPreview:))
 	{
-		[menuItem setTitle:self.markdownPreviewVisible ? @"Hide Markdown Preview" : @"Show Markdown Preview"];
-		// Enabled for Markdown documents — and always when visible, so the
-		// pane (which keeps showing the last Markdown document) can be closed
-		// from any tab.
-		active = self.markdownPreviewVisible || [self.selectedDocument.fileType hasPrefix:@"text.html.markdown"];
+		[menuItem setTitle:self.markdownPreviewVisible ? @"Hide Preview" : @"Show Preview"];
+		// Enabled whenever the document resolves a converter (built-in
+		// Markdown or a bundle previewCommand) — and always when visible, so
+		// the pane (which keeps showing the last previewable document) can be
+		// closed from any tab.
+		active = self.markdownPreviewVisible || bool(preview::converter_for_file_type(to_s(self.selectedDocument.fileType)));
 	}
 	else if([menuItem action] == @selector(newDocumentInDirectory:))
 	{

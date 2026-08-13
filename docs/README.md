@@ -19,8 +19,8 @@ works, and re-explaining it here would only produce a second, worse copy.
 * [Minimap](minimap.md) — the map, and its source-control and diagnostics lanes
 * [Terminal](terminal.md) — the terminal pane, launchers, and running bundle
   commands in a terminal
-* [Markdown preview](markdown-preview.md) — the preview pane, its themes, and
-  `tm_markdown`
+* [Preview pane](preview.md) — the preview pane, its themes,
+  `tm_markdown`, and the `previewCommand` contract for other formats
 * [Command palette](command-palette.md) — ⇧⌘P and what each mode searches
 * [Bundle taps](bundle-taps.md) — subscribing to bundle repositories, the trust
   model, updates, and replacing an official bundle

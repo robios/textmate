@@ -250,7 +250,7 @@ BOOL HasDocumentWindow (NSArray* windows)
 				{ @"Show Terminal",          @selector(toggleTerminal:),       @"`", .modifierFlags = NSEventModifierFlagControl },
 				{ @"Show Line Numbers",      @selector(toggleLineNumbers:),    @"l", .modifierFlags = NSEventModifierFlagCommand|NSEventModifierFlagOption },
 				{ @"Show Minimap",           @selector(toggleMinimap:)                },
-				{ @"Show Markdown Preview",  @selector(toggleMarkdownPreview:)        },
+				{ @"Show Preview",           @selector(toggleMarkdownPreview:)        },
 				{ @"Show Diff",              @selector(toggleDiffPane:),       @"g", .modifierFlags = NSEventModifierFlagCommand|NSEventModifierFlagOption|NSEventModifierFlagControl },
 				{ @"Show Diagnostics",       @selector(toggleDiagnosticsPane:) },
 				{ /* -------- */ },
@@ -284,7 +284,7 @@ BOOL HasDocumentWindow (NSArray* windows)
 					}
 				},
 				{ @"Theme",                  .submenuRef = &themesMenu                },
-				{ @"Markdown Preview Theme", .submenuRef = &markdownPreviewThemesMenu },
+				{ @"Preview Theme",          .submenuRef = &markdownPreviewThemesMenu },
 				{ /* -------- */ },
 				{ @"Fold Current Block",     @selector(toggleCurrentFolding:), .modifierFlags = 0, .key = NSF1FunctionKey },
 				{ @"Toggle Foldings at Level",

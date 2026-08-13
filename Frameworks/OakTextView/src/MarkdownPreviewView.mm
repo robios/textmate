@@ -1,19 +1,25 @@
 #import "MarkdownPreviewView.h"
 #import "OakTextView.h"
+#import "preview_converter.h"
+#import "preview_command_runner.h"
 #import <markdown/markdown_render.h>
 #import <WebKit/WebKit.h>
 #import <QuartzCore/QuartzCore.h>
 #import <document/OakDocument.h>
 #import <document/OakDocument Private.h>
+#import <document/OakDocumentController.h>
 #import <HTMLOutput/helpers/OakFileURLSchemeHandler.h>
 #import <buffer/buffer.h>
 #import <bundles/bundles.h>
+#import <io/environment.h>
 #import <theme/theme.h>
 #import <ns/ns.h>
+#import <atomic>
 
 static CGFloat const kMarkdownPreviewMinWidth = 150;
 static CGFloat const kMarkdownPreviewHeaderHeight = 24; // same band as the diff pane’s header
 static NSTimeInterval const kRenderDebounceInterval = 0.25;
+static NSTimeInterval const kExternalRenderDebounceInterval = 0.5; // external converters pay a process spawn per render — the in-process cadence would be pointless
 static NSTimeInterval const kScrollSyncThrottleInterval = 0.1;
 
 // The header takes its colors from the editor theme, like the rest of the
@@ -109,15 +115,17 @@ static NSColor* BlendedColor (NSColor* from, NSColor* toward, CGFloat fraction)
 // = MarkdownPreviewHeaderView =
 // =============================
 
-// The pane’s title band: close control, then the previewed document’s name.
-// Modelled on the diff pane’s header, but — like the divider above — drawn
-// with layer background colors instead of drawRect:.
+// The pane’s title band: close control, then the previewed document’s name,
+// and — only after an external converter failed — a warning control at the
+// right edge. Modelled on the diff pane’s header, but — like the divider
+// above — drawn with layer background colors instead of drawRect:.
 @interface MarkdownPreviewHeaderView : NSView
 @property (nonatomic) NSColor* backgroundColor;
 @property (nonatomic) NSColor* separatorColor;
 @property (nonatomic, readonly) NSTextField* titleField;
 @property (nonatomic, readonly) NSButton* closeButton;
-- (id)initWithFrame:(NSRect)aRect closeTarget:(id)aTarget closeAction:(SEL)anAction;
+@property (nonatomic, readonly) NSButton* warningButton;
+- (id)initWithFrame:(NSRect)aRect closeTarget:(id)aTarget closeAction:(SEL)anAction warningAction:(SEL)aWarningAction;
 @end
 
 @implementation MarkdownPreviewHeaderView
@@ -125,7 +133,7 @@ static NSColor* BlendedColor (NSColor* from, NSColor* toward, CGFloat fraction)
 	CALayer* _separatorLayer;
 }
 
-- (id)initWithFrame:(NSRect)aRect closeTarget:(id)aTarget closeAction:(SEL)anAction
+- (id)initWithFrame:(NSRect)aRect closeTarget:(id)aTarget closeAction:(SEL)anAction warningAction:(SEL)aWarningAction
 {
 	if(self = [super initWithFrame:aRect])
 	{
@@ -146,8 +154,16 @@ static NSColor* BlendedColor (NSColor* from, NSColor* toward, CGFloat fraction)
 		_titleField.font            = [NSFont systemFontOfSize:[NSFont systemFontSizeForControlSize:NSControlSizeSmall]];
 		[[_titleField cell] setLineBreakMode:NSLineBreakByTruncatingMiddle]; // long names keep their extension visible, like the status-bar fields
 
+		// Hidden until an external converter fails; the tooltip carries the
+		// first lines of its stderr, clicking opens the full diagnostic.
+		_warningButton = [NSButton buttonWithImage:[NSImage imageWithSystemSymbolName:@"exclamationmark.triangle.fill" accessibilityDescription:@"Preview Command Failed"] target:aTarget action:aWarningAction];
+		_warningButton.bordered         = NO;
+		_warningButton.contentTintColor = NSColor.systemYellowColor; // semantic warning color on any theme, like the LSP lightbulb
+		_warningButton.hidden           = YES;
+
 		[self addSubview:_closeButton];
 		[self addSubview:_titleField];
+		[self addSubview:_warningButton];
 
 		[self applyLayerColors];
 	}
@@ -176,19 +192,23 @@ static NSColor* BlendedColor (NSColor* from, NSColor* toward, CGFloat fraction)
 	_separatorLayer.frame = CGRectMake(0, 0, NSWidth(bounds), 1); // hairline along the bottom, against the page
 	[CATransaction commit];
 
-	// close ⋅ title, with the diff pane header’s 8 pt edge margin and 10 pt
-	// group gap. The horizontal math uses alignment rects: a borderless
-	// image button still carries invisible frame padding, so frame-based
-	// gaps render wider than specified.
+	// close ⋅ title ⋅ warning, with the diff pane header’s 8 pt edge margin
+	// and 10 pt group gap. The horizontal math uses alignment rects: a
+	// borderless image button still carries invisible frame padding, so
+	// frame-based gaps render wider than specified.
 	CGFloat const edgeMargin = 8, sectionGap = 10, buttonSize = 16;
 
 	NSRect const closeRect = NSMakeRect(edgeMargin, round((NSHeight(bounds) - buttonSize) / 2), buttonSize, buttonSize);
 	_closeButton.frame = [_closeButton frameForAlignmentRect:closeRect];
 
+	NSRect const warningRect = NSMakeRect(NSMaxX(bounds) - edgeMargin - buttonSize, round((NSHeight(bounds) - buttonSize) / 2), buttonSize, buttonSize);
+	_warningButton.frame = [_warningButton frameForAlignmentRect:warningRect];
+
 	[_titleField sizeToFit];
 	CGFloat const x = NSMaxX(closeRect) + sectionGap;
+	CGFloat const titleRight = _warningButton.hidden ? NSMaxX(bounds) - edgeMargin : NSMinX(warningRect) - sectionGap;
 	CGFloat const titleHeight = NSHeight(_titleField.frame);
-	_titleField.frame = NSMakeRect(x, round((NSHeight(bounds) - titleHeight) / 2), std::max<CGFloat>(0, NSMaxX(bounds) - edgeMargin - x), titleHeight);
+	_titleField.frame = NSMakeRect(x, round((NSHeight(bounds) - titleHeight) / 2), std::max<CGFloat>(0, titleRight - x), titleHeight);
 }
 @end
 
@@ -244,7 +264,7 @@ static NSString* TMFileURLString (NSString* path)
 // Resources/katex by absolute tm-file:// URL — same scheme handler that
 // serves relative images; the assets load once per shell load, so per-render
 // cost is zero. Math arrives in fragments as data-tm-math elements (see
-// docs/markdown-preview.md) and is rendered by setContent’s math pass;
+// docs/preview.md) and is rendered by setContent’s math pass;
 // missing KaTeX assets degrade to the raw TeX as plain text.
 static NSString* MarkdownPreviewShell ()
 {
@@ -362,10 +382,18 @@ static NSString* CSSColorString (NSColor* aColor)
 
 	NSTimer* _renderDebounceTimer;
 	NSTimer* _scrollSyncTimer;
-	NSUInteger _renderGeneration;
+	std::atomic<NSUInteger> _renderGeneration; // atomic: queued external renders check staleness off the main thread before launching
 	dispatch_queue_t _renderQueue;
 
-	// View → Markdown Preview Theme: when set, these override the editor theme
+	// The current external converter process, protected independently of the
+	// serial render queue so cancellation is never queued behind the process
+	// it must stop.
+	std::mutex _externalProcessMutex;
+	std::shared_ptr<preview::command_runner_t> _externalProcess;
+	preview::converter_t _activeConverter; // what the last renderNow resolved — refreshConverter’s change detector
+	NSString* _externalDiagnostic;         // last failure’s bounded stderr, backing the header’s ⚠︎
+
+	// View → Preview Theme: when set, these override the editor theme
 	// colors pushed via themeBackgroundColor/themeForegroundColor.
 	NSString* _customThemeUUID;
 	NSColor* _customBackgroundColor;
@@ -378,9 +406,9 @@ static NSString* CSSColorString (NSColor* aColor)
 	{
 		_renderQueue = dispatch_queue_create("com.macromates.markdown-preview.render", DISPATCH_QUEUE_SERIAL);
 
-		// The preview theme defaults keys live app-wide (View → Markdown
-		// Preview Theme); the pane resolves them itself so the window
-		// controller only ever pushes the editor’s colors.
+		// The preview theme defaults keys live app-wide (View → Preview
+		// Theme); the pane resolves them itself so the window controller
+		// only ever pushes the editor’s colors.
 		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(userDefaultsDidChange:) name:NSUserDefaultsDidChangeNotification object:nil];
 		[self updateCustomThemeColors];
 
@@ -391,7 +419,7 @@ static NSString* CSSColorString (NSColor* aColor)
 
 		// The header outlives the web view: it is what the pane looks like
 		// while inactive, and it says which document the page belongs to.
-		_headerView = [[MarkdownPreviewHeaderView alloc] initWithFrame:NSZeroRect closeTarget:self closeAction:@selector(didClickClose:)];
+		_headerView = [[MarkdownPreviewHeaderView alloc] initWithFrame:NSZeroRect closeTarget:self closeAction:@selector(didClickClose:) warningAction:@selector(didClickWarning:)];
 		[self addSubview:_headerView];
 		[self applyHeaderColors];
 		[self updateHeader];
@@ -436,6 +464,7 @@ static NSString* CSSColorString (NSColor* aColor)
 - (void)dealloc
 {
 	[self detachBuffer];
+	[self cancelExternalRender];
 	[_renderDebounceTimer invalidate];
 	[_scrollSyncTimer invalidate];
 }
@@ -480,14 +509,13 @@ static NSString* CSSColorString (NSColor* aColor)
 		_renderDebounceTimer = nil;
 		[_scrollSyncTimer invalidate];
 		_scrollSyncTimer = nil;
-		++_renderGeneration; // orphan any in-flight render
+		[self invalidateRenders]; // a converter only ever runs while the pane is open — closing the pane kills it
 
 		[_webView.configuration.userContentController removeScriptMessageHandlerForName:@"tmPreview"];
 		[_webView removeFromSuperview];
 		_webView.navigationDelegate = nil;
 		_webView = nil;
 		_shellLoaded = NO;
-		_pendingContent = nil;
 	}
 }
 
@@ -567,6 +595,8 @@ static NSString* CSSColorString (NSColor* aColor)
 	}
 
 	[self detachBuffer];
+	[self invalidateRenders];          // the old document’s converter must not outlive its preview
+	[self setExternalDiagnostic:nil];  // the ⚠︎ belongs to the document that failed
 
 	if(_document = aDocument)
 	{
@@ -607,8 +637,20 @@ static NSString* CSSColorString (NSColor* aColor)
 - (void)documentDidSave:(NSNotification*)aNotification
 {
 	[self updateHeader];
-	if(_active && ![[self documentBaseURL] isEqual:_baseURL])
+	if(!_active)
+		return;
+
+	if(![[self documentBaseURL] isEqual:_baseURL])
+	{
+		// Save As into another directory: the page about to be replaced is the
+		// only one the results in flight were ever meant for.
+		[self invalidateRenders];
 		[self loadShell];
+	}
+	else if([self resolveConverter].kind == preview::converter_kind_t::external)
+	{
+		[self renderNow]; // the buffer is unchanged, but the converter may read the saved file — TM_FILEPATH exists only from now on
+	}
 }
 
 // The document’s buffer is about to be deleted (last open reference closed,
@@ -619,7 +661,7 @@ static NSString* CSSColorString (NSColor* aColor)
 	[self detachBuffer];
 	[_renderDebounceTimer invalidate];
 	_renderDebounceTimer = nil;
-	++_renderGeneration; // orphan any in-flight render
+	[self invalidateRenders]; // the closing document’s converter dies with it
 }
 
 - (void)attachBufferAndRender
@@ -650,14 +692,30 @@ static NSString* CSSColorString (NSColor* aColor)
 // = Update pipeline =
 // ===================
 
+- (preview::converter_t)resolveConverter
+{
+	return preview::converter_for_file_type(to_s(_document.fileType));
+}
+
+// Re-run resolution for the current document — the owner calls this from its
+// selectedDocument.fileType observation, so a grammar change can attach,
+// detach, or swap a converter without switching tabs.
+- (void)refreshConverter
+{
+	if(_active && [self resolveConverter] != _activeConverter)
+		[self attachBufferAndRender]; // renderNow records the new converter — or freezes, if it is gone
+}
+
 - (void)bufferDidChange
 {
 	if(!_active)
 		return;
 
+	NSTimeInterval const interval = [self resolveConverter].kind == preview::converter_kind_t::external ? kExternalRenderDebounceInterval : kRenderDebounceInterval;
+
 	[_renderDebounceTimer invalidate];
 	__weak MarkdownPreviewView* weakSelf = self;
-	_renderDebounceTimer = [NSTimer scheduledTimerWithTimeInterval:kRenderDebounceInterval repeats:NO block:^(NSTimer*){
+	_renderDebounceTimer = [NSTimer scheduledTimerWithTimeInterval:interval repeats:NO block:^(NSTimer*){
 		[weakSelf renderNow];
 	}];
 }
@@ -670,25 +728,122 @@ static NSString* CSSColorString (NSColor* aColor)
 	if(!_active)
 		return;
 
+	preview::converter_t const converter = [self resolveConverter];
+	_activeConverter = converter;
+	if(!converter)
+	{
+		// The document has no converter (lost via a grammar change, or gone
+		// with its bundle): freeze the last good content, kill any external
+		// process, and stand down until re-targeted or re-resolved.
+		[self invalidateRenders];
+		[self detachBuffer];
+		return;
+	}
+
 	if(!_attachedBuffer) // no buffer (yet): keep whatever is on screen — the
 		return;           // content-did-change notification re-attaches and renders
 
 	std::string const text = _attachedBuffer->substr(0, _attachedBuffer->size());
 	NSUInteger const generation = ++_renderGeneration;
+	[self cancelExternalRender]; // a superseded external process must not outlive the render replacing it
 
 	__weak MarkdownPreviewView* weakSelf = self;
+	if(converter.kind == preview::converter_kind_t::markdown)
+	{
+		dispatch_async(_renderQueue, ^{
+			NSString* html = to_ns(markdown::to_html(text));
+			dispatch_async(dispatch_get_main_queue(), ^{
+				MarkdownPreviewView* strongSelf = weakSelf;
+				if(strongSelf && generation == strongSelf->_renderGeneration)
+					[strongSelf applyContent:html];
+			});
+		});
+		return;
+	}
+
+	// The external pipeline: launch, stdin pumping, output draining, and
+	// waiting all run off the main thread; the generation counter discards
+	// stale output. Document state is captured here, on the main thread.
+	std::string const command     = converter.command;
+	std::string const directory   = to_s(_document.path ? [_document.path stringByDeletingLastPathComponent] : NSHomeDirectory()); // matches documentBaseURL
+	std::map<std::string, std::string> const environment = preview::converter_environment(oak::basic_environment(), to_s(_document.displayName), to_s(_document.path), converter.item);
+
 	dispatch_async(_renderQueue, ^{
-		NSString* html = to_ns(markdown::to_html(text));
+		MarkdownPreviewView* strongSelf = weakSelf;
+		if(!strongSelf || generation != strongSelf->_renderGeneration)
+			return; // superseded before launch
+
+		auto runner = preview::command_runner_t::launch(command, directory, environment, text, preview::command_runner_t::limits_t());
+		{
+			// Publishing the record re-checks staleness: a cancellation that
+			// ran between the check above and the launch must still win.
+			std::lock_guard<std::mutex> lock(strongSelf->_externalProcessMutex);
+			if(generation == strongSelf->_renderGeneration)
+					strongSelf->_externalProcess = runner;
+			else	runner->cancel();
+		}
+
+		preview::run_result_t result = runner->wait();
+
+		{
+			std::lock_guard<std::mutex> lock(strongSelf->_externalProcessMutex);
+			if(strongSelf->_externalProcess == runner)
+				strongSelf->_externalProcess = nullptr;
+		}
+
 		dispatch_async(dispatch_get_main_queue(), ^{
-			MarkdownPreviewView* strongSelf = weakSelf;
-			if(strongSelf && generation == strongSelf->_renderGeneration)
-				[strongSelf applyContent:html];
+			MarkdownPreviewView* innerSelf = weakSelf;
+			if(innerSelf && generation == innerSelf->_renderGeneration)
+				[innerSelf takeExternalRenderResult:result];
 		});
 	});
 }
 
+// Orphans every render already in flight — the built-in path’s results as
+// much as an external converter’s — and stops the process behind them. A
+// render belongs to the document, path, and converter environment it was
+// started for, so anything that changes one of those has to come through
+// here: a result that outlives its own document would otherwise still pass
+// the generation check and land in the page of the next one, header saying
+// one document and body showing another until the next edit.
+- (void)invalidateRenders
+{
+	++_renderGeneration;
+	[self cancelExternalRender];
+	_pendingContent = nil; // rendered for the page being left, not the one loading
+}
+
+// Any thread; never waits on the render queue — the runner’s cancel is
+// asynchronous (SIGTERM to the process group now, SIGKILL on a grace timer).
+- (void)cancelExternalRender
+{
+	std::shared_ptr<preview::command_runner_t> process;
+	{
+		std::lock_guard<std::mutex> lock(_externalProcessMutex);
+		process = _externalProcess;
+	}
+	if(process)
+		process->cancel();
+}
+
+- (void)takeExternalRenderResult:(preview::run_result_t const&)result
+{
+	if(result.status == preview::run_result_t::status_t::success)
+	{
+		[self applyContent:to_ns(result.html)];
+	}
+	else if(result.status != preview::run_result_t::status_t::cancelled) // cancellation of a stale generation is silent
+	{
+		// Keep the last good render — no modal, no content flash; the header’s
+		// ⚠︎ and the log carry the diagnostic.
+		os_log_error(OS_LOG_DEFAULT, "Preview command failed: %{public}s", result.diagnostic.c_str());
+		[self setExternalDiagnostic:to_ns(result.diagnostic) ?: @"Preview command failed."];
+	}
+}
+
 - (void)applyContent:(NSString*)html
 {
+	[self setExternalDiagnostic:nil]; // fresh content supersedes the last failure
 	if(!_shellLoaded)
 	{
 		_pendingContent = html;
@@ -696,6 +851,38 @@ static NSString* CSSColorString (NSColor* aColor)
 	}
 	[_webView evaluateJavaScript:[NSString stringWithFormat:@"TMPreview.setContent(%@);", JSONStringLiteral(html)] completionHandler:nil];
 	[self scheduleScrollSync]; // content height changed — re-anchor (e.g. keep the bottom pinned while typing at the end)
+}
+
+// ==================================
+// = External converter diagnostics =
+// ==================================
+
+- (void)setExternalDiagnostic:(NSString*)diagnostic
+{
+	if(_externalDiagnostic == diagnostic || [_externalDiagnostic isEqualToString:diagnostic])
+		return;
+	_externalDiagnostic = diagnostic;
+
+	NSString* tooltip = nil;
+	if(diagnostic)
+	{
+		NSArray<NSString*>* lines = [diagnostic componentsSeparatedByString:@"\n"];
+		tooltip = lines.count <= 4 ? diagnostic : [[[lines subarrayWithRange:NSMakeRange(0, 4)] componentsJoinedByString:@"\n"] stringByAppendingString:@"\n…"];
+	}
+
+	_headerView.warningButton.hidden  = diagnostic == nil;
+	_headerView.warningButton.toolTip = tooltip;
+	_headerView.needsLayout           = YES;
+}
+
+// The tooltip is too small for real converter output; the full (bounded)
+// diagnostic opens as a document, where it is selectable and searchable.
+- (void)didClickWarning:(id)sender
+{
+	if(!_externalDiagnostic)
+		return;
+	OakDocument* doc = [OakDocument documentWithString:_externalDiagnostic fileType:@"text.plain" customName:@"Preview Command Output"];
+	[OakDocumentController.sharedInstance showDocument:doc];
 }
 
 // ===============
@@ -791,7 +978,7 @@ static NSString* CSSColorString (NSColor* aColor)
 // = Theme =
 // =========
 
-// The pane may use its own theme (View → Markdown Preview Theme): when any of
+// The pane may use its own theme (View → Preview Theme): when any of
 // the markdownPreview… defaults keys is set, the theme resolved from them
 // overrides the editor colors the window controller pushes. Keys that are
 // unset fall back to the editor’s counterpart, so forcing just the appearance

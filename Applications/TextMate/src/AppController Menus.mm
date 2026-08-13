@@ -138,7 +138,7 @@ static NSString* NameForLocaleIdentifier (NSString* languageCode)
 	[NSUserDefaults.standardUserDefaults setObject:[sender representedObject] forKey:@"darkModeThemeUUID"];
 }
 
-// The Markdown preview follows the editor theme until any of these three keys
+// The preview pane follows the editor theme until any of these three keys
 // is set; “Use Editor Theme” returns to that state by clearing all of them.
 // Unset keys fall back to the editor’s counterpart, so forcing just the
 // appearance (say, light preview against a dark editor) is a single click.
@@ -246,7 +246,7 @@ static NSString* NameForLocaleIdentifier (NSString* languageCode)
 	return YES;
 }
 
-// Shared by the editor’s Theme menu and the Markdown Preview Theme menu: same
+// Shared by the editor’s Theme menu and the Preview Theme menu: same
 // appearance section and light/dark theme submenus, differing only in the
 // actions (and thereby the defaults keys) they drive. The preview variant adds
 // a “Use Editor Theme” item and skips the themes’ key equivalents, which

@@ -14,22 +14,28 @@
 @property (nonatomic, copy) void (^widthChangeHandler)(CGFloat newWidth);
 @end
 
-// Live GFM preview rendered by cmark-gfm into a persistent WKWebView. A pure
-// read-only observer of the document: buffer change callbacks → debounce →
-// off-main render → innerHTML patch; the page itself is loaded only once per
-// baseURL. While inactive the web view is torn down and no callbacks are
-// registered, so hidden previews cost nothing.
+// Live preview pane. Markdown renders in-process via cmark-gfm; any scope
+// whose bundle declares a `previewCommand` setting renders through that
+// external converter instead (see docs/preview.md). Either way the
+// pane is a pure read-only observer of the document: buffer change callbacks
+// → debounce → off-main render → innerHTML patch; the page itself is loaded
+// only once per baseURL. While inactive the web view is torn down, no
+// callbacks are registered, and no converter runs — a converter only ever
+// executes while the pane is open, and closing the pane kills it.
 //
 // The view observes its document’s notifications itself (content changed,
-// saved, will close), so the owner only re-targets `document` — e.g. when the
-// active tab switches to another Markdown document. When the previewed
-// document closes, the buffer callback detaches but the last render stays on
-// screen until the pane is re-targeted.
+// saved, will close), so the owner only re-targets `document` — e.g. when
+// the active tab switches to another previewable document — and calls
+// `refreshConverter` when the document’s file type changes in place. When
+// the previewed document closes, or loses its converter, the renderer
+// detaches but the last render stays on screen until the pane is
+// re-targeted.
 //
 // A header strip above the page names the previewed document and carries the
-// close control: the preview keeps showing the last Markdown document after
-// the active tab moves on to something else, so without a name on it there
-// is nothing saying WHAT is on screen.
+// close control: the preview keeps showing the last previewable document
+// after the active tab moves on to something else, so without a name on it
+// there is nothing saying WHAT is on screen. After an external converter
+// fails, the header also shows a clickable ⚠︎ carrying the diagnostic.
 //
 // `textView` enables editor → preview scroll sync and click-to-jump; the
 // owner should set it to nil while the text view shows a different document
@@ -38,6 +44,10 @@
 @property (nonatomic, weak) OakTextView* textView;
 @property (nonatomic) OakDocument* document;
 @property (nonatomic, getter=isActive) BOOL active;
+
+// Re-resolves the document’s preview converter (built-in, external, or none)
+// after a file-type change; a no-op when the resolution is unchanged.
+- (void)refreshConverter;
 
 // Owner hook: the header's close control (the pane has no other way to
 // dismiss itself).

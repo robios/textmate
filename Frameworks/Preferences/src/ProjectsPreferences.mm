@@ -180,7 +180,7 @@
 		@[ OakCreateLabel(@"Non-text files:"),         nonTextFilesTextField                    ],
 		@[ ],
 		@[ OakCreateLabel(@"Show command output:"),    showCommandOutputPopUp                   ],
-		@[ OakCreateLabel(@"Show Markdown preview:"),  markdownPreviewPositionPopUp             ],
+		@[ OakCreateLabel(@"Show preview:"),           markdownPreviewPositionPopUp             ],
 	]];
 
 	for(NSView* popUpButton in @[ fileBrowserPositionPopUp, showCommandOutputPopUp, markdownPreviewPositionPopUp ])

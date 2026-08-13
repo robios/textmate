@@ -12,7 +12,7 @@ picks the mode.
 | `#`    | Bundles         | Commands, grammars and snippets, opened in the Bundle Editor |
 | `:`    | Go to Line      | A line number in the current document                       |
 | `/`    | Find            | Lines of the current document containing the query          |
-| `~`    | Settings        | Editor toggles — soft wrap, invisibles, line numbers, minimap, Markdown preview, diff pane, diagnostics pane, wrap column, indent guides, spell checking, scroll past end |
+| `~`    | Settings        | Editor toggles — soft wrap, invisibles, line numbers, minimap, preview, diff pane, diagnostics pane, wrap column, indent guides, spell checking, scroll past end |
 
 Delete the prefix to fall back to Recent Projects.
 

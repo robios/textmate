@@ -36,9 +36,11 @@ and drop, and a `runLocation` property so a bundle command that wants a TTY
 gets one instead of having its output captured. →
 [docs/terminal.md](docs/terminal.md)
 
-**Markdown preview.** A live cmark-gfm preview beside the editor, GitHub-style
-tables, scroll sync, its own theme or the editor's — and the same renderer as a
-CLI for bundles to use. → [docs/markdown-preview.md](docs/markdown-preview.md)
+**Preview pane.** A live preview beside the editor: cmark-gfm for Markdown
+with GitHub-style tables and KaTeX math, scroll sync, its own theme or the
+editor's — and the same renderer as a CLI for bundles to use. Other formats
+plug in through a bundle-declared `previewCommand`. →
+[docs/preview.md](docs/preview.md)
 
 **Minimap.** With a source-control lane on one edge and a diagnostics lane on
 the other. → [docs/minimap.md](docs/minimap.md)
