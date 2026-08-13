@@ -48,6 +48,17 @@ void setup_preview_fixtures ()
 		"	settings = { previewCommand = ': > preview-started; while [ ! -f preview-go ]; do sleep 0.05; done; printf \"<pre data-sourcepos=1:1-1:1>\"; cat; printf \"</pre>\"; : > preview-done'; };"
 		"}";
 
+	// A converter whose verdict depends on its input: a buffer containing
+	// ‘FAIL’ exits nonzero with a diagnostic on stderr, anything else renders.
+	// One fixture covers both failure orders the pane distinguishes — a
+	// failing first render right after a document switch, and a failure
+	// following a good render of the same document.
+	static std::string FlakyPaneTestPreview =
+		"{	name     = 'Flaky Pane Test Preview';"
+		"	scope    = 'source.pane-test-flaky';"
+		"	settings = { previewCommand = 'input=$(cat); case \"$input\" in *FAIL*) echo \"flaky converter refused: $input\" >&2; exit 1;; esac; printf \"<pre data-sourcepos=1:1-1:1>%s</pre>\" \"$input\"'; };"
+		"}";
+
 	// A converter that leaks a SIGTERM-proof background job into its process
 	// group and then exits normally, recording the job’s pid in the document’s
 	// directory. Nothing but the run itself is left to clean the group up.
@@ -63,6 +74,7 @@ void setup_preview_fixtures ()
 	bundleIndex.add(bundles::kItemTypeSettings, EmptyCommand);
 	bundleIndex.add(bundles::kItemTypeSettings, PaneTestPreview);
 	bundleIndex.add(bundles::kItemTypeSettings, GatedPaneTestPreview);
+	bundleIndex.add(bundles::kItemTypeSettings, FlakyPaneTestPreview);
 	bundleIndex.add(bundles::kItemTypeSettings, OrphanPaneTestPreview);
 	bundleIndex.commit();
 }

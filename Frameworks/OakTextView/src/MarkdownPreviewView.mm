@@ -7,8 +7,8 @@
 #import <QuartzCore/QuartzCore.h>
 #import <document/OakDocument.h>
 #import <document/OakDocument Private.h>
-#import <document/OakDocumentController.h>
 #import <HTMLOutput/helpers/OakFileURLSchemeHandler.h>
+#import <HTMLOutputWindow/HTMLOutputWindow.h>
 #import <buffer/buffer.h>
 #import <bundles/bundles.h>
 #import <io/environment.h>
@@ -376,6 +376,7 @@ static NSString* CSSColorString (NSColor* aColor)
 	BOOL _shellLoaded;
 	NSURL* _baseURL;
 	NSString* _pendingContent;
+	NSUUID* _renderedDocumentIdentifier; // whose render the page shows — nil while the page is empty; decides whether a failure may keep it
 
 	std::unique_ptr<preview_buffer_callback_t> _bufferCallback;
 	ng::buffer_t* _attachedBuffer;
@@ -392,6 +393,7 @@ static NSString* CSSColorString (NSColor* aColor)
 	std::shared_ptr<preview::command_runner_t> _externalProcess;
 	preview::converter_t _activeConverter; // what the last renderNow resolved — refreshConverter’s change detector
 	NSString* _externalDiagnostic;         // last failure’s bounded stderr, backing the header’s ⚠︎
+	HTMLOutputWindowController* _diagnosticWindowController; // lazily created by the ⚠︎ click, reused for every later one
 
 	// View → Preview Theme: when set, these override the editor theme
 	// colors pushed via themeBackgroundColor/themeForegroundColor.
@@ -562,6 +564,7 @@ static NSString* CSSColorString (NSColor* aColor)
 	if(!_webView)
 		return;
 	_shellLoaded = NO;
+	_renderedDocumentIdentifier = nil; // the fresh shell shows nobody’s render
 	_baseURL = [self documentBaseURL];
 	[_webView loadHTMLString:MarkdownPreviewShell() baseURL:_baseURL];
 }
@@ -834,8 +837,13 @@ static NSString* CSSColorString (NSColor* aColor)
 	}
 	else if(result.status != preview::run_result_t::status_t::cancelled) // cancellation of a stale generation is silent
 	{
-		// Keep the last good render — no modal, no content flash; the header’s
-		// ⚠︎ and the log carry the diagnostic.
+		// A failure never paints content — no modal, no flash; the header’s ⚠︎
+		// and the log carry the diagnostic. The page only keeps what it shows
+		// when that is this document’s own last good render: content rendered
+		// from a previously previewed document is cleared instead, so a failing
+		// first render never leaves this document’s header over its body.
+		if(![_renderedDocumentIdentifier isEqual:_document.identifier])
+			[self clearContent];
 		os_log_error(OS_LOG_DEFAULT, "Preview command failed: %{public}s", result.diagnostic.c_str());
 		[self setExternalDiagnostic:to_ns(result.diagnostic) ?: @"Preview command failed."];
 	}
@@ -849,8 +857,20 @@ static NSString* CSSColorString (NSColor* aColor)
 		_pendingContent = html;
 		return;
 	}
+	_renderedDocumentIdentifier = _document.identifier;
 	[_webView evaluateJavaScript:[NSString stringWithFormat:@"TMPreview.setContent(%@);", JSONStringLiteral(html)] completionHandler:nil];
 	[self scheduleScrollSync]; // content height changed — re-anchor (e.g. keep the bottom pinned while typing at the end)
+}
+
+// Empties the page and hands the (empty) content to the current document, so
+// a follow-up failure of the same document keeps it. The diagnostic is not
+// touched: clearing is what a failure does, not what recovery does.
+- (void)clearContent
+{
+	_pendingContent = nil; // rendered for the page being left — a cleared page must not resurrect it on shell load
+	_renderedDocumentIdentifier = _document.identifier;
+	if(_shellLoaded)
+		[_webView evaluateJavaScript:@"TMPreview.setContent('');" completionHandler:nil];
 }
 
 // ==================================
@@ -875,14 +895,37 @@ static NSString* CSSColorString (NSColor* aColor)
 	_headerView.needsLayout           = YES;
 }
 
+// The diagnostic is plain text, but the HTML output window wants a page: a
+// minimal one whose <title> is what the window title binding shows, honoring
+// the system appearance the way command output pages do via color-scheme.
+static NSString* DiagnosticPageHTML (NSString* title, NSString* diagnostic)
+{
+	NSString* (^escaped)(NSString*) = ^(NSString* str){
+		str = [str stringByReplacingOccurrencesOfString:@"&" withString:@"&amp;"];
+		str = [str stringByReplacingOccurrencesOfString:@"<" withString:@"&lt;"];
+		return [str stringByReplacingOccurrencesOfString:@">" withString:@"&gt;"];
+	};
+	return [NSString stringWithFormat:
+		@"<!DOCTYPE html><html><head><meta charset='utf-8'><title>%@</title>"
+		 "<style>"
+		 ":root { color-scheme: light dark; }"
+		 "body { margin: 1.5em 2em; }"
+		 "pre { font: 12px/1.45 ui-monospace, Menlo, monospace; white-space: pre-wrap; word-break: break-word; }"
+		 "</style></head><body><pre>%@</pre></body></html>",
+		escaped(title), escaped(diagnostic)];
+}
+
 // The tooltip is too small for real converter output; the full (bounded)
-// diagnostic opens as a document, where it is selectable and searchable.
+// diagnostic goes to the classic HTML output window — selectable, searchable,
+// and dismissed with a click instead of lingering as an untitled document.
 - (void)didClickWarning:(id)sender
 {
 	if(!_externalDiagnostic)
 		return;
-	OakDocument* doc = [OakDocument documentWithString:_externalDiagnostic fileType:@"text.plain" customName:@"Preview Command Output"];
-	[OakDocumentController.sharedInstance showDocument:doc];
+	if(!_diagnosticWindowController)
+		_diagnosticWindowController = [[HTMLOutputWindowController alloc] init];
+	[_diagnosticWindowController.htmlOutputView setContent:DiagnosticPageHTML([NSString stringWithFormat:@"Preview: %@", _document.displayName], _externalDiagnostic)];
+	[_diagnosticWindowController showWindow:self];
 }
 
 // ===============

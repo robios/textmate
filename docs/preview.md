@@ -146,10 +146,19 @@ A helper meant to outlive one render therefore has to leave the group of its
 own accord (`setsid`), and is then yours to manage.
 
 When a run fails — nonzero exit, timeout, kill, launch failure, invalid
-UTF-8, output overflow — the pane keeps the last good render and shows a
-small ⚠︎ in its header: the tooltip carries the first lines of stderr, and
-clicking it opens the full (bounded) diagnostic in a new untitled document.
-The failure also goes to the log. There is no modal and no content flash.
+UTF-8, output overflow — the pane shows a small ⚠︎ in its header: the tooltip
+carries the first lines of stderr, and clicking it opens the full (bounded)
+diagnostic — a summary line plus the captured stderr — in TextMate's HTML
+output window, titled after the previewed document. The failure also goes to
+the log. There is no modal and no content flash.
+
+A failure never paints content of its own, and what happens to the content
+already on screen depends on whose it is. While the failing render is for the
+document the pane is already showing, the last good render stays put — a
+transient converter error must not blank the page you are reading. But when
+the pane was just switched to a different document and that document fails
+before producing any good render, the page is cleared: the previous
+document's body must not sit under the new document's header.
 
 A converter runs only while the preview pane is open — never on merely
 opening a file — and closing the pane kills it. `previewCommand` executes

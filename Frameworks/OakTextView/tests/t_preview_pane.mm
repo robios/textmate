@@ -1,5 +1,6 @@
 #import "../src/MarkdownPreviewView.h"
 #import <document/OakDocument.h>
+#import <HTMLOutput/HTMLOutput.h>
 #import <test/jail.h>
 #import <ns/ns.h>
 #import <WebKit/WebKit.h>
@@ -45,13 +46,44 @@ static NSTextField* text_field_in (NSView* view)
 	return nil;
 }
 
-// Runs `script` in the pane’s page from the main run loop.
-static id evaluate_js (MarkdownPreviewView* pane, NSString* script)
+// The header’s ⚠︎ — the only control carrying the failure accessibility label.
+static NSButton* warning_button_in (NSView* view)
+{
+	for(NSView* subview in view.subviews)
+	{
+		if([subview isKindOfClass:[NSButton class]] && [[(NSButton*)subview image].accessibilityDescription isEqualToString:@"Preview Command Failed"])
+			return (NSButton*)subview;
+		if(NSButton* nested = warning_button_in(subview))
+			return nested;
+	}
+	return nil;
+}
+
+// Polls the ⚠︎ until it reaches `visible` — the pane’s only outward sign that
+// a render completed with a failure rather than content.
+static BOOL wait_for_warning (MarkdownPreviewView* pane, BOOL visible, NSTimeInterval timeout)
+{
+	NSDate* deadline = [NSDate dateWithTimeIntervalSinceNow:timeout];
+	while([deadline timeIntervalSinceNow] > 0)
+	{
+		__block BOOL state = NO;
+		on_main(^{
+			NSButton* button = warning_button_in(pane);
+			state = button && !button.hidden;
+		});
+		if(state == visible)
+			return YES;
+		usleep(100'000);
+	}
+	return NO;
+}
+
+// Runs `script` in `webView` from the main run loop.
+static id evaluate_js_in_web_view (WKWebView* webView, NSString* script)
 {
 	__block id value = nil;
 	dispatch_semaphore_t done = dispatch_semaphore_create(0);
 	on_main(^{
-		WKWebView* webView = web_view_in(pane);
 		[webView evaluateJavaScript:script completionHandler:^(id result, NSError* error){
 			value = result;
 			dispatch_semaphore_signal(done);
@@ -61,6 +93,14 @@ static id evaluate_js (MarkdownPreviewView* pane, NSString* script)
 	});
 	dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC));
 	return value;
+}
+
+// Runs `script` in the pane’s page from the main run loop.
+static id evaluate_js (MarkdownPreviewView* pane, NSString* script)
+{
+	__block WKWebView* webView = nil;
+	on_main(^{ webView = web_view_in(pane); });
+	return evaluate_js_in_web_view(webView, script);
 }
 
 static NSString* page_content (MarkdownPreviewView* pane)
@@ -298,5 +338,238 @@ void test_document_switch_orphans_the_old_render ()
 		window.contentView = nil;
 		[oldDocument close];
 		[newDocument close];
+	});
+}
+
+// A failure right after a document switch, before the new document rendered
+// anything: within one directory the shell survives the switch, so without a
+// clear the old document’s body would sit under the new document’s header
+// for as long as the converter keeps failing.
+void test_failure_after_document_switch_clears_the_page ()
+{
+	test::jail_t jail;
+	jail.set_content("good.txt", "STALE-BODY-A");
+	jail.set_content("bad.txt", "FAIL-AT-ONCE-B");
+
+	OakDocument* goodDocument = loaded_document(jail.path("good.txt"), @"source.pane-test");
+	OakDocument* badDocument  = loaded_document(jail.path("bad.txt"), @"source.pane-test-flaky");
+	OAK_ASSERT(goodDocument && badDocument);
+
+	__block NSWindow* window;
+	__block MarkdownPreviewView* pane;
+
+	on_main(^{
+		window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 400, 600) styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+		pane = [[MarkdownPreviewView alloc] initWithFrame:NSMakeRect(0, 0, 400, 600)];
+		window.contentView = pane;
+
+		pane.document = goodDocument;
+		pane.active   = YES;
+	});
+
+	NSString* html = wait_for_content(pane, @"STALE-BODY-A", 20);
+	OAK_ASSERT_NE([html rangeOfString:@"STALE-BODY-A"].location, NSNotFound);
+
+	on_main(^{ pane.document = badDocument; });
+	OAK_ASSERT(wait_for_warning(pane, YES, 20));
+
+	// The failure must have taken the old document’s body with it — and the
+	// page stays empty rather than flickering anything back.
+	for(size_t i = 0; i < 5; ++i)
+	{
+		html = page_content(pane);
+		OAK_ASSERT_EQ(to_s(html), "");
+		usleep(100'000);
+	}
+
+	// Recovery: once the new document renders, the content is its own and the
+	// ⚠︎ stands down.
+	on_main(^{ badDocument.content = @"RECOVERED-BODY-B"; });
+	html = wait_for_content(pane, @"RECOVERED-BODY-B", 20);
+	OAK_ASSERT_NE([html rangeOfString:@"RECOVERED-BODY-B"].location, NSNotFound);
+	OAK_ASSERT(wait_for_warning(pane, NO, 20));
+
+	on_main(^{
+		pane.active = NO;
+		pane.document = nil;
+		window.contentView = nil;
+		[goodDocument close];
+		[badDocument close];
+	});
+}
+
+// The cross-directory variant: the switch reloads the shell, so on top of the
+// clear this pins that no stale pending content resurrects the old document’s
+// body into the new, failing document’s page.
+void test_cross_directory_failure_never_shows_the_old_document ()
+{
+	test::jail_t oldJail, newJail;
+	oldJail.set_content("good.txt", "STALE-BODY-A");
+	newJail.set_content("bad.txt", "FAIL-AT-ONCE-B");
+
+	OakDocument* goodDocument = loaded_document(oldJail.path("good.txt"), @"source.pane-test");
+	OakDocument* badDocument  = loaded_document(newJail.path("bad.txt"), @"source.pane-test-flaky");
+	OAK_ASSERT(goodDocument && badDocument);
+
+	__block NSWindow* window;
+	__block MarkdownPreviewView* pane;
+
+	on_main(^{
+		window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 400, 600) styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+		pane = [[MarkdownPreviewView alloc] initWithFrame:NSMakeRect(0, 0, 400, 600)];
+		window.contentView = pane;
+
+		pane.document = goodDocument;
+		pane.active   = YES;
+	});
+
+	NSString* html = wait_for_content(pane, @"STALE-BODY-A", 20);
+	OAK_ASSERT_NE([html rangeOfString:@"STALE-BODY-A"].location, NSNotFound);
+
+	on_main(^{ pane.document = badDocument; });
+	OAK_ASSERT(wait_for_warning(pane, YES, 20));
+
+	for(size_t i = 0; i < 5; ++i)
+	{
+		html = page_content(pane);
+		OAK_ASSERT_EQ(to_s(html), "");
+		usleep(100'000);
+	}
+
+	on_main(^{
+		pane.active = NO;
+		pane.document = nil;
+		window.contentView = nil;
+		[goodDocument close];
+		[badDocument close];
+	});
+}
+
+// The other half of the failure contract: while the failing render is for the
+// document already on screen, its last good body stays put under the ⚠︎.
+void test_same_document_failure_keeps_content ()
+{
+	test::jail_t jail;
+	jail.set_content("doc.txt", "GOOD-BODY-ONE");
+
+	OakDocument* doc = loaded_document(jail.path("doc.txt"), @"source.pane-test-flaky");
+	OAK_ASSERT(doc != nil);
+
+	__block NSWindow* window;
+	__block MarkdownPreviewView* pane;
+
+	on_main(^{
+		window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 400, 600) styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+		pane = [[MarkdownPreviewView alloc] initWithFrame:NSMakeRect(0, 0, 400, 600)];
+		window.contentView = pane;
+
+		pane.document = doc;
+		pane.active   = YES;
+	});
+
+	NSString* html = wait_for_content(pane, @"GOOD-BODY-ONE", 20);
+	OAK_ASSERT_NE([html rangeOfString:@"GOOD-BODY-ONE"].location, NSNotFound);
+
+	on_main(^{ doc.content = @"NOW-PLEASE-FAIL"; });
+	OAK_ASSERT(wait_for_warning(pane, YES, 20));
+
+	for(size_t i = 0; i < 5; ++i)
+	{
+		html = page_content(pane);
+		OAK_ASSERT_NE([html rangeOfString:@"GOOD-BODY-ONE"].location, NSNotFound);
+		usleep(100'000);
+	}
+
+	// …and a later good render replaces it and clears the ⚠︎.
+	on_main(^{ doc.content = @"GOOD-BODY-TWO"; });
+	html = wait_for_content(pane, @"GOOD-BODY-TWO", 20);
+	OAK_ASSERT_NE([html rangeOfString:@"GOOD-BODY-TWO"].location, NSNotFound);
+	OAK_ASSERT(wait_for_warning(pane, NO, 20));
+
+	on_main(^{
+		pane.active = NO;
+		pane.document = nil;
+		window.contentView = nil;
+		[doc close];
+	});
+}
+
+// Clicking the ⚠︎ presents the full diagnostic in the classic HTML output
+// window. Tests in this suite run in parallel, so the window is matched by
+// the diagnostic on its page, never by mere existence.
+void test_warning_click_opens_diagnostic_window ()
+{
+	test::jail_t jail;
+	jail.set_content("bad.txt", "FAIL-FOR-THE-DIAGNOSTIC-WINDOW");
+
+	OakDocument* doc = loaded_document(jail.path("bad.txt"), @"source.pane-test-flaky");
+	OAK_ASSERT(doc != nil);
+
+	__block NSWindow* window;
+	__block MarkdownPreviewView* pane;
+
+	on_main(^{
+		window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 400, 600) styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+		pane = [[MarkdownPreviewView alloc] initWithFrame:NSMakeRect(0, 0, 400, 600)];
+		window.contentView = pane;
+
+		pane.document = doc;
+		pane.active   = YES;
+	});
+	OAK_ASSERT(wait_for_warning(pane, YES, 20));
+
+	on_main(^{ [warning_button_in(pane) performClick:nil]; });
+
+	// The page carries the runner’s summary line and the converter’s stderr.
+	__block NSWindow* diagnosticWindow = nil;
+	NSString* pageText = nil;
+	NSDate* deadline = [NSDate dateWithTimeIntervalSinceNow:20];
+	while([deadline timeIntervalSinceNow] > 0 && !diagnosticWindow)
+	{
+		__block NSArray<NSView*>* outputViews;
+		on_main(^{
+			NSMutableArray<NSView*>* views = [NSMutableArray array];
+			for(NSWindow* candidate in NSApplication.sharedApplication.windows)
+			{
+				if([candidate.contentView isKindOfClass:[OakHTMLOutputView class]])
+					[views addObject:candidate.contentView];
+			}
+			outputViews = views;
+		});
+
+		for(NSView* view in outputViews)
+		{
+			id text = evaluate_js_in_web_view([(OakHTMLOutputView*)view webView], @"document.body ? document.body.innerText : ''");
+			if([text isKindOfClass:[NSString class]] && [text rangeOfString:@"FAIL-FOR-THE-DIAGNOSTIC-WINDOW"].location != NSNotFound)
+			{
+				pageText = text;
+				on_main(^{ diagnosticWindow = view.window; });
+				break;
+			}
+		}
+		usleep(100'000);
+	}
+	OAK_ASSERT(diagnosticWindow != nil);
+	OAK_ASSERT_NE([pageText rangeOfString:@"flaky converter refused"].location, NSNotFound);
+	OAK_ASSERT_NE([pageText rangeOfString:@"exited with status 1"].location, NSNotFound);
+
+	// The window title identifies the previewed document, via the page title
+	// binding — asynchronous, hence polled.
+	__block BOOL titled = NO;
+	deadline = [NSDate dateWithTimeIntervalSinceNow:10];
+	while([deadline timeIntervalSinceNow] > 0 && !titled)
+	{
+		on_main(^{ titled = [diagnosticWindow.title isEqualToString:@"Preview: bad.txt"]; });
+		if(!titled)
+			usleep(100'000);
+	}
+	OAK_ASSERT(titled);
+
+	on_main(^{
+		[diagnosticWindow close];
+		pane.active = NO;
+		pane.document = nil;
+		window.contentView = nil;
+		[doc close];
 	});
 }
