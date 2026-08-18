@@ -34,6 +34,16 @@ void test_parse_mention ()
 	OAK_ASSERT(agent_cli::parse_arguments({ "mention", "--file", "/tmp/foo.txt" }, &request, &error));
 	OAK_ASSERT_EQ(request.arguments["line-start"], "0");
 	OAK_ASSERT_EQ(request.arguments["line-end"], "0");
+
+	// --project rides beside the wire arguments rather than in them: it decides
+	// the ‘cwd’ that is sent (mention_cwd), and is not itself a request key.
+	OAK_ASSERT(agent_cli::parse_arguments({ "mention", "--file", "/tmp/foo.txt", "--project", "/Users/me/project" }, &request, &error));
+	OAK_ASSERT_EQ(request.project, "/Users/me/project");
+	OAK_ASSERT_EQ(request.arguments.count("project"), 0);
+
+	// omitted, it is simply empty — mention_cwd then keeps the working directory
+	OAK_ASSERT(agent_cli::parse_arguments({ "mention", "--file", "/tmp/foo.txt" }, &request, &error));
+	OAK_ASSERT_EQ(request.project, "");
 }
 
 void test_parse_mention_errors ()
@@ -50,7 +60,13 @@ void test_parse_mention_errors ()
 	OAK_ASSERT(!agent_cli::parse_arguments({ "mention", "--file", "/a", "--line-end", "3" }, &request, &error));                     // end without start
 	OAK_ASSERT(!agent_cli::parse_arguments({ "mention", "--file", "/a", "--line-start", "5", "--line-end", "2" }, &request, &error)); // end < start
 	OAK_ASSERT(!agent_cli::parse_arguments({ "mention", "--file", "/a", "--bogus" }, &request, &error));                             // unknown option
+	OAK_ASSERT(!agent_cli::parse_arguments({ "mention", "--file", "/a", "--project" }, &request, &error));                           // missing value
 	OAK_ASSERT(!error.empty());
+
+	// An unusable --project value is not a usage error: the caller falls back to
+	// the working directory, so the mention is placed rather than refused.
+	OAK_ASSERT(agent_cli::parse_arguments({ "mention", "--file", "/a", "--project", "" }, &request, &error));
+	OAK_ASSERT(agent_cli::parse_arguments({ "mention", "--file", "/a", "--project", "relative/path" }, &request, &error));
 }
 
 void test_frame_request ()
@@ -142,22 +158,22 @@ void test_request_cwd ()
 	OAK_ASSERT_EQ(withoutCwd.arguments.count("cwd"), 0);
 }
 
-void test_mention_cwd_prefers_the_window_project ()
+void test_mention_cwd_prefers_the_stated_project ()
 {
 	// A bundle command runs in the document’s directory, so “Send Selection to
 	// Claude” on a file outside the window’s project — or inside a checkout
-	// nested in it — would name the wrong project, or none. TM_PROJECT_DIRECTORY
-	// names the window that started it.
+	// nested in it — would name the wrong project, or none. --project names the
+	// window that started it.
 	OAK_ASSERT_EQ(agent_cli::mention_cwd("/Users/me/project", "/Users/me/elsewhere"), "/Users/me/project");
 	OAK_ASSERT_EQ(agent_cli::mention_cwd("/Users/me/project", "/Users/me/project/vendor/library"), "/Users/me/project");
 
-	// A shell outside TextMate has no such variable, and an unusable value is no
-	// better than none: both keep the working directory the CLI has always sent.
-	OAK_ASSERT_EQ(agent_cli::mention_cwd(nullptr, "/Users/me/elsewhere"), "/Users/me/elsewhere");
+	// A shell invocation states no project, and an unusable value is no better
+	// than none: both keep the working directory, which is the identity the
+	// WebSocket server resolves sessions by, so the two cannot disagree.
 	OAK_ASSERT_EQ(agent_cli::mention_cwd("", "/Users/me/elsewhere"), "/Users/me/elsewhere");
 	OAK_ASSERT_EQ(agent_cli::mention_cwd("project", "/Users/me/elsewhere"), "/Users/me/elsewhere");
 
 	// Nothing to fall back to either: dropped by set_request_cwd, read as “not
 	// supplied” by the app, which then places the mention by its file path.
-	OAK_ASSERT_EQ(agent_cli::mention_cwd(nullptr, ""), "");
+	OAK_ASSERT_EQ(agent_cli::mention_cwd("", ""), "");
 }

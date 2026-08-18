@@ -16,6 +16,11 @@ namespace agent_cli
 	{
 		std::string command; // "agent-mention" or "agent-status"
 		std::map<std::string, std::string> arguments;
+
+		// mention’s ‘--project’, kept out of ‘arguments’ because it is not sent:
+		// it only selects which directory becomes the ‘cwd’ value that is (see
+		// mention_cwd), and the app knows no such key.
+		std::string project;
 	};
 
 	inline bool parse_line_number (std::string const& value, long* out)
@@ -39,12 +44,14 @@ namespace agent_cli
 	constexpr char const* McpCommand = "agent-mcp";
 
 	// Parse ‘tm_agent <subcommand> …’ (argv[0] already stripped):
-	//   mention --file <path> [--line-start <n>] [--line-end <n>]
+	//   mention --file <path> [--line-start <n>] [--line-end <n>] [--project <path>]
 	//   status
 	//   mcp
 	// Line numbers are 0-based. --line-start without --line-end references a
-	// single line; omitting both references the start of the file (0-0). On
-	// success fills *request and returns true, otherwise *error explains why.
+	// single line; omitting both references the start of the file (0-0). An
+	// unusable --project value is not an error, it just leaves the origin to the
+	// working directory (see mention_cwd). On success fills *request and returns
+	// true, otherwise *error explains why.
 	inline bool parse_arguments (std::vector<std::string> const& args, request_t* request, std::string* error)
 	{
 		auto fail = [&error](std::string const& message){
@@ -76,7 +83,7 @@ namespace agent_cli
 		if(subcommand != "mention")
 			return fail("unknown subcommand ‘" + subcommand + "’ (expected ‘mention’, ‘status’, or ‘mcp’)");
 
-		std::string file;
+		std::string file, project;
 		long lineStart = -1, lineEnd = -1;
 
 		for(size_t i = 1; i < args.size(); ++i)
@@ -100,6 +107,12 @@ namespace agent_cli
 				if(!hasValue || !parse_line_number(args[++i], &lineEnd))
 					return fail("--line-end requires a non-negative integer (0-based)");
 			}
+			else if(arg == "--project")
+			{
+				if(!hasValue)
+					return fail("--project requires a path");
+				project = args[++i];
+			}
 			else
 			{
 				return fail("unknown option ‘" + arg + "’");
@@ -118,6 +131,7 @@ namespace agent_cli
 			return fail("--line-end must not be less than --line-start");
 
 		request->command = "agent-mention";
+		request->project                 = project;
 		request->arguments["path"]       = file;
 		request->arguments["line-start"] = std::to_string(lineStart);
 		request->arguments["line-end"]   = std::to_string(lineEnd);
@@ -135,20 +149,25 @@ namespace agent_cli
 			request->arguments["cwd"] = cwd;
 	}
 
-	// The directory a mention counts as being made from, given the value of
-	// TM_PROJECT_DIRECTORY and this process’ own working directory.
+	// The directory a mention counts as being made from, given mention’s
+	// ‘--project’ argument and this process’ own working directory.
 	//
-	// TextMate sets that variable for bundle commands and exports it into the
-	// integrated terminal’s shell, where it names the window the mention was
-	// started from — the origin routing wants. The working directory does not:
-	// a bundle command runs in the document’s directory, which may sit in
-	// another project or in none, so the same mention would be delivered
-	// elsewhere or refused outright. A shell outside TextMate has no such
-	// variable, and one carrying an unusable value (empty, or relative, which
-	// no project root can be matched against) is no better than none.
-	inline std::string mention_cwd (char const* projectDirectory, std::string const& cwd)
+	// A caller that knows which window it speaks for states it: TextMate’s bundle
+	// commands run in the document’s directory (TM_DIRECTORY), which may sit in
+	// another project or in none, so their own working directory would name the
+	// wrong project or no project at all — they pass the window’s
+	// $TM_PROJECT_DIRECTORY here instead. Everyone else falls back to the working
+	// directory, which is the identity the WebSocket server resolves its sessions
+	// by (pid → cwd), so a mention made beside a session cannot disagree with it.
+	//
+	// Reading $TM_PROJECT_DIRECTORY here rather than taking it as an argument was
+	// tried and reverted: TextMate exports the window’s variables into the
+	// integrated terminal once, at pane creation, so after ‘cd’ into a second
+	// project the shell still advertises the first — and a session started there
+	// belongs to the second. An unusable value (empty, or relative, which no
+	// project root can be matched against) is no better than none.
+	inline std::string mention_cwd (std::string const& project, std::string const& cwd)
 	{
-		std::string const project = projectDirectory ? projectDirectory : std::string();
 		return !project.empty() && project.front() == '/' ? project : cwd;
 	}
 

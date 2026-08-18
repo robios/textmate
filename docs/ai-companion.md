@@ -99,6 +99,7 @@ bundle uses:
 
 ```
 tm_agent mention --file <path> [--line-start <n>] [--line-end <n>]
+                 [--project <path>]
 tm_agent status
 ```
 
@@ -108,7 +109,9 @@ you are looking at it.
 
 Which project window answers a request is decided by the working directory the
 agent was started in, so an agent in one project cannot read another's
-documents by accident.
+documents by accident. A mention is placed the same way unless `--project`
+names an absolute path, which is how the bundle commands say which window they
+were run from.
 
 ## GitHub Copilot
 

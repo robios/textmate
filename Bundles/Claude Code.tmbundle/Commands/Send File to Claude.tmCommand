@@ -19,7 +19,14 @@ fi
 lines=$(grep -c '')
 [ "${lines:-0}" -gt 0 ] || lines=1
 
-if err=$("$TM_AGENT" mention --file "$TM_FILEPATH" --line-start 0 --line-end "$(( lines - 1 ))" 2&gt;&amp;1); then
+# Name this window’s project for the mention: the command runs in the
+# document’s directory, which may belong to another project or to none.
+set --
+if [ -n "$TM_PROJECT_DIRECTORY" ]; then
+	set -- --project "$TM_PROJECT_DIRECTORY"
+fi
+
+if err=$("$TM_AGENT" mention --file "$TM_FILEPATH" --line-start 0 --line-end "$(( lines - 1 ))" "$@" 2&gt;&amp;1); then
 	exit 200
 fi
 
@@ -65,6 +72,6 @@ exit 206
 	<key>uuid</key>
 	<string>3D1121A5-DDE7-4ECB-BC0A-04B3018B67F6</string>
 	<key>version</key>
-	<integer>2</integer>
+	<integer>3</integer>
 </dict>
 </plist>

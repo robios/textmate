@@ -6,6 +6,7 @@
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <sysexits.h>
 #include <unistd.h>
 
@@ -18,9 +19,15 @@ static char const* const AppVersion = TEXTMATE_VERSION_STRING;
 
 static void usage (FILE* io)
 {
+	// mention’s options do not fit one 80-column line, and where the second one
+	// has to start depends on how long the program was invoked as: past ‘Usage: ’
+	// (printed below), the name, a space, ‘mention’, and a space.
+	std::string const mentionIndent(strlen(getprogname()) + 9, ' ');
+
 	fprintf(io,
 		"%1$s %2$s (" __DATE__ ")\n"
 		"Usage: %1$s mention --file <path> [--line-start <n>] [--line-end <n>]\n"
+		"       %5$s[--project <path>]\n"
 		"       %1$s status\n"
 		"       %1$s mcp\n"
 		"\n"
@@ -28,13 +35,12 @@ static void usage (FILE* io)
 		"\n"
 		"Subcommands:\n"
 		" mention   Push a file reference (at_mentioned) into the Claude Code\n"
-		"           sessions running in the project that contains\n"
-		"           $TM_PROJECT_DIRECTORY — set by TextMate for bundle commands\n"
-		"           and in its terminal, naming the window this came from — else\n"
-		"           this working directory, else the mentioned file. Line\n"
-		"           numbers are 0-based; omitting them references the start of\n"
-		"           the file, --line-start without --line-end references a\n"
-		"           single line.\n"
+		"           sessions running in the project that contains --project — an\n"
+		"           absolute path, named by callers that know which window they\n"
+		"           speak for, as TextMate’s bundle commands do — else this\n"
+		"           working directory, else the mentioned file. Line numbers are\n"
+		"           0-based; omitting them references the start of the file,\n"
+		"           --line-start without --line-end references a single line.\n"
 		" status    Print Claude IDE-context state, port, and connected Claude\n"
 		"           client count. Exits 0 when active, 2 when stopped.\n"
 		" mcp       Serve the Model Context Protocol on stdin/stdout, exposing\n"
@@ -50,7 +56,7 @@ static void usage (FILE* io)
 		"\n"
 		"Exit codes: 0 success, 1 request rejected by TextMate, 2 Claude IDE\n"
 		"context stopped (status), %3$d usage error, %4$d TextMate not running.\n",
-		getprogname(), AppVersion, EX_USAGE, EX_UNAVAILABLE
+		getprogname(), AppVersion, EX_USAGE, EX_UNAVAILABLE, mentionIndent.c_str()
 	);
 }
 
@@ -113,12 +119,14 @@ int main (int argc, char const* argv[])
 	// Where the mention was made from: the project containing this directory is
 	// the one whose Claude session the file reference belongs to, exactly as the
 	// shim’s cwd routes a tool call. Without it a mention typed in one project
-	// would land in whatever other session happens to be connected. TextMate’s
-	// own bundle commands are answered by TM_PROJECT_DIRECTORY rather than the
-	// directory they run in (agent_cli::mention_cwd); the shim keeps its getcwd,
-	// which is the identity the WebSocket server resolves its sessions by.
+	// would land in whatever other session happens to be connected. A caller that
+	// knows the window it speaks for names it with --project — TextMate’s own
+	// bundle commands pass the window’s $TM_PROJECT_DIRECTORY, since they run in
+	// the document’s directory (agent_cli::mention_cwd). Everyone else, the shim
+	// included, is placed by getcwd, which is the identity the WebSocket server
+	// resolves its sessions by.
 	if(request.command == "agent-mention")
-		agent_cli::set_request_cwd(&request, agent_cli::mention_cwd(getenv("TM_PROJECT_DIRECTORY"), working_directory()));
+		agent_cli::set_request_cwd(&request, agent_cli::mention_cwd(request.project, working_directory()));
 
 	// Connect to the running app — deliberately without launching it: a
 	// mention only makes sense against a live editor session.
