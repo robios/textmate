@@ -7,13 +7,29 @@
 // shutdown can skip the barrier that would target its own queue.
 static void* const kPTYReadQueueIdentityKey  = (void*)&kPTYReadQueueIdentityKey;
 static void* const kPTYWriteQueueIdentityKey = (void*)&kPTYWriteQueueIdentityKey;
+#include <errno.h>
 #include <fcntl.h>
 #include <libproc.h>
 #include <poll.h>
 #include <signal.h>
+#include <spawn.h>
 #include <sys/ioctl.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+// waitpid with the EINTR retry every caller needs, so that each call site only
+// ever sees a definitive result: the reaped pid (status is valid), 0 (WNOHANG
+// only — the child is not waitable yet), or -1 with errno == ECHILD (someone
+// else already reaped it). That last case is real rather than theoretical:
+// -handleProcessExit and -shutdown race, since dispatch_source_cancel does not
+// stop an already-running handler.
+static pid_t reap_child (pid_t pid, int* status, int options)
+{
+	pid_t rc;
+	while((rc = waitpid(pid, status, options)) == -1 && errno == EINTR)
+		continue;
+	return rc;
+}
 
 @implementation PTYController
 {
@@ -62,8 +78,8 @@ static void* const kPTYWriteQueueIdentityKey = (void*)&kPTYWriteQueueIdentityKey
 }
 
 // The pgid of whatever currently owns the terminal. The shell was made a
-// session leader by forkpty, so its pgid equals its pid; any foreground
-// job therefore shows up as a pgid different from _processIdentifier.
+// session leader by POSIX_SPAWN_SETSID, so its pgid equals its pid; any
+// foreground job therefore shows up as a pgid different from _processIdentifier.
 - (pid_t)foregroundProcessGroup
 {
 	int fd = _masterFD;
@@ -144,30 +160,76 @@ static void* const kPTYWriteQueueIdentityKey = (void*)&kPTYWriteQueueIdentityKey
 		envp.push_back((char*)str.c_str());
 	envp.push_back(NULL);
 
-	int master = -1;
+	// posix_spawn instead of forkpty: fork() in a multithreaded process
+	// deadlocks the atfork prepare handlers against allocator locks held on
+	// other threads (fatal under ASan, whose spin locks then burn CPU). The
+	// child becomes a session leader via POSIX_SPAWN_SETSID and acquires the
+	// pty as its controlling terminal by opening the slave by path — the
+	// first tty opened by a session leader without one becomes its
+	// controlling terminal, which is what login_tty relied on TIOCSCTTY for.
+	int master = -1, slave = -1;
 	struct winsize windowSize = _windowSize;
-	pid_t pid = forkpty(&master, NULL, NULL, &windowSize);
-	if(pid == -1)
+	if(openpty(&master, &slave, NULL, NULL, &windowSize) != 0)
 	{
-		perror("PTYController: forkpty");
+		perror("PTYController: openpty");
 		return NO;
 	}
 
-	if(pid == 0) // child
+	char slavePath[PATH_MAX];
+	if(int rc = ttyname_r(slave, slavePath, sizeof(slavePath)); rc != 0)
 	{
-		int const signals[] = { SIGINT, SIGQUIT, SIGTERM, SIGPIPE, SIGUSR1, SIGCHLD, SIGHUP };
-		for(int sig : signals)
-			signal(sig, SIG_DFL);
-		sigset_t set;
-		sigemptyset(&set);
-		sigprocmask(SIG_SETMASK, &set, NULL);
+		errno = rc;
+		perror("PTYController: ttyname_r");
+		close(master);
+		close(slave);
+		return NO;
+	}
 
-		if(chdir(_workingDirectory.c_str()) != 0)
-			chdir("/");
+	posix_spawnattr_t attr;
+	posix_spawnattr_init(&attr);
+	sigset_t allSignals, noSignals;
+	sigfillset(&allSignals);
+	sigemptyset(&noSignals);
+	posix_spawnattr_setsigdefault(&attr, &allSignals);
+	posix_spawnattr_setsigmask(&attr, &noSignals);
+	posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSID | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_CLOEXEC_DEFAULT);
 
-		execve(_path.c_str(), argv.data(), envp.data());
-		perror("PTYController: execve");
-		_exit(127);
+	// File actions cannot be edited once built, so each attempt makes its own.
+	auto spawnInDirectory = [&](char const* workingDirectory, pid_t* pid){
+		posix_spawn_file_actions_t actions;
+		posix_spawn_file_actions_init(&actions);
+		posix_spawn_file_actions_addopen(&actions, 0, slavePath, O_RDWR, 0);
+		posix_spawn_file_actions_adddup2(&actions, 0, 1);
+		posix_spawn_file_actions_adddup2(&actions, 0, 2);
+		posix_spawn_file_actions_addchdir_np(&actions, workingDirectory);
+		int rc = posix_spawn(pid, _path.c_str(), &actions, &attr, argv.data(), envp.data());
+		posix_spawn_file_actions_destroy(&actions);
+		return rc;
+	};
+
+	// A failing addchdir_np fails the entire spawn, and no up-front test can
+	// predict it: stat() only needs traversal of the parent path while chdir()
+	// needs search permission on the target itself (a 0600 directory stats fine
+	// yet cannot be entered), and the directory can be removed or unmounted
+	// between the check and the spawn. Retry from "/" instead — the forkpty
+	// child fell back to chdir("/") on any chdir failure, so a bad working
+	// directory has to keep opening the terminal rather than fail it. Pre-opening
+	// a directory fd for fchdir would not do: open(O_RDONLY) needs read
+	// permission, which chdir does not.
+	pid_t pid = -1;
+	int rc = spawnInDirectory(_workingDirectory.c_str(), &pid);
+	if(rc != 0 && _workingDirectory != "/")
+		rc = spawnInDirectory("/", &pid);
+
+	posix_spawnattr_destroy(&attr);
+	close(slave);
+
+	if(rc != 0)
+	{
+		errno = rc;
+		perror("PTYController: posix_spawn");
+		close(master);
+		return NO;
 	}
 
 	_processIdentifier = pid;
@@ -232,9 +294,29 @@ static void* const kPTYWriteQueueIdentityKey = (void*)&kPTYWriteQueueIdentityKey
 {
 	[self drainAvailableOutput];
 
+	// DISPATCH_PROC_EXIT means the child has exited, but not that it is already
+	// reapable without blocking: the notification can beat the zombie becoming
+	// visible to waitpid, so a one-shot WNOHANG can return 0 — losing the status
+	// and leaking the zombie forever, since this handler fires only once. A
+	// blocking wait cannot hang here: the child is either already a zombie (waitpid
+	// returns immediately) or was reaped by -shutdown (immediate -1/ECHILD).
+	// waitpid is also interruptible, which reap_child absorbs.
+	//
+	// -shutdown may have reaped and cleared _processIdentifier before this
+	// already-in-flight handler runs (dispatch_source_cancel does not stop it), so
+	// take a snapshot and never pass a non-positive pid: waitpid(-1, …) waits for
+	// *any* child and would silently reap an unrelated child of TextMate.
+	pid_t pid = _processIdentifier;
 	int status = 0;
-	if(waitpid(_processIdentifier, &status, WNOHANG) != _processIdentifier)
+	if(pid > 0)
+	{
+		if(reap_child(pid, &status, 0) != pid)
+			status = -1;
+	}
+	else
+	{
 		status = -1;
+	}
 	_processIdentifier = -1;
 
 	if(_processSource)
@@ -332,16 +414,22 @@ static void* const kPTYWriteQueueIdentityKey = (void*)&kPTYWriteQueueIdentityKey
 		close(fd);
 	}
 
+	// The sources are cancelled and the read queue drained above, so this is the
+	// last chance to reap: nothing waits for the child afterwards. Each rung of
+	// the ladder therefore has to act on a definitive answer, which is what
+	// reap_child guarantees — a raw waitpid returning -1/EINTR would end the
+	// ladder exactly like the ECHILD (already reaped by -handleProcessExit) case
+	// it must skip on, leaving a zombie or even a live child behind.
 	if(pid > 0)
 	{
 		int status = 0;
-		if(waitpid(pid, &status, WNOHANG) == 0)
+		if(reap_child(pid, &status, WNOHANG) == 0)
 		{
 			usleep(50000);
-			if(waitpid(pid, &status, WNOHANG) == 0)
+			if(reap_child(pid, &status, WNOHANG) == 0)
 			{
 				killpg(pid, SIGKILL);
-				waitpid(pid, &status, 0);
+				reap_child(pid, &status, 0);
 			}
 		}
 		_processIdentifier = -1;

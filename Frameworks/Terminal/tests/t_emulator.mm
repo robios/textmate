@@ -1,5 +1,7 @@
 #import <Terminal/TerminalEmulator.h>
 #import <Terminal/PTYController.h>
+#include <errno.h>
+#include <sys/wait.h>
 
 static std::string screen_text (TerminalEmulator* emulator)
 {
@@ -171,8 +173,19 @@ void test_pty_round_trip ()
 	};
 
 	OAK_ASSERT([pty spawn]);
+	pid_t shellPid = pty.processIdentifier;
+	OAK_ASSERT_GT(shellPid, 0);
 	OAK_ASSERT_EQ(dispatch_semaphore_wait(exited, dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC)), 0L);
 	OAK_ASSERT_EQ(exitStatus, 0);
+
+	// The exit handler runs only after the child has been waited for, so by now
+	// the pid must no longer be a zombie of ours. Pins the reap that a one-shot
+	// WNOHANG used to lose when the exit notification beat the zombie or the
+	// wait was interrupted. (Never waitpid(-1) here — tests run concurrently
+	// and it would reap another test’s child.)
+	errno = 0;
+	OAK_ASSERT_EQ(waitpid(shellPid, NULL, WNOHANG), -1);
+	OAK_ASSERT_EQ(errno, ECHILD);
 
 	std::string text = screen_text(emulator);
 	OAK_ASSERT_NE(text.find("pty-round-trip-ok"), std::string::npos);
@@ -202,6 +215,80 @@ void test_pty_release_on_io_queue ()
 	usleep(200000); // let the deferred deallocs run on their queues
 }
 
+// -shutdown is the last chance to reap: it cancels the sources before waiting,
+// so whatever its waitpid ladder fails to collect stays a zombie forever. Here
+// the child is alive when shutdown runs and dies from the SIGHUP, exercising
+// the WNOHANG rungs. (Never waitpid(-1) here — tests run concurrently and it
+// would reap another test’s child.)
+void test_pty_shutdown_reaps_live_child ()
+{
+	std::map<std::string, std::string> environment;
+	environment["PATH"] = "/usr/bin:/bin";
+
+	PTYController* pty = [[PTYController alloc] initWithPath:"/bin/sh" arguments:{ "-c", "printf 'ready\\n'; read line" } environment:environment workingDirectory:"/" loginShell:NO columns:80 rows:24 pixelWidth:640 pixelHeight:384];
+
+	dispatch_semaphore_t ready = dispatch_semaphore_create(0);
+	__block std::string output;
+	__block bool didSignal = false;
+	pty.readHandler = ^(void const* bytes, size_t length){
+		output.append((char const*)bytes, length);
+		if(!didSignal && output.find("ready") != std::string::npos)
+		{
+			didSignal = true;
+			dispatch_semaphore_signal(ready);
+		}
+	};
+
+	OAK_ASSERT([pty spawn]);
+	pid_t shellPid = pty.processIdentifier;
+	OAK_ASSERT_GT(shellPid, 0);
+	OAK_ASSERT_EQ(dispatch_semaphore_wait(ready, dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC)), 0L);
+
+	[pty shutdown];
+
+	errno = 0;
+	OAK_ASSERT_EQ(waitpid(shellPid, NULL, WNOHANG), -1);
+	OAK_ASSERT_EQ(errno, ECHILD);
+}
+
+// A child that ignores SIGHUP survives both WNOHANG rungs, so shutdown must
+// escalate to SIGKILL and then block until the zombie is collected. The loop
+// keeps the shell alive even though closing the master ends its `sleep` and
+// gives its stdin EOF, making the escalation deterministic rather than timing
+// dependent.
+void test_pty_shutdown_kills_hup_ignoring_child ()
+{
+	std::map<std::string, std::string> environment;
+	environment["PATH"] = "/usr/bin:/bin";
+
+	PTYController* pty = [[PTYController alloc] initWithPath:"/bin/sh" arguments:{ "-c", "trap '' HUP; printf 'ready\\n'; while :; do sleep 1; done" } environment:environment workingDirectory:"/" loginShell:NO columns:80 rows:24 pixelWidth:640 pixelHeight:384];
+
+	// The marker is printed after the trap is installed, so waiting for it (as
+	// opposed to sleeping) proves SIGHUP is already ignored when shutdown runs.
+	dispatch_semaphore_t ready = dispatch_semaphore_create(0);
+	__block std::string output;
+	__block bool didSignal = false;
+	pty.readHandler = ^(void const* bytes, size_t length){
+		output.append((char const*)bytes, length);
+		if(!didSignal && output.find("ready") != std::string::npos)
+		{
+			didSignal = true;
+			dispatch_semaphore_signal(ready);
+		}
+	};
+
+	OAK_ASSERT([pty spawn]);
+	pid_t shellPid = pty.processIdentifier;
+	OAK_ASSERT_GT(shellPid, 0);
+	OAK_ASSERT_EQ(dispatch_semaphore_wait(ready, dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC)), 0L);
+
+	[pty shutdown];
+
+	errno = 0;
+	OAK_ASSERT_EQ(waitpid(shellPid, NULL, WNOHANG), -1);
+	OAK_ASSERT_EQ(errno, ECHILD);
+}
+
 void test_pty_resize_reaches_child ()
 {
 	std::map<std::string, std::string> environment;
@@ -222,6 +309,82 @@ void test_pty_resize_reaches_child ()
 	OAK_ASSERT([pty spawn]);
 	OAK_ASSERT_EQ(dispatch_semaphore_wait(exited, dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC)), 0L);
 	OAK_ASSERT_NE(output.find("43 132"), std::string::npos);
+
+	[pty shutdown];
+}
+
+// The child must own the pty as its controlling terminal — job control and
+// SIGHUP-on-close depend on it. posix_spawn has no login_tty/TIOCSCTTY, so
+// spawn relies on the session leader acquiring the slave when opening it by
+// path; the terminal’s foreground process group (tpgid) equals the shell’s
+// pid exactly when that worked.
+void test_pty_controlling_terminal ()
+{
+	std::map<std::string, std::string> environment;
+	environment["PATH"] = "/usr/bin:/bin";
+
+	PTYController* pty = [[PTYController alloc] initWithPath:"/bin/sh" arguments:{ "-c", "ps -o tpgid= -p $$" } environment:environment workingDirectory:"/" loginShell:NO columns:80 rows:24 pixelWidth:640 pixelHeight:384];
+
+	dispatch_semaphore_t exited = dispatch_semaphore_create(0);
+	__block std::string output;
+	pty.readHandler = ^(void const* bytes, size_t length){
+		output.append((char const*)bytes, length);
+	};
+	pty.exitHandler = ^(int status){
+		dispatch_semaphore_signal(exited);
+	};
+
+	OAK_ASSERT([pty spawn]);
+	pid_t shellPid = pty.processIdentifier;
+	OAK_ASSERT_GT(shellPid, 0);
+	OAK_ASSERT_EQ(dispatch_semaphore_wait(exited, dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC)), 0L);
+	OAK_ASSERT_NE(output.find(std::to_string(shellPid)), std::string::npos);
+
+	[pty shutdown];
+}
+
+// A working directory can stat() fine and still be un-enterable — 0600 grants
+// no search permission — and posix_spawn fails outright when its chdir file
+// action fails. The terminal must open in “/” instead, the way the forkpty
+// child’s chdir("/") fallback did.
+void test_pty_working_directory_fallback ()
+{
+	char directory[PATH_MAX];
+	snprintf(directory, sizeof(directory), "%s/tm-pty-cwd.XXXXXX", getenv("TMPDIR") ?: "/tmp");
+	OAK_ASSERT(mkdtemp(directory) != NULL);
+
+	// Runs even when an assertion below throws, so no unsearchable directory is
+	// left behind in TMPDIR.
+	struct cleanup_t
+	{
+		~cleanup_t () { chmod(path, 0700); rmdir(path); }
+		char const* path;
+	} cleanup = { directory };
+
+	OAK_ASSERT_EQ(chmod(directory, 0600), 0);
+	OAK_ASSERT_NE(access(directory, X_OK), 0); // root could enter it regardless, making the test vacuous
+
+	std::map<std::string, std::string> environment;
+	environment["PATH"] = "/usr/bin:/bin";
+
+	PTYController* pty = [[PTYController alloc] initWithPath:"/bin/sh" arguments:{ "-c", "pwd" } environment:environment workingDirectory:directory loginShell:NO columns:80 rows:24 pixelWidth:640 pixelHeight:384];
+
+	dispatch_semaphore_t exited = dispatch_semaphore_create(0);
+	__block std::string output;
+	pty.readHandler = ^(void const* bytes, size_t length){
+		output.append((char const*)bytes, length);
+	};
+	pty.exitHandler = ^(int status){
+		dispatch_semaphore_signal(exited);
+	};
+
+	OAK_ASSERT([pty spawn]);
+	OAK_ASSERT_EQ(dispatch_semaphore_wait(exited, dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC)), 0L);
+
+	// The pty terminates lines with CRLF; matching the line rather than “/”
+	// keeps any other path from satisfying the assertion.
+	OAK_ASSERT_NE(output.find("/\r\n"), std::string::npos);
+	OAK_ASSERT_EQ(output.find(directory), std::string::npos);
 
 	[pty shutdown];
 }

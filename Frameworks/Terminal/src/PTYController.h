@@ -31,7 +31,7 @@
 @property (nonatomic, readonly) BOOL hasForegroundProcess;
 @property (nonatomic, readonly) NSString* foregroundProcessName;
 
-- (BOOL)spawn; // returns NO if forkpty or exec setup failed
+- (BOOL)spawn; // returns NO if pty allocation or posix_spawn failed
 - (void)writeData:(NSData*)data;
 - (void)resizeToColumns:(NSUInteger)columns rows:(NSUInteger)rows pixelWidth:(NSUInteger)pixelWidth pixelHeight:(NSUInteger)pixelHeight;
 - (void)shutdown; // SIGHUP the process group, close the pty, reap
