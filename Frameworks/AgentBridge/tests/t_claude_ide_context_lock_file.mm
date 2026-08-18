@@ -1,5 +1,7 @@
 #import <AgentBridge/ClaudeIDEContextLockFile.h>
+#import <spawn.h>
 #import <sys/stat.h>
+#import <sys/wait.h>
 #import <unistd.h>
 
 static NSString* temporary_directory ()
@@ -53,18 +55,24 @@ void test_stale_lock_cleanup ()
 {
 	NSString* dir = temporary_directory();
 
-	// A lock owned by a dead process: fork a child that exits immediately.
-	pid_t deadPid = fork();
-	if(deadPid == 0)
-		_exit(0);
+	// A lock owned by a dead process: spawn a short-lived child and reap it.
+	// posix_spawn, not fork() — forking while sibling tests run on other
+	// threads can livelock the ASan runtime under gen_test’s parallel runner.
+	pid_t deadPid = -1;
+	char const* argv[] = { "/usr/bin/true", NULL };
+	OAK_ASSERT_EQ(posix_spawn(&deadPid, argv[0], NULL, NULL, (char* const*)argv, NULL), 0);
 	int status;
-	waitpid(deadPid, &status, 0);
+	OAK_ASSERT_EQ(waitpid(deadPid, &status, 0), deadPid);
 
 	ClaudeIDEContextLockFile* staleLock = [[ClaudeIDEContextLockFile alloc] initWithPort:11111 authToken:[ClaudeIDEContextLockFile generateAuthToken] directory:dir];
 	OAK_ASSERT([staleLock writeWithWorkspaceFolders:@[ ]]);
-	NSString* staleContents = [NSString stringWithContentsOfFile:staleLock.path encoding:NSUTF8StringEncoding error:nil];
-	staleContents = [staleContents stringByReplacingOccurrencesOfString:[NSString stringWithFormat:@"%d", getpid()] withString:[NSString stringWithFormat:@"%d", deadPid]];
-	OAK_ASSERT([staleContents writeToFile:staleLock.path atomically:YES encoding:NSUTF8StringEncoding error:nil]);
+	// Rewrite the pid through JSON rather than textual substitution: the
+	// authToken is 32 hex characters, so it can contain our pid’s decimal
+	// digits as a substring, and a blind search-and-replace would corrupt it.
+	NSMutableDictionary* staleContents = [NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfFile:staleLock.path] options:NSJSONReadingMutableContainers error:nil];
+	OAK_ASSERT(staleContents);
+	staleContents[@"pid"] = @(deadPid);
+	OAK_ASSERT([[NSJSONSerialization dataWithJSONObject:staleContents options:0 error:nil] writeToFile:staleLock.path atomically:YES]);
 
 	// A live lock (our own pid) and a foreign non-JSON file must both survive.
 	ClaudeIDEContextLockFile* liveLock = [[ClaudeIDEContextLockFile alloc] initWithPort:22222 authToken:[ClaudeIDEContextLockFile generateAuthToken] directory:dir];

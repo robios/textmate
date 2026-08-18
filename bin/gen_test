@@ -229,6 +229,9 @@ int main (int argc, char const* argv[])
     dispatch_group_async(group, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
       if(parallel)
       {
+        // Tests run concurrently on multiple threads, so no test may call
+        // fork(): under ASan, a forked child of a multithreaded process can
+        // livelock. Use posix_spawn or a thread instead.
         dispatch_apply(tests.size(), DISPATCH_APPLY_AUTO, ^(size_t n){
           tests[n].execute(measure, repeat);
         });
