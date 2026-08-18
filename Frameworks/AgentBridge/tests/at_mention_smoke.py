@@ -4,6 +4,12 @@ protocol_smoke.py, prints READY, then waits for one at_mentioned notification
 and prints its params as sorted JSON. Exits 0 when the notification arrives,
 1 on timeout.
 
+Mentions are scoped to a project, so run both halves from the same directory
+inside an open TextMate project — this process announces its pid, from which
+the bridge derives that directory. Run from outside every open project, this
+client is unscoped and still hears every mention, but tm_agent then has no
+project to attribute the mention to and is refused.
+
 Usage (with TextMate running):
 
     python3 Frameworks/AgentBridge/tests/at_mention_smoke.py [timeout] &
@@ -32,6 +38,7 @@ def main():
         "clientInfo": {"name": "at_mention_smoke", "version": "1.0"},
     })
     ws.notify("notifications/initialized")
+    ws.notify("ide_connected", {"pid": os.getpid()})
     print("READY", flush=True)
 
     deadline = time.time() + timeout

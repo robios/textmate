@@ -1,4 +1,5 @@
 #import "AgentBridgeWorkspace.h"
+#import "agent_ide_routing.h"
 #import "agent_routing_path.h"
 #import <document/OakDocument.h>
 #import <document/OakDocument Private.h>
@@ -120,6 +121,12 @@ static void* kAgentBridgeSelectionObserverContext = &kAgentBridgeSelectionObserv
 	NSWindow* _observedWindow;
 	NSArray<NSString*>* _lastWorkspaceFolders;
 	NSUInteger _selectionGeneration;
+
+	// Last non-empty selection, app-wide and per normalized project root. Both
+	// are main-queue only, like everything else in here; the per-project
+	// entries go when their project closes (pruneSelectionHistoryToFolders:).
+	AgentBridgeSelection* _latestSelection;
+	NSMutableDictionary<NSString*, AgentBridgeSelection*>* _latestSelectionByProject;
 }
 
 - (instancetype)init
@@ -129,7 +136,8 @@ static void* kAgentBridgeSelectionObserverContext = &kAgentBridgeSelectionObserv
 		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(windowDidChange:) name:NSWindowDidBecomeKeyNotification object:nil];
 		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(windowDidChange:) name:NSWindowDidBecomeMainNotification object:nil];
 		[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(windowWillClose:) name:NSWindowWillCloseNotification object:nil];
-		_lastWorkspaceFolders = [self workspaceFolders];
+		_lastWorkspaceFolders     = [self workspaceFolders];
+		_latestSelectionByProject = [NSMutableDictionary dictionary];
 
 		// Windows created before setup won’t emit a key/main notification —
 		// bind to whatever is already frontmost once the runloop settles.
@@ -177,36 +185,40 @@ static void* kAgentBridgeSelectionObserverContext = &kAgentBridgeSelectionObserv
 	return HostControllers().firstObject;
 }
 
-// The window that answers a query from an agent started in ‘routingPath’: the
-// one whose project root contains it, longest root first so a project checked
-// out inside another does not lose to its parent. Nothing containing it (or no
-// path at all) means the asking process is outside every open project, and the
-// frontmost window is the best guess left.
-- (id <AgentBridgeHostWindow>)controllerForRoutingPath:(NSString*)routingPath
+// The window whose project root contains ‘routingPath’, longest root first so
+// a project checked out inside another does not lose to its parent — and nil
+// when no open project contains it. Callers that must tell “somewhere else”
+// apart from “nowhere we know” use this; the fallback below is for the rest.
+- (id <AgentBridgeHostWindow>)controllerMatchingRoutingPath:(NSString*)routingPath
 {
 	if(!routingPath.length || !routingPath.absolutePath)
-		return [self activeController];
+		return nil;
 
-	std::string const cwd = agent_routing_path::normalize(to_s(routingPath));
+	NSArray<id <AgentBridgeHostWindow>>* controllers = HostControllers();
+	std::vector<std::string> roots;
+	for(id <AgentBridgeHostWindow> controller in controllers)
+		roots.push_back(controller.projectPath.length ? to_s(controller.projectPath) : std::string());
 
-	id <AgentBridgeHostWindow> res = nil;
-	size_t bestLength = 0;
-	for(id <AgentBridgeHostWindow> controller in HostControllers())
+	std::string const match = agent_ide_routing::matching_project_root(to_s(routingPath), roots);
+	if(match.empty())
+		return nil;
+
+	for(size_t i = 0; i < roots.size(); ++i)
 	{
-		NSString* projectPath = controller.projectPath;
-		if(!projectPath.length)
-			continue;
-
-		std::string const root = agent_routing_path::normalize(to_s(projectPath));
-		if(root != cwd && !path::is_child(cwd, root))
-			continue;
-		if(res && root.size() <= bestLength)
-			continue;
-
-		res        = controller;
-		bestLength = root.size();
+		if(!roots[i].empty() && agent_routing_path::normalize(roots[i]) == match)
+			return [controllers objectAtIndex:i]; // frontmost first, so two windows on one project answer in window order
 	}
-	return res ?: [self activeController];
+	return nil;
+}
+
+// The window that answers a query from an agent started in ‘routingPath’.
+// Nothing containing it (or no path at all) means the asking process is
+// outside every open project, and the frontmost window is the best guess left:
+// right for a query, which has to be answered with something, and wrong for a
+// push, which is why the matching operation above exists.
+- (id <AgentBridgeHostWindow>)controllerForRoutingPath:(NSString*)routingPath
+{
+	return [self controllerMatchingRoutingPath:routingPath] ?: [self activeController];
 }
 
 - (NSString*)projectPathForRoutingPath:(NSString*)routingPath
@@ -305,7 +317,38 @@ static void* kAgentBridgeSelectionObserverContext = &kAgentBridgeSelectionObserv
 
 - (AgentBridgeSelection*)currentSelectionForRoutingPath:(NSString*)routingPath
 {
-	id <AgentBridgeHostWindow> controller = [self controllerForRoutingPath:routingPath];
+	return [self selectionForController:[self controllerForRoutingPath:routingPath]];
+}
+
+// One app-wide “last selection” would answer a routed session with whatever the
+// user highlighted in some other project’s window — the leak the pushes were
+// scoped to close, arriving by way of a tool call instead. So a session that
+// resolves to a project is answered out of that project’s history or not at
+// all; nil sends getLatestSelection on to its own current-selection fallback,
+// which is routed already. Only a session we cannot place still gets the
+// app-wide value, exactly as before.
+//
+// Resolved fallback-free, like the mention origin (agent_ide_routing.h): the
+// active-window fallback would turn “this session is elsewhere” into “this
+// session is here”, which is the answer being avoided. Entries last only as
+// long as their project stays open (checkWorkspaceFolders prunes): the match
+// above is against open projects, so a closed project’s entry answers nobody
+// meanwhile, and a reopened one starts from its own current selection.
+- (AgentBridgeSelection*)latestSelectionForRoutingPath:(NSString*)routingPath
+{
+	std::string root;
+	if(routingPath.length && routingPath.absolutePath)
+	{
+		std::vector<std::string> roots;
+		for(NSString* folder in [self workspaceFolders])
+			roots.push_back(to_s(folder));
+		root = agent_ide_routing::matching_project_root(to_s(routingPath), roots);
+	}
+	return root.empty() ? _latestSelection : _latestSelectionByProject[to_ns(root)];
+}
+
+- (AgentBridgeSelection*)selectionForController:(id <AgentBridgeHostWindow>)controller
+{
 	OakDocument* document = controller.selectedDocument;
 	if(!document || !document.isLoaded)
 		return nil;
@@ -425,14 +468,29 @@ static void* kAgentBridgeSelectionObserverContext = &kAgentBridgeSelectionObserv
 		if(generation != self->_selectionGeneration)
 			return;
 
-		AgentBridgeSelection* selection = [self currentSelection];
+		// Selection and origin come from the one observed controller, and are
+		// read here rather than recomputed by whoever delivers the push: the
+		// project this selection belongs to is what decides which agent
+		// sessions may hear about it, and by delivery time the frontmost
+		// window can be a different project entirely.
+		id <AgentBridgeHostWindow> controller = HostControllerForWindow(self->_observedWindow) ?: [self activeController];
+		AgentBridgeSelection* selection = [self selectionForController:controller];
 		if(!selection)
 			return;
 
 		if(!selection.isEmpty)
+		{
 			self->_latestSelection = selection;
+
+			// A window with no project cannot address a per-project history —
+			// and a push from one only ever reaches sessions we cannot place
+			// either (agent_ide_routing::delivers_to_session), which are the
+			// same sessions the app-wide value answers.
+			if(controller.projectPath.length)
+				self->_latestSelectionByProject[to_ns(agent_routing_path::normalize(to_s(controller.projectPath)))] = selection;
+		}
 		if(self.selectionDidChangeHandler)
-			self.selectionDidChangeHandler(selection);
+			self.selectionDidChangeHandler(selection, controller.projectPath);
 
 		// Tab switches move the caret and can change the window’s project
 		// path (document directory fallback) — keep the lock file current.
@@ -447,8 +505,31 @@ static void* kAgentBridgeSelectionObserverContext = &kAgentBridgeSelectionObserv
 		return;
 
 	_lastWorkspaceFolders = folders;
+	[self pruneSelectionHistoryToFolders:folders];
 	if(self.workspaceFoldersDidChangeHandler)
 		self.workspaceFoldersDidChangeHandler(folders);
+}
+
+// Selection bodies are kept whole (the 64 KiB cap is applied when one is sent,
+// not when it is stored), so a history that is never emptied grows with every
+// project the user visits. It buys nothing: lookups match the asking session
+// against the projects that are open right now, so an entry whose project has
+// closed cannot be reached until it opens again. Two windows on one project
+// keep its folder listed, which makes this the last window closing.
+- (void)pruneSelectionHistoryToFolders:(NSArray<NSString*>*)folders
+{
+	NSMutableSet<NSString*>* open = [NSMutableSet set];
+	for(NSString* folder in folders)
+	{
+		if(folder.length)
+			[open addObject:to_ns(agent_routing_path::normalize(to_s(folder)))]; // keys are normalized too, or a live project’s entry is dropped over a spelling
+	}
+
+	for(NSString* root in _latestSelectionByProject.allKeys)
+	{
+		if(![open containsObject:root])
+			[_latestSelectionByProject removeObjectForKey:root];
+	}
 }
 
 // =============

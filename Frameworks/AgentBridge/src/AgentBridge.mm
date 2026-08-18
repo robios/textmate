@@ -3,6 +3,7 @@
 #import "ClaudeIDEContextServer.h"
 #import "ClaudeIDEContextLockFile.h"
 #import "CodexIDEContextServer.h"
+#import "agent_ide_routing.h"
 #import "agent_tools.h"
 #import "AgentBridgeWorkspace.h"
 #import <OakSystem/application.h>
@@ -117,10 +118,19 @@ static BOOL ParseLineArgument (NSString* value, NSInteger* line)
 	return server.temporaryDirectory;
 }
 
-+ (void)sendClaudeAtMentionedWithFilePath:(NSString*)filePath lineStart:(NSInteger)lineStart lineEnd:(NSInteger)lineEnd
++ (void)sendClaudeAtMentionedWithFilePath:(NSString*)filePath lineStart:(NSInteger)lineStart lineEnd:(NSInteger)lineEnd originProjectPath:(NSString*)originProjectPath
 {
-	if(AgentBridge* bridge = SharedAgentBridge)
-		[bridge->_claudeIDEContextServer sendAtMentionedWithFilePath:filePath lineStart:lineStart lineEnd:lineEnd];
+	AgentBridge* bridge = SharedAgentBridge;
+	if(!bridge)
+		return;
+
+	// A mention nobody is listening for is worth saying out loud: the file
+	// reference simply does not appear in any prompt, and without this the only
+	// evidence is its absence.
+	[bridge->_claudeIDEContextServer sendAtMentionedWithFilePath:filePath lineStart:lineStart lineEnd:lineEnd originProjectPath:originProjectPath completionHandler:^(NSUInteger targetCount){
+		if(targetCount == 0)
+			NSLog(@"[AgentBridge] no Claude Code client is connected for project %@: dropped mention of %@", originProjectPath, filePath);
+	}];
 }
 
 + (void)handleCLIRequest:(NSString*)command arguments:(NSDictionary<NSString*, NSString*>*)arguments completionHandler:(void(^)(NSDictionary<NSString*, NSString*>*))handler // main thread
@@ -163,8 +173,27 @@ static BOOL ParseLineArgument (NSString* value, NSInteger* line)
 		if(claudeServer.connectedClientCount == 0)
 			return handler(ErrorResponse(@"no Claude Code client is connected to TextMate"));
 
-		[claudeServer sendAtMentionedWithFilePath:path lineStart:lineStart lineEnd:lineEnd];
-		return handler(@{ @"status": @"ok" });
+		// Which project this mention comes from decides which session hears it:
+		// the caller’s own working directory, or failing that the project the
+		// mentioned file lives in. A mention that matches neither is refused —
+		// sending it anyway would drop a file reference into a conversation
+		// known to be about something else, and a mention reads as an
+		// instruction there.
+		std::vector<std::string> roots;
+		for(NSString* folder in [bridge->_workspace workspaceFolders])
+			roots.push_back(to_s(folder));
+
+		std::string const origin = agent_ide_routing::mention_origin(to_s(arguments[@"cwd"] ?: @""), to_s(path), roots);
+		if(origin.empty())
+			return handler(ErrorResponse([NSString stringWithFormat:@"cannot tell which project this mention belongs to: neither the working directory nor %@ is inside an open project", path]));
+
+		NSString* originProjectPath = to_ns(origin);
+		[claudeServer sendAtMentionedWithFilePath:path lineStart:lineStart lineEnd:lineEnd originProjectPath:originProjectPath completionHandler:^(NSUInteger targetCount){
+			if(targetCount == 0)
+				return handler(ErrorResponse([NSString stringWithFormat:@"no Claude Code client is connected for project %@", originProjectPath]));
+			handler(@{ @"status": @"ok" });
+		}];
+		return;
 	}
 
 	if([command isEqualToString:@"agent-tool"])
@@ -241,9 +270,9 @@ static BOOL ParseLineArgument (NSString* value, NSInteger* line)
 		_workspace = [[AgentBridgeWorkspace alloc] init];
 
 		__weak AgentBridge* weakSelf = self;
-		_workspace.selectionDidChangeHandler = ^(AgentBridgeSelection* selection){
+		_workspace.selectionDidChangeHandler = ^(AgentBridgeSelection* selection, NSString* originProjectPath){
 			if(AgentBridge* strongSelf = weakSelf)
-				[strongSelf->_claudeIDEContextServer sendSelectionChanged:selection];
+				[strongSelf->_claudeIDEContextServer sendSelectionChanged:selection originProjectPath:originProjectPath];
 		};
 		_workspace.workspaceFoldersDidChangeHandler = ^(NSArray<NSString*>* folders){
 			[weakSelf updateLockFile];

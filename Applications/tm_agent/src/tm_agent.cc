@@ -5,6 +5,7 @@
 #include <climits>
 #include <csignal>
 #include <cstdio>
+#include <cstdlib>
 #include <sysexits.h>
 #include <unistd.h>
 
@@ -26,10 +27,14 @@ static void usage (FILE* io)
 		"Connects agent CLIs to editor context from a running TextMate.\n"
 		"\n"
 		"Subcommands:\n"
-		" mention   Push a file reference (at_mentioned) into Claude Code\n"
-		"           connected to TextMate. Line numbers are 0-based; omitting\n"
-		"           them references the start of the file, --line-start without\n"
-		"           --line-end references a single line.\n"
+		" mention   Push a file reference (at_mentioned) into the Claude Code\n"
+		"           sessions running in the project that contains\n"
+		"           $TM_PROJECT_DIRECTORY — set by TextMate for bundle commands\n"
+		"           and in its terminal, naming the window this came from — else\n"
+		"           this working directory, else the mentioned file. Line\n"
+		"           numbers are 0-based; omitting them references the start of\n"
+		"           the file, --line-start without --line-end references a\n"
+		"           single line.\n"
 		" status    Print Claude IDE-context state, port, and connected Claude\n"
 		"           client count. Exits 0 when active, 2 when stopped.\n"
 		" mcp       Serve the Model Context Protocol on stdin/stdout, exposing\n"
@@ -49,15 +54,19 @@ static void usage (FILE* io)
 	);
 }
 
+static std::string working_directory ()
+{
+	char cwd[PATH_MAX];
+	return getcwd(cwd, sizeof(cwd)) ? std::string(cwd) : std::string();
+}
+
 static std::string absolute_path (std::string const& path)
 {
 	if(!path.empty() && path.front() == '/')
 		return path;
 
-	char cwd[PATH_MAX];
-	if(getcwd(cwd, sizeof(cwd)))
-		return std::string(cwd) + "/" + path;
-	return path;
+	std::string const cwd = working_directory();
+	return cwd.empty() ? path : cwd + "/" + path;
 }
 
 int main (int argc, char const* argv[])
@@ -100,6 +109,16 @@ int main (int argc, char const* argv[])
 	auto pathArg = request.arguments.find("path");
 	if(pathArg != request.arguments.end())
 		pathArg->second = absolute_path(pathArg->second);
+
+	// Where the mention was made from: the project containing this directory is
+	// the one whose Claude session the file reference belongs to, exactly as the
+	// shim’s cwd routes a tool call. Without it a mention typed in one project
+	// would land in whatever other session happens to be connected. TextMate’s
+	// own bundle commands are answered by TM_PROJECT_DIRECTORY rather than the
+	// directory they run in (agent_cli::mention_cwd); the shim keeps its getcwd,
+	// which is the identity the WebSocket server resolves its sessions by.
+	if(request.command == "agent-mention")
+		agent_cli::set_request_cwd(&request, agent_cli::mention_cwd(getenv("TM_PROJECT_DIRECTORY"), working_directory()));
 
 	// Connect to the running app — deliberately without launching it: a
 	// mention only makes sense against a live editor session.

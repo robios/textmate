@@ -25,8 +25,19 @@
 // Called on the main queue whenever running/port/connectedClientCount change.
 @property (nonatomic, copy) void(^statusDidChangeHandler)(void);
 
-- (void)sendSelectionChanged:(AgentBridgeSelection*)selection;
-- (void)sendAtMentionedWithFilePath:(NSString*)filePath lineStart:(NSInteger)lineStart lineEnd:(NSInteger)lineEnd;
+// Pushes (main queue). One server serves every Claude Code session on the
+// machine, so both carry the project they originated in and reach only the
+// sessions that project belongs to: the ones launched inside it, plus any
+// session whose own working directory names no open project. originProjectPath
+// must be captured where the event happened — resolving it later from the
+// active window is how a push ends up attributed to the wrong project.
+- (void)sendSelectionChanged:(AgentBridgeSelection*)selection originProjectPath:(NSString*)originProjectPath;
+
+// targetCount is how many sessions the mention was sent to; 0 means every
+// connected session belongs to another project, which callers report rather
+// than retry unaddressed. It counts sessions selected for sending, not
+// WebSocket delivery acknowledgements. The handler runs on the main queue.
+- (void)sendAtMentionedWithFilePath:(NSString*)filePath lineStart:(NSInteger)lineStart lineEnd:(NSInteger)lineEnd originProjectPath:(NSString*)originProjectPath completionHandler:(void(^)(NSUInteger targetCount))handler;
 
 // Block (bounded) until every already-queued outgoing frame has been handed
 // to the socket (main queue). Call before -stop at application termination

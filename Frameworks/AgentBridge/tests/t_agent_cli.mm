@@ -118,3 +118,46 @@ void test_tool_request ()
 	OAK_ASSERT_EQ(request.arguments.size(), 1);
 	OAK_ASSERT_EQ(agent_cli::frame_request(request), "agent-tool\r\nname: getOpenEditors\r\n\r\n.\r\n");
 }
+
+void test_request_cwd ()
+{
+	// A mention carries the directory it was made in for the same reason a tool
+	// call does: it is what tells the app which project — and therefore which
+	// Claude session — the request belongs to.
+	agent_cli::request_t request;
+	std::string error;
+	OAK_ASSERT(agent_cli::parse_arguments({ "mention", "--file", "/Users/me/project/a.txt" }, &request, &error));
+
+	agent_cli::set_request_cwd(&request, "/Users/me/project");
+	OAK_ASSERT_EQ(request.arguments["cwd"], "/Users/me/project");
+
+	// An unknown working directory is absent rather than empty, so the app reads
+	// it as “not supplied” and falls back to the mentioned path’s project.
+	agent_cli::set_request_cwd(&request, "");
+	OAK_ASSERT_EQ(request.arguments["cwd"], "/Users/me/project");
+
+	agent_cli::request_t withoutCwd;
+	OAK_ASSERT(agent_cli::parse_arguments({ "mention", "--file", "/Users/me/project/a.txt" }, &withoutCwd, &error));
+	agent_cli::set_request_cwd(&withoutCwd, "");
+	OAK_ASSERT_EQ(withoutCwd.arguments.count("cwd"), 0);
+}
+
+void test_mention_cwd_prefers_the_window_project ()
+{
+	// A bundle command runs in the document’s directory, so “Send Selection to
+	// Claude” on a file outside the window’s project — or inside a checkout
+	// nested in it — would name the wrong project, or none. TM_PROJECT_DIRECTORY
+	// names the window that started it.
+	OAK_ASSERT_EQ(agent_cli::mention_cwd("/Users/me/project", "/Users/me/elsewhere"), "/Users/me/project");
+	OAK_ASSERT_EQ(agent_cli::mention_cwd("/Users/me/project", "/Users/me/project/vendor/library"), "/Users/me/project");
+
+	// A shell outside TextMate has no such variable, and an unusable value is no
+	// better than none: both keep the working directory the CLI has always sent.
+	OAK_ASSERT_EQ(agent_cli::mention_cwd(nullptr, "/Users/me/elsewhere"), "/Users/me/elsewhere");
+	OAK_ASSERT_EQ(agent_cli::mention_cwd("", "/Users/me/elsewhere"), "/Users/me/elsewhere");
+	OAK_ASSERT_EQ(agent_cli::mention_cwd("project", "/Users/me/elsewhere"), "/Users/me/elsewhere");
+
+	// Nothing to fall back to either: dropped by set_request_cwd, read as “not
+	// supplied” by the app, which then places the mention by its file path.
+	OAK_ASSERT_EQ(agent_cli::mention_cwd(nullptr, ""), "");
+}

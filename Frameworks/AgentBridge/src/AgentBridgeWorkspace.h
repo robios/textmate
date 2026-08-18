@@ -23,18 +23,22 @@
 // IDE-context frontend, and the stdio MCP shim for other providers all answer
 // out of here.
 @interface AgentBridgeWorkspace : NSObject
-@property (nonatomic, copy) void(^selectionDidChangeHandler)(AgentBridgeSelection* selection);
+// originProjectPath is the project the selection was observed in (nil for a
+// window with no project), captured with the selection itself: a push is
+// addressed to the agent sessions working on that project, and by the time it
+// is delivered the frontmost window may be another one.
+@property (nonatomic, copy) void(^selectionDidChangeHandler)(AgentBridgeSelection* selection, NSString* originProjectPath);
 @property (nonatomic, copy) void(^workspaceFoldersDidChangeHandler)(NSArray<NSString*>* folders);
-
-@property (nonatomic, readonly) AgentBridgeSelection* latestSelection; // last non-empty selection
 
 // Every context query takes a ‘routing path’: the working directory the asking
 // agent process was started in (§4.2). The window whose project root contains
 // it answers — without this a second TextMate window on an unrelated project
-// could answer a query meant for this one. nil, empty, or a path inside no
-// open project falls back to the frontmost window, which is what the WebSocket
-// frontend (Claude, discovered through the lock file rather than a cwd) has
-// always used; the nil-routing methods below are that case spelled out.
+// could answer a query meant for this one. Claude's WebSocket frontend finds
+// TextMate through the lock file rather than a cwd, so it derives one per
+// connection from the pid in ide_connected. nil, empty, or a path inside no
+// open project falls back to the frontmost window, which is the answer every
+// frontend used to get; the nil-routing methods below are that case spelled
+// out. Pushes must not take that fallback — see agent_ide_routing.h.
 - (NSArray<NSString*>*)workspaceFolders; // aggregated project roots of all document windows, frontmost first
 - (NSString*)activeProjectPath;
 - (NSString*)projectPathForRoutingPath:(NSString*)routingPath; // the answering window’s project root
@@ -44,6 +48,13 @@
 - (NSArray<NSDictionary*>*)openEditorsInAnsweringWindowForRoutingPath:(NSString*)routingPath; // same shape, but excludes unrelated project windows
 - (AgentBridgeSelection*)currentSelection;
 - (AgentBridgeSelection*)currentSelectionForRoutingPath:(NSString*)routingPath;
+// Last non-empty selection made in the project that answers for routingPath,
+// nil when that project has none of its own — never another project’s, which
+// is the one place the fallback above must not apply. A caller that cannot be
+// placed keeps the app-wide last selection, the answer everyone used to get.
+// A project’s history is discarded when its last window closes, since nothing
+// can be routed to a project that is not open.
+- (AgentBridgeSelection*)latestSelectionForRoutingPath:(NSString*)routingPath;
 
 - (NSString*)absolutePathForPath:(NSString*)path;
 - (NSString*)absolutePathForPath:(NSString*)path routingPath:(NSString*)routingPath; // relative paths resolve against the answering project

@@ -32,14 +32,24 @@ extern NSNotificationName const AgentBridgeStatusDidChangeNotification;
 // nil while the bridge is disabled or failed to start.
 + (NSString*)codexIDEContextTemporaryDirectory;
 
-// Push a file reference into a connected Claude Code prompt.
-+ (void)sendClaudeAtMentionedWithFilePath:(NSString*)filePath lineStart:(NSInteger)lineStart lineEnd:(NSInteger)lineEnd;
+// Push a file reference into a connected Claude Code prompt. originProjectPath
+// is the project the mention comes from — the initiating window’s — and scopes
+// it to the sessions working on that project; a mention nobody is listening
+// for is logged rather than sent to the sessions that are listening for
+// something else.
++ (void)sendClaudeAtMentionedWithFilePath:(NSString*)filePath lineStart:(NSInteger)lineStart lineEnd:(NSInteger)lineEnd originProjectPath:(NSString*)originProjectPath;
 
 // Handler for the tm_agent CLI (requests arrive over the mate socket, see
 // RMateServer.mm). Must be called on the main thread. Commands are:
 //
 //   agent-status  — Claude IDE server state (legacy wire name)
-//   agent-mention — send Claude a path, line-start, line-end (0-based)
+//   agent-mention — send Claude a path, line-start, line-end (0-based), and
+//                   ‘cwd’ (the caller’s working directory). The mention goes
+//                   to the sessions running in the project that contains that
+//                   directory, or failing that the mentioned path; a mention
+//                   inside no open project, or with no session listening for
+//                   it, is refused with an explanation rather than sent to
+//                   sessions working elsewhere.
 //   agent-tool    — invoke an MCP context tool on behalf of ‘tm_agent mcp’:
 //                   ‘name’, ‘arguments’ (a JSON object, serialized), and ‘cwd’
 //                   (the shim’s working directory, which routes the query to

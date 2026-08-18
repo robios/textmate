@@ -1,12 +1,14 @@
 #import "ClaudeIDEContextServer.h"
 #import "AgentBridgeTools.h"
 #import "AgentBridgeWorkspace.h"
+#import "agent_ide_routing.h"
 #import "agent_json.h"
 #import "agent_tools.h"
 #import <document/OakDocument.h>
 #import <ns/ns.h>
 #import <nlohmann/json.hpp>
 #import <Network/Network.h>
+#import <libproc.h>
 
 using json = nlohmann::json;
 
@@ -41,6 +43,21 @@ static json SelectionChangedParams (AgentBridgeSelection* selection)
 	return res;
 }
 
+// The routing identity a session gets from the pid in its ide_connected: the
+// working directory the CLI was started in, which is the project the person is
+// asking about. One syscall against a process of our own uid, no filesystem
+// walk — cheap enough for the main queue. nil when the process is gone or the
+// kernel has no path for it, which leaves the session unrouted rather than
+// mis-routed.
+static NSString* WorkingDirectoryForProcess (pid_t pid)
+{
+	struct proc_vnodepathinfo info;
+	int const size = proc_pidinfo(pid, PROC_PIDVNODEPATHINFO, 0, &info, sizeof(info));
+	if(size != (int)sizeof(info) || info.pvi_cdir.vip_path[0] == '\0')
+		return nil;
+	return [NSString stringWithUTF8String:info.pvi_cdir.vip_path];
+}
+
 static json ContentResult (std::string const& text, bool isError)
 {
 	json res = { { "content", json::array({ { { "type", "text" }, { "text", text } } }) } };
@@ -71,6 +88,12 @@ static json ContentResult (std::string const& text, bool isError)
 	// not a lifetime the server needs to track.
 	NSHashTable*          _seededConnections;
 
+	// Same lifetime pattern, same queue: the working directory each connection
+	// announced itself from (ide_connected), which is what addresses pushes and
+	// tool calls to the session’s own project. Absent for a client that sent no
+	// usable pid — that session keeps the frontmost-window behaviour.
+	NSMapTable*           _routingPaths;
+
 	BOOL                  _didCallReadyHandler;
 }
 
@@ -85,6 +108,7 @@ static json ContentResult (std::string const& text, bool isError)
 		_connections        = [NSMutableArray array];
 		_pendingConnections = [NSMutableArray array];
 		_seededConnections  = [NSHashTable weakObjectsHashTable];
+		_routingPaths       = [NSMapTable weakToStrongObjectsMapTable];
 	}
 	return self;
 }
@@ -457,15 +481,6 @@ static bool TokenMatches (NSString* candidate, NSString* expected)
 	dispatch_async(_queue, ^{ [self sendJSON:response toConnection:connection]; });
 }
 
-- (void)broadcastNotification:(std::string const&)method params:(json const&)params
-{
-	json message = { { "jsonrpc", "2.0" }, { "method", method }, { "params", params } };
-	dispatch_async(_queue, ^{
-		for(nw_connection_t connection in self->_connections)
-			[self sendJSON:message toConnection:connection];
-	});
-}
-
 - (void)sendNotification:(std::string const&)method params:(json const&)params toConnection:(nw_connection_t)connection
 {
 	json message = { { "jsonrpc", "2.0" }, { "method", method }, { "params", params } };
@@ -522,9 +537,9 @@ static bool TokenMatches (NSString* candidate, NSString* expected)
 	}
 	else if(method.compare(0, 14, "notifications/") == 0 || method == "ide_connected")
 	{
-		// notifications/cancelled, … — nothing to do
-		if(method == "notifications/initialized" || method == "ide_connected")
-			[self seedEditorContextForConnection:connection];
+		// notifications/cancelled, notifications/initialized, … — nothing to do
+		if(agent_ide_routing::announcement_installs_seed(method))
+			[self noteClientConnectedWithParams:params onConnection:connection];
 	}
 	else if(method == "ping")
 	{
@@ -550,6 +565,22 @@ static bool TokenMatches (NSString* candidate, NSString* expected)
 	}
 }
 
+// ide_connected is the one message that says who this client is: it carries
+// the CLI’s own pid, which resolves to the directory it was launched in and
+// hence to the project it is asking about. Resolve that before the seed is
+// scheduled, so the seed describes the session’s own project rather than
+// whichever window happens to be frontmost.
+- (void)noteClientConnectedWithParams:(json const&)params onConnection:(nw_connection_t)connection // main queue
+{
+	pid_t pid = 0;
+	if(agent_ide_routing::client_pid(params, &pid))
+	{
+		if(NSString* workingDirectory = WorkingDirectoryForProcess(pid))
+			[_routingPaths setObject:workingDirectory forKey:connection];
+	}
+	[self seedEditorContextForConnection:connection];
+}
+
 // Seed a freshly connected client’s editor context. The CLI only learns the
 // active file from selection_changed pushes, so a client that connects after
 // the last caret movement would otherwise start blind — “edit this file” then
@@ -557,16 +588,20 @@ static bool TokenMatches (NSString* candidate, NSString* expected)
 // tabs.
 //
 // Sent on a short delay, which is the whole point. Claude Code announces itself
-// with notifications/initialized and ide_connected and immediately fires its
-// discovery requests; a selection_changed answered in that same instant arrives
-// while the client is still starting up and is dropped — observed on the wire:
-// the seed went out with the correct path, before the client’s own tools/list
-// response, and never reached the conversation, while the identical push from a
-// tab switch twenty seconds later did. Waiting until the burst is over costs
-// nothing a person can perceive, and computing the selection at send time makes
-// the seed describe the editor as it is when the client is ready to hear it.
+// and immediately fires its discovery requests; a selection_changed answered in
+// that same instant arrives while the client is still starting up and is
+// dropped — observed on the wire: the seed went out with the correct path,
+// before the client’s own tools/list response, and never reached the
+// conversation, while the identical push from a tab switch twenty seconds later
+// did. Waiting until the burst is over costs nothing a person can perceive, and
+// computing the selection at send time makes the seed describe the editor as it
+// is when the client is ready to hear it.
 //
-// Once per connection: either announcement triggers it, and clients send both.
+// Once per connection, and only from ide_connected: an unaddressed seed is the
+// one push that cannot be corrected afterwards (see
+// agent_ide_routing::announcement_installs_seed). The routing path is read at
+// send time too, so a client whose pid arrived late is still seeded from its
+// own project rather than from the state at scheduling time.
 - (void)seedEditorContextForConnection:(nw_connection_t)connection // main queue
 {
 	if([_seededConnections containsObject:connection])
@@ -582,7 +617,8 @@ static bool TokenMatches (NSString* candidate, NSString* expected)
 		// An empty selection at the caret is the normal no-selection payload.
 		// A connection dropped in the meantime is handled by sendNotification:,
 		// which checks it is still connected.
-		if(AgentBridgeSelection* selection = [strongSelf->_workspace currentSelection])
+		NSString* routingPath = [strongSelf->_routingPaths objectForKey:connection];
+		if(AgentBridgeSelection* selection = [strongSelf->_workspace currentSelectionForRoutingPath:routingPath])
 			[strongSelf sendNotification:"selection_changed" params:SelectionChangedParams(selection) toConnection:connection];
 	});
 }
@@ -605,9 +641,14 @@ static bool TokenMatches (NSString* candidate, NSString* expected)
 		[weakSelf sendResult:ContentResult(text, isError) forRequestId:requestId toConnection:connection];
 	};
 
-	// No routing path: Claude finds TextMate through the lock file, not from a
-	// working directory, so the frontmost window answers as it always has.
-	if(![AgentBridgeTools invokeToolNamed:to_ns(name) arguments:args workspace:_workspace routingPath:nil reply:reply])
+	// Routing path: the directory this connection’s client was launched in, so
+	// a session’s own project answers its questions even while another window
+	// is frontmost. A session that announced no usable pid — or whose project
+	// has since closed — falls back to the frontmost window inside
+	// controllerForRoutingPath:, which is the answer every session used to get:
+	// a stale answer beats an error for a query that must return something.
+	NSString* routingPath = [_routingPaths objectForKey:connection];
+	if(![AgentBridgeTools invokeToolNamed:to_ns(name) arguments:args workspace:_workspace routingPath:routingPath reply:reply])
 		[self sendErrorWithCode:-32601 message:"Unknown tool: " + name forRequestId:requestId toConnection:connection];
 }
 
@@ -615,18 +656,60 @@ static bool TokenMatches (NSString* candidate, NSString* expected)
 // = Notifications (IDE→CLI) =
 // ============================
 
-- (void)sendSelectionChanged:(AgentBridgeSelection*)selection
+// Send to every ready connection that the delivery predicate accepts for a
+// push originating in ‘originProjectPath’ (nil for a window with no project,
+// which only unrouted sessions then hear about).
+//
+// Two hops, because the two pieces of state this needs live on different
+// queues and neither may be read from the other: _connections is the transport
+// queue’s, and the routing map and workspace are the main queue’s. So _queue
+// copies the connection list, the main queue decides who the push is for out
+// of that immutable snapshot, and the per-connection send hops back to _queue —
+// where it rechecks that the connection is still ready, which is what covers a
+// client that disconnected while we were deciding.
+//
+// method/params are taken BY VALUE: the blocks below outlive this frame, and a
+// block capturing a C++ reference keeps the reference, not the value.
+- (void)deliverNotification:(std::string)method params:(json)params originProjectPath:(NSString*)originProjectPath completionHandler:(void(^)(NSUInteger targetCount))handler // main queue
 {
-	[self broadcastNotification:"selection_changed" params:SelectionChangedParams(selection)];
+	dispatch_async(_queue, ^{
+		NSArray* snapshot = [self->_connections copy];
+		dispatch_async(dispatch_get_main_queue(), ^{
+			std::vector<std::string> roots;
+			for(NSString* folder in [self->_workspace workspaceFolders])
+				roots.push_back(to_s(folder));
+
+			std::string const origin = originProjectPath.length ? to_s(originProjectPath) : std::string();
+
+			NSUInteger targetCount = 0;
+			for(nw_connection_t connection in snapshot)
+			{
+				NSString* routingPath = [self->_routingPaths objectForKey:connection];
+				if(!agent_ide_routing::delivers_to_session(origin, routingPath.length ? to_s(routingPath) : std::string(), roots))
+					continue;
+
+				++targetCount;
+				[self sendNotification:method params:params toConnection:connection];
+			}
+
+			if(handler)
+				handler(targetCount);
+		});
+	});
 }
 
-- (void)sendAtMentionedWithFilePath:(NSString*)filePath lineStart:(NSInteger)lineStart lineEnd:(NSInteger)lineEnd
+- (void)sendSelectionChanged:(AgentBridgeSelection*)selection originProjectPath:(NSString*)originProjectPath
+{
+	[self deliverNotification:"selection_changed" params:SelectionChangedParams(selection) originProjectPath:originProjectPath completionHandler:nil];
+}
+
+- (void)sendAtMentionedWithFilePath:(NSString*)filePath lineStart:(NSInteger)lineStart lineEnd:(NSInteger)lineEnd originProjectPath:(NSString*)originProjectPath completionHandler:(void(^)(NSUInteger targetCount))handler
 {
 	json params = {
 		{ "filePath",  to_s(filePath) },
 		{ "lineStart", lineStart },
 		{ "lineEnd",   lineEnd },
 	};
-	[self broadcastNotification:"at_mentioned" params:params];
+	[self deliverNotification:"at_mentioned" params:params originProjectPath:originProjectPath completionHandler:handler];
 }
 @end

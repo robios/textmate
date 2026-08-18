@@ -124,12 +124,39 @@ namespace agent_cli
 		return true;
 	}
 
+	// The directory a request was made from, which is what tells the app which
+	// project it belongs to — a mention needs it for the same reason a tool call
+	// does, so it travels under the same key. Empty is dropped rather than sent
+	// as an empty value: the framing would drop it anyway, and a missing key
+	// reads as “not supplied” on the far side.
+	inline void set_request_cwd (request_t* request, std::string const& cwd)
+	{
+		if(!cwd.empty())
+			request->arguments["cwd"] = cwd;
+	}
+
+	// The directory a mention counts as being made from, given the value of
+	// TM_PROJECT_DIRECTORY and this process’ own working directory.
+	//
+	// TextMate sets that variable for bundle commands and exports it into the
+	// integrated terminal’s shell, where it names the window the mention was
+	// started from — the origin routing wants. The working directory does not:
+	// a bundle command runs in the document’s directory, which may sit in
+	// another project or in none, so the same mention would be delivered
+	// elsewhere or refused outright. A shell outside TextMate has no such
+	// variable, and one carrying an unusable value (empty, or relative, which
+	// no project root can be matched against) is no better than none.
+	inline std::string mention_cwd (char const* projectDirectory, std::string const& cwd)
+	{
+		std::string const project = projectDirectory ? projectDirectory : std::string();
+		return !project.empty() && project.front() == '/' ? project : cwd;
+	}
+
 	// The request the MCP shim makes per tool call. ‘arguments’ is the tool’s
 	// argument object already serialized as JSON — one string on one wire line,
 	// since the framing below escapes newlines — and ‘cwd’ is the directory the
 	// shim was started in, which is what routes the query to the window whose
-	// project contains it. Both are omitted when empty: the framing drops empty
-	// values anyway, and a missing key reads as “not supplied” on the far side.
+	// project contains it. Both are omitted when empty (see set_request_cwd).
 	inline request_t tool_request (std::string const& name, std::string const& arguments, std::string const& cwd)
 	{
 		request_t res;
@@ -137,8 +164,7 @@ namespace agent_cli
 		res.arguments["name"] = name;
 		if(!arguments.empty())
 			res.arguments["arguments"] = arguments;
-		if(!cwd.empty())
-			res.arguments["cwd"] = cwd;
+		set_request_cwd(&res, cwd);
 		return res;
 	}
 

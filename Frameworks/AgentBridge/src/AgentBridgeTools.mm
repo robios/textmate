@@ -93,8 +93,8 @@ static size_t const kMaximumDiagnosticFiles   = 50;
 		}
 		else
 		{
-			selection = workspace.latestSelection;
-			if(!selection) // no selection change observed yet — a current non-empty selection is an acceptable seed
+			selection = [workspace latestSelectionForRoutingPath:routingPath];
+			if(!selection) // nothing recorded for this caller’s project — a current non-empty selection is an acceptable seed
 			{
 				AgentBridgeSelection* current = [workspace currentSelectionForRoutingPath:routingPath];
 				if(current && !current.isEmpty)

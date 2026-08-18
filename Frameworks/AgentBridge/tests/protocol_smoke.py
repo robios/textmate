@@ -281,12 +281,19 @@ def main():
     assert server_info["name"] == "TextMate", server_info
     assert init["result"]["protocolVersion"] == "2024-11-05", init["result"]
     ws.notify("notifications/initialized")
+    # Claude Code follows initialized with ide_connected carrying its own pid,
+    # which is the only identity the protocol offers: TextMate resolves it to
+    # this process' working directory and scopes the session to the project
+    # that contains it. A client that never sends it stays unscoped — and gets
+    # no seed, so this smoke test would hang at 1b without it.
+    ws.notify("ide_connected", {"pid": os.getpid()})
     passed.append(f"initialize (serverInfo={server_info})")
 
-    # 1b. handshake completion seeds the client's editor context: an initial
+    # 1b. announcing itself seeds the client's editor context: an initial
     #     selection_changed carrying the active document's filePath must
     #     arrive without any caret movement in the IDE (requires a file to be
-    #     open in the frontmost TextMate window).
+    #     open in the window answering for this process' directory, or in the
+    #     frontmost window when that directory is inside no open project).
     #
     #     It must NOT arrive inside the client's startup burst. A real client
     #     announces itself and immediately fires its discovery requests; a seed
