@@ -11,6 +11,13 @@
 // callers must bounce to the main queue themselves for UI work.
 // `arguments` is the argv tail (argv[0] is derived from path, with the
 // traditional “-” prefix when loginShell is set).
+//
+// The process is reached through the TextMatePTYHelper trampoline shipped
+// beside the running executable, which acquires the pty as the controlling
+// terminal of the new session before exec’ing the target — posix_spawn cannot
+// express that step, and the target would otherwise get a tty with no
+// foreground process group. The helper execs the target, so processIdentifier
+// is the target’s own pid.
 @interface PTYController : NSObject
 - (instancetype)initWithPath:(std::string const&)path arguments:(std::vector<std::string> const&)arguments environment:(std::map<std::string, std::string> const&)environment workingDirectory:(std::string const&)workingDirectory loginShell:(BOOL)loginShell columns:(NSUInteger)columns rows:(NSUInteger)rows pixelWidth:(NSUInteger)pixelWidth pixelHeight:(NSUInteger)pixelHeight;
 
@@ -31,7 +38,7 @@
 @property (nonatomic, readonly) BOOL hasForegroundProcess;
 @property (nonatomic, readonly) NSString* foregroundProcessName;
 
-- (BOOL)spawn; // returns NO if pty allocation or posix_spawn failed
+- (BOOL)spawn; // returns NO if pty allocation, the spawn, or the reported terminal/exec setup failed
 - (void)writeData:(NSData*)data;
 - (void)resizeToColumns:(NSUInteger)columns rows:(NSUInteger)rows pixelWidth:(NSUInteger)pixelWidth pixelHeight:(NSUInteger)pixelHeight;
 - (void)shutdown; // SIGHUP the process group, close the pty, reap

@@ -155,6 +155,10 @@ textmate_embed(TextMate tm_agent "MacOS")
 textmate_embed(TextMate tm_markdown "MacOS")
 textmate_embed(TextMate PrivilegedTool "Resources")
 
+# The embedded terminal's pty trampoline — PTYController spawns it by absolute
+# path as a sibling of the app binary, so it has to sit in MacOS next to it.
+textmate_embed(TextMate TextMatePTYHelper "MacOS")
+
 # Embedded plugins (.tmplugin bundles from submodules)
 textmate_embed(TextMate Dialog "PlugIns" DIRECTORY)
 textmate_embed(TextMate Dialog2 "PlugIns" DIRECTORY)
@@ -186,6 +190,8 @@ textmate_codesign_file(TextMate "${CS_IDENTITY}"
   "$<TARGET_BUNDLE_DIR:TextMate>/Contents/MacOS/tm_agent")
 textmate_codesign_file(TextMate "${CS_IDENTITY}"
   "$<TARGET_BUNDLE_DIR:TextMate>/Contents/MacOS/tm_markdown")
+textmate_codesign_file(TextMate "${CS_IDENTITY}"
+  "$<TARGET_BUNDLE_DIR:TextMate>/Contents/MacOS/TextMatePTYHelper")
 textmate_codesign_file(TextMate "${CS_IDENTITY}"
   "$<TARGET_BUNDLE_DIR:TextMate>/Contents/Resources/PrivilegedTool")
 if(OakSwiftUI_LIB)
