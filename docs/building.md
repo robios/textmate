@@ -101,9 +101,10 @@ make package minor    # bump the minor component
 This runs `scripts/prepare_release.rb` — which requires a clean worktree, bumps
 the latest `v*` tag and tags the commit — followed by `scripts/package.sh`,
 which does a signed release build, notarizes it with `notarytool` and staples
-the ticket. Signing and notarization need `NOTARY_TEAM_ID`, `NOTARY_APPLE_ID`
-and `NOTARY_PASSWORD` in the environment plus a *Developer ID Application*
-certificate, so this path is only useful to whoever publishes the releases.
+the ticket. Signing and notarization need a *Developer ID Application*
+certificate and a `notarytool` keychain profile; the machine that publishes
+releases names them in an untracked `scripts/package.conf` (`CS_IDENTITY`,
+`NOTARY_PROFILE`), so this path is only useful to whoever does.
 
 The version number itself comes from `git describe --tags --match "v*"`, so a
 checkout without tags reports the fallback version.
