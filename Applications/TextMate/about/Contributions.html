@@ -19,6 +19,774 @@
 <div>
 
 
+<h3 class="commit-group-heading">Aug 18, 2026</h3>
+
+<ol class="commit-group">
+
+<li class="commit commit-group-item">
+    <img class="gravatar" src="https://www.gravatar.com/avatar/d7e4957767431c67d811a9286c9d01d7?s=48&amp;d=https://a248.e.akamai.net/assets.github.com%2Fimages%2Fgravatars%2Fgravatar-user-420.png" height="36" width="36">
+    <p class="commit-title">
+      <a href="https://github.com/robios/textmate/commit/0ce55d4f9543f17640ba7b98804ef133f1f785de" class="message">Acquire the pty controlling terminal via a helper trampoline</a>
+      <span class="hidden-text-expander inline"><a href="javascript:;" class="js-details-target">…</a></span>
+    </p>
+    <div class="commit-desc"><pre>Spawning the shell directly with posix_spawn left the embedded
+terminal&#39;s session without a controlling terminal. POSIX_SPAWN_SETSID
+makes the child a session leader, but Darwin does not apply the &quot;first
+tty opened by a session leader becomes its ctty&quot; rule to the in-kernel
+open performed by a spawn file action, and no file action can issue
+TIOCSCTTY. The shell therefore owned a tty on 0/1/2 while the terminal
+had no foreground process group: TIOCSWINSZ updated the size but no
+SIGWINCH was ever delivered (TUIs never re-rendered on resize),
+tty-generated ^C/^Z reached nobody, /dev/tty failed with ENOTTY
+(breaking ssh/sudo prompts), and job control was degraded.
+
+Reverting to forkpty is not an option: fork() in this multithreaded
+process deadlocks atfork prepare handlers against allocator locks held
+by sibling threads, which livelocked the parallel ASan test runner --
+the reason posix_spawn was adopted in the first place.
+
+Instead, posix_spawn now starts TextMatePTYHelper, a libc-only
+trampoline shipped beside the main executable (and beside
+Terminal_tests for the test suite; resolved strictly as a sibling of
+the running binary, never via PATH or the environment). As the new
+session leader it performs the initialization forkpty&#39;s login_tty used
+to do in the child -- verify the SETSID invariants, TIOCSCTTY,
+tcsetpgrp, confirm the foreground group, prove /dev/tty opens, apply
+the chdir fallback to &quot;/&quot; -- then execve()s the real shell. The exec
+preserves the pid, session, process group, and pty, so process
+tracking, killpg, foreground queries, and reaping are unchanged. The
+cwd fallback moves into the helper, restoring the forkpty-era
+semantics and removing the two-attempt spawn.
+
+Startup is confirmed over a status pipe whose helper end is
+close-on-exec: zero-byte EOF means the shell reached execve; a
+fixed-layout record (magic/version/stage/errno, validated by a pure
+decoder that rejects short, oversized, foreign, or unknown-stage
+payloads) reports a staged failure synchronously, so -spawn still
+returns NO for a shell that could not start. A helper killed before
+reporting is indistinguishable from a successful exec by design; that
+degrades to &quot;the shell exited immediately&quot;, which the parent catches
+by pairing the suspended process source with two non-consuming
+waitid(WNOWAIT) peeks (post-resume and in the registration handler)
+funneled into an idempotent exit handler -- a child can exit and
+become a zombie before the source is registered.
+
+Descriptor hygiene: every source the child&#39;s file actions mention is
+first normalized to fd &gt;= 10 with F_DUPFD_CLOEXEC so no dup2 can alias
+its own source or clobber a standard stream; the master is marked
+FD_CLOEXEC immediately after openpty so no concurrent spawn on another
+thread can inherit a duplicate during the blocking handshake; every
+spawn attribute setter and file-action add is checked, since a
+silently missing action mis-wires the child or leaves the handshake fd
+dead while posix_spawn itself still succeeds. On failure paths the
+master is closed before the blocking reap: an exiting session leader
+blocks until the pty output queue drains, and nobody will ever read it.
+
+The helper (and the new tm_pty_probe test executable) build without
+ASan and link only libSystem: ASan&#39;s libmalloc printed onto the pty --
+into every debug terminal session -- and its instrumentation is
+startup cost and audit surface between the spawn and the user&#39;s shell.
+The app embeds the helper in Contents/MacOS and signs it before the
+outer bundle signature.
+
+Tests: a deterministic probe (state/winch/sigint/job-control/exit/
+ignore-hup modes, machine-parseable records, READY only after handlers
+are installed) replaces ps parsing. The suite now asserts exact
+sid/pgid/tpgid equality, kernel-delivered SIGWINCH after resize, ^C
+arriving as WIFSIGNALED/WTERMSIG==SIGINT, foreground handoff and
+reclaim, /dev/tty, login argv[0], byte-exact environment, cwd success
+and &quot;/&quot; fallback, clean failure for a missing target, decoder
+rejection of malformed records, fast-exit reaping, both shutdown
+rungs, and the release-on-I/O-queue regression. Verified with 100
+serial and 100 parallel ASan suite runs (no livelock, no orphans) and
+a full-suite run matching the clean-checkout baseline.
+
+Co-Authored-By: Claude Fable 5 &lt;noreply@anthropic.com&gt;
+</pre></div>
+    <div class="commit-meta">
+      <div class="commit-links">
+        <a href="https://github.com/robios/textmate/commit/0ce55d4f9543f17640ba7b98804ef133f1f785de" class="gobutton">
+          <span class="sha">0ce55d4f95<span class="mini-icon mini-icon-arr-right-mini"></span></span>
+        </a>
+        <a href="https://github.com/robios/textmate/tree/0ce55d4f9543f17640ba7b98804ef133f1f785de" class="browse-button" title="Browse the code at this point in the history" rel="nofollow">Browse code <span class="mini-icon mini-icon-arr-right"></span></a>
+      </div>
+      <div class="authorship">
+        <span class="author-name"><a href="https://github.com/robios">Kazuhiro Sakai</a></span>
+        authored <time class="js-relative-date" datetime="2026-08-18T22:28:58-04:00" title="2026-08-18 22:28:58">August 18, 2026</time>
+      </div>
+    </div>
+</li>
+
+<li class="commit commit-group-item">
+    <img class="gravatar" src="https://www.gravatar.com/avatar/d7e4957767431c67d811a9286c9d01d7?s=48&amp;d=https://a248.e.akamai.net/assets.github.com%2Fimages%2Fgravatars%2Fgravatar-user-420.png" height="36" width="36">
+    <p class="commit-title">
+      <a href="https://github.com/robios/textmate/commit/6d29961c0172d637a30687467bb7015d0a3efd1c" class="message">Spawn the pty child with posix_spawn instead of forkpty</a>
+      <span class="hidden-text-expander inline"><a href="javascript:;" class="js-details-target">…</a></span>
+    </p>
+    <div class="commit-desc"><pre>forkpty() in this multithreaded, ASan-instrumented process is the same
+atfork livelock the test suite just evicted fork() for, and it hit the
+Terminal suite as an intermittent full-run timeout spinning at ~950% CPU.
+
+The replacement is openpty + posix_spawn with SETSID, SETSIGDEF,
+SETSIGMASK and CLOEXEC_DEFAULT. The child is a session leader, so the
+file-actions open of the slave by path acquires it as the controlling
+terminal — replacing login_tty — and adddup2 fans it out to the three
+standard fds. The working directory travels as addchdir_np, and when the
+whole spawn fails there it is retried once from &quot;/&quot;: no pre-check can
+stand in for chdir — stat() needs only traversal of the parent path while
+chdir needs search permission on the target itself, and any check races
+the spawn — and forkpty&#39;s in-child fallback always got the terminal open,
+which is worth keeping.
+
+Reaping is its own correctness problem. DISPATCH_PROC_EXIT can fire
+before the zombie is visible to waitpid, so a one-shot WNOHANG can return
+0 and lose the exit status forever; waitpid is interruptible, and an
+EINTR mistaken for &quot;nothing to collect&quot; skips the SIGKILL escalation in
+-shutdown and leaks a zombie or a live child nothing will ever kill. All
+four waits go through one reap_child helper that retries EINTR, so every
+branch decision is made on a definitive value: the reaped pid, 0 meaning
+genuinely not waitable yet, or ECHILD meaning the concurrent
+-handleProcessExit/-shutdown race already collected it — and never
+waitpid(-1), which would reap an unrelated child of the app.
+
+Tests pin the controlling terminal (ps -o tpgid= equals the shell&#39;s pid),
+the &quot;/&quot; fallback (an unenterable 0600 directory), the no-zombie invariant
+after a normal exit, and both shutdown reaps — the SIGKILL rung forced
+deterministically by a child that traps SIGHUP and loops, since a reading
+child would exit on its own when the master closes.
+
+Squashed from the four pty commits of archive/claude-ide-scoping.
+
+Co-Authored-By: Claude Fable 5 &lt;noreply@anthropic.com&gt;
+</pre></div>
+    <div class="commit-meta">
+      <div class="commit-links">
+        <a href="https://github.com/robios/textmate/commit/6d29961c0172d637a30687467bb7015d0a3efd1c" class="gobutton">
+          <span class="sha">6d29961c01<span class="mini-icon mini-icon-arr-right-mini"></span></span>
+        </a>
+        <a href="https://github.com/robios/textmate/tree/6d29961c0172d637a30687467bb7015d0a3efd1c" class="browse-button" title="Browse the code at this point in the history" rel="nofollow">Browse code <span class="mini-icon mini-icon-arr-right"></span></a>
+      </div>
+      <div class="authorship">
+        <span class="author-name"><a href="https://github.com/robios">Kazuhiro Sakai</a></span>
+        authored <time class="js-relative-date" datetime="2026-08-18T15:52:38-04:00" title="2026-08-18 15:52:38">August 18, 2026</time>
+      </div>
+    </div>
+</li>
+
+<li class="commit commit-group-item">
+    <img class="gravatar" src="https://www.gravatar.com/avatar/d7e4957767431c67d811a9286c9d01d7?s=48&amp;d=https://a248.e.akamai.net/assets.github.com%2Fimages%2Fgravatars%2Fgravatar-user-420.png" height="36" width="36">
+    <p class="commit-title">
+      <a href="https://github.com/robios/textmate/commit/19ac9907f4d9dccafef65206a45559c02bb0fc27" class="message">Route bundle mentions by an explicit --project argument</a>
+      <span class="hidden-text-expander inline"><a href="javascript:;" class="js-details-target">…</a></span>
+    </p>
+    <div class="commit-desc"><pre>Preferring $TM_PROJECT_DIRECTORY over the working directory (2d28704c)
+placed mentions from bundle commands, which run in the document&#39;s
+directory, but broke the integrated terminal. TextMate exports the
+window&#39;s variables into a terminal pane once, at pane creation, so a
+shell that has cd&#39;d into a second project still advertises the first —
+while the Claude session started in that shell is identified by the
+WebSocket server from the process&#39; cwd, which is the second. A mention
+made there was routed to the wrong window, or refused for want of a
+client in it.
+
+Let the caller that actually knows its window say so instead: &quot;Send File
+to Claude&quot; and &quot;Send Selection to Claude&quot; pass --project
+&quot;$TM_PROJECT_DIRECTORY&quot; when it is set, and every other invocation falls
+back to getcwd — the same identity the server resolves sessions by, so
+the two can no longer disagree. The argument list is built with `set --`
+rather than a ${VAR:+…} expansion so a project path containing spaces
+stays a single word.
+
+The flag rides beside the wire arguments rather than in them: it only
+selects which directory becomes the cwd that is sent, and the app knows
+no such key. An unusable value is not a usage error but a fallback, so a
+mention is placed rather than refused. The MCP shim keeps its getcwd
+untouched.
+
+Co-Authored-By: Claude Fable 5 &lt;noreply@anthropic.com&gt;
+</pre></div>
+    <div class="commit-meta">
+      <div class="commit-links">
+        <a href="https://github.com/robios/textmate/commit/19ac9907f4d9dccafef65206a45559c02bb0fc27" class="gobutton">
+          <span class="sha">19ac9907f4<span class="mini-icon mini-icon-arr-right-mini"></span></span>
+        </a>
+        <a href="https://github.com/robios/textmate/tree/19ac9907f4d9dccafef65206a45559c02bb0fc27" class="browse-button" title="Browse the code at this point in the history" rel="nofollow">Browse code <span class="mini-icon mini-icon-arr-right"></span></a>
+      </div>
+      <div class="authorship">
+        <span class="author-name"><a href="https://github.com/robios">Kazuhiro Sakai</a></span>
+        authored <time class="js-relative-date" datetime="2026-08-18T15:52:38-04:00" title="2026-08-18 15:52:38">August 18, 2026</time>
+      </div>
+    </div>
+</li>
+
+<li class="commit commit-group-item">
+    <img class="gravatar" src="https://www.gravatar.com/avatar/d7e4957767431c67d811a9286c9d01d7?s=48&amp;d=https://a248.e.akamai.net/assets.github.com%2Fimages%2Fgravatars%2Fgravatar-user-420.png" height="36" width="36">
+    <p class="commit-title">
+      <a href="https://github.com/robios/textmate/commit/fd9d842180576f43fe8793f18349a391ed7fda09" class="message">Keep fork() out of the generated test suite</a>
+      <span class="hidden-text-expander inline"><a href="javascript:;" class="js-details-target">…</a></span>
+    </p>
+    <div class="commit-desc"><pre>gen_test runs every test concurrently on dispatch_apply threads, and
+fork() in a multithreaded ASan process can livelock: the atfork prepare
+handlers (objc, libmalloc, ASan&#39;s zone) wait on allocator locks held by
+sibling-test threads, and the sanitizer&#39;s spin mutexes burn all cores
+while they wait. Two tests forked.
+
+The stale-lock test now posix_spawns /usr/bin/true for its dead pid, and
+rewrites the lock&#39;s pid through JSON rather than textual substitution —
+the authToken is 32 hex characters and can contain the pid&#39;s decimal
+digits as a substring. t_connection drives both socketpair ends on the
+test&#39;s own thread; that is only safe because each direction&#39;s payload is
+far smaller than the socket buffer, so a write never blocks waiting for a
+reader, and the comment says so for whoever grows the payloads.
+
+The rule itself is recorded where it is enforced least visibly: a comment
+at the dispatch_apply site in gen_test&#39;s emitted template, so it lands in
+every generated test runner.
+
+Squashed from five test-infrastructure commits of archive/claude-ide-scoping.
+
+Co-Authored-By: Claude Fable 5 &lt;noreply@anthropic.com&gt;
+</pre></div>
+    <div class="commit-meta">
+      <div class="commit-links">
+        <a href="https://github.com/robios/textmate/commit/fd9d842180576f43fe8793f18349a391ed7fda09" class="gobutton">
+          <span class="sha">fd9d842180<span class="mini-icon mini-icon-arr-right-mini"></span></span>
+        </a>
+        <a href="https://github.com/robios/textmate/tree/fd9d842180576f43fe8793f18349a391ed7fda09" class="browse-button" title="Browse the code at this point in the history" rel="nofollow">Browse code <span class="mini-icon mini-icon-arr-right"></span></a>
+      </div>
+      <div class="authorship">
+        <span class="author-name"><a href="https://github.com/robios">Kazuhiro Sakai</a></span>
+        authored <time class="js-relative-date" datetime="2026-08-18T15:52:38-04:00" title="2026-08-18 15:52:38">August 18, 2026</time>
+      </div>
+    </div>
+</li>
+
+<li class="commit commit-group-item">
+    <img class="gravatar" src="https://www.gravatar.com/avatar/d7e4957767431c67d811a9286c9d01d7?s=48&amp;d=https://a248.e.akamai.net/assets.github.com%2Fimages%2Fgravatars%2Fgravatar-user-420.png" height="36" width="36">
+    <p class="commit-title">
+      <a href="https://github.com/robios/textmate/commit/20df5802c47d48efdb6bdc63d476417d3732af66" class="message">Scope Claude IDE context to each session&#39;s own project</a>
+      <span class="hidden-text-expander inline"><a href="javascript:;" class="js-details-target">…</a></span>
+    </p>
+    <div class="commit-desc"><pre>TextMate runs one WebSocket server for the whole app and lists every open
+project in one lock file, so Claude Code sessions started in unrelated
+projects all connect to it — and fronting project B&#39;s window pushed B&#39;s
+file and selection into the session working in project A, tools/call
+answered every session out of the frontmost window, and getLatestSelection
+handed everyone the last selection made anywhere in the app.
+
+Pushes are now addressed. The only identity the protocol offers is the pid
+in ide_connected; it resolves to the CLI&#39;s working directory, kept per
+connection and re-matched against the open projects on every use through a
+fallback-free longest-root matcher, so closing and opening windows changes
+the answer by itself. A session that can be placed hears its own project
+only; one that cannot keeps hearing everything — it may well be the session
+the user is talking to, and a silently unaddressed push is worse than a
+surplus one. The matching rule lives in a pure header with its own tests,
+because a rule that needed two project windows and two live CLI sessions to
+exercise would not be tested at all.
+
+selection_changed and at_mentioned capture their origin project where the
+event happens — resolving it later from the active window is exactly how a
+push ends up attributed to the wrong project. A mention that reaches nobody
+is reported to its caller rather than broadcast: a stray mention reads as
+an instruction in whatever conversation it lands in. tools/call keeps the
+frontmost-window fallback, because a query must return something and a
+stale answer beats an error. The one-shot seed follows ide_connected alone
+— notifications/initialized carries no pid and can arrive first — and
+&#39;tm_agent mention&#39; sends its own working directory so the app can place it.
+
+getLatestSelection answers from a per-project history, keyed by normalized
+project root and resolved with the same matcher; entries are pruned when
+their project closes, since a lookup only ever matches projects open at
+that moment and the entries hold whole selection bodies.
+
+Squashed from the first six commits of archive/claude-ide-scoping.
+
+Co-Authored-By: Claude Fable 5 &lt;noreply@anthropic.com&gt;
+</pre></div>
+    <div class="commit-meta">
+      <div class="commit-links">
+        <a href="https://github.com/robios/textmate/commit/20df5802c47d48efdb6bdc63d476417d3732af66" class="gobutton">
+          <span class="sha">20df5802c4<span class="mini-icon mini-icon-arr-right-mini"></span></span>
+        </a>
+        <a href="https://github.com/robios/textmate/tree/20df5802c47d48efdb6bdc63d476417d3732af66" class="browse-button" title="Browse the code at this point in the history" rel="nofollow">Browse code <span class="mini-icon mini-icon-arr-right"></span></a>
+      </div>
+      <div class="authorship">
+        <span class="author-name"><a href="https://github.com/robios">Kazuhiro Sakai</a></span>
+        authored <time class="js-relative-date" datetime="2026-08-18T15:52:38-04:00" title="2026-08-18 15:52:38">August 18, 2026</time>
+      </div>
+    </div>
+</li>
+
+</ol>
+
+<h3 class="commit-group-heading">Aug 13, 2026</h3>
+
+<ol class="commit-group">
+
+<li class="commit commit-group-item">
+    <img class="gravatar" src="https://www.gravatar.com/avatar/d7e4957767431c67d811a9286c9d01d7?s=48&amp;d=https://a248.e.akamai.net/assets.github.com%2Fimages%2Fgravatars%2Fgravatar-user-420.png" height="36" width="36">
+    <p class="commit-title">
+      <a href="https://github.com/robios/textmate/commit/3a9fa26346050b7c858ccef52fd2d99d43dc7cbc" class="message">Move the command palette off ⇧⌘P, which File Browser already owned</a>
+      <span class="hidden-text-expander inline"><a href="javascript:;" class="js-details-target">…</a></span>
+    </p>
+    <div class="commit-desc"><pre>The palette arrived in this fork on ⇧⌘P — the shortcut every other editor
+uses for it, and the one File Browser → Project Folder has carried since
+upstream. Two menu items cannot share a key equivalent: AppKit gives the
+event to whichever the main menu reaches first, Navigate sits ahead of File
+Browser, and the palette&#39;s action is always enabled, so Project Folder was
+simply unreachable from the keyboard. The older, upstream binding is the one
+with a claim, so the palette moves.
+
+⌃⌘C is free across the whole main menu, KeyBindings.dict, and the key
+equivalents of all installed bundles — the P column has no room left (⌘P
+prints, ⌃⇧P is Bundle Development&#39;s Show Scope, ⌃⌥⌘P is Show Preview), and
+the C column has exactly this one opening. It keeps a mnemonic, C for
+Command, and lands beside ⌃⌘T for Select Bundle Item…, the chooser the
+palette is a sibling of.
+
+Co-Authored-By: Claude Opus 5 &lt;noreply@anthropic.com&gt;
+</pre></div>
+    <div class="commit-meta">
+      <div class="commit-links">
+        <a href="https://github.com/robios/textmate/commit/3a9fa26346050b7c858ccef52fd2d99d43dc7cbc" class="gobutton">
+          <span class="sha">3a9fa26346<span class="mini-icon mini-icon-arr-right-mini"></span></span>
+        </a>
+        <a href="https://github.com/robios/textmate/tree/3a9fa26346050b7c858ccef52fd2d99d43dc7cbc" class="browse-button" title="Browse the code at this point in the history" rel="nofollow">Browse code <span class="mini-icon mini-icon-arr-right"></span></a>
+      </div>
+      <div class="authorship">
+        <span class="author-name"><a href="https://github.com/robios">Kazuhiro Sakai</a></span>
+        authored <time class="js-relative-date" datetime="2026-08-13T13:52:12-04:00" title="2026-08-13 13:52:12">August 13, 2026</time>
+      </div>
+    </div>
+</li>
+
+<li class="commit commit-group-item">
+    <img class="gravatar" src="https://www.gravatar.com/avatar/d7e4957767431c67d811a9286c9d01d7?s=48&amp;d=https://a248.e.akamai.net/assets.github.com%2Fimages%2Fgravatars%2Fgravatar-user-420.png" height="36" width="36">
+    <p class="commit-title">
+      <a href="https://github.com/robios/textmate/commit/05095e44aec05dc2b123c5bf8208353e4aa57f33" class="message">Give View → Show Preview the key equivalent ⌃⌥⌘P</a>
+      <span class="hidden-text-expander inline"><a href="javascript:;" class="js-details-target">…</a></span>
+    </p>
+    <div class="commit-desc"><pre>The pane toggles all live on ⌃⌥⌘ — file browser D, HTML output H,
+diff G — so the preview joins the family on P, the letter that has
+meant preview since TextMate 1&#39;s Web Preview.
+
+Co-Authored-By: Claude Fable 5 &lt;noreply@anthropic.com&gt;
+</pre></div>
+    <div class="commit-meta">
+      <div class="commit-links">
+        <a href="https://github.com/robios/textmate/commit/05095e44aec05dc2b123c5bf8208353e4aa57f33" class="gobutton">
+          <span class="sha">05095e44ae<span class="mini-icon mini-icon-arr-right-mini"></span></span>
+        </a>
+        <a href="https://github.com/robios/textmate/tree/05095e44aec05dc2b123c5bf8208353e4aa57f33" class="browse-button" title="Browse the code at this point in the history" rel="nofollow">Browse code <span class="mini-icon mini-icon-arr-right"></span></a>
+      </div>
+      <div class="authorship">
+        <span class="author-name"><a href="https://github.com/robios">Kazuhiro Sakai</a></span>
+        authored <time class="js-relative-date" datetime="2026-08-13T13:15:26-04:00" title="2026-08-13 13:15:26">August 13, 2026</time>
+      </div>
+    </div>
+</li>
+
+<li class="commit commit-group-item">
+    <img class="gravatar" src="https://www.gravatar.com/avatar/d7e4957767431c67d811a9286c9d01d7?s=48&amp;d=https://a248.e.akamai.net/assets.github.com%2Fimages%2Fgravatars%2Fgravatar-user-420.png" height="36" width="36">
+    <p class="commit-title">
+      <a href="https://github.com/robios/textmate/commit/e0e87a43bdf8742c53cd20747b202372d5ba1b80" class="message">Let the newest result decide the preview warning</a>
+      <span class="hidden-text-expander inline"><a href="javascript:;" class="js-details-target">…</a></span>
+    </p>
+    <div class="commit-desc"><pre>A render arriving before the preview page has loaded is kept until there is a
+page to paint it into, and applying it went through the same method as any
+other content — which cleared the ⚠︎. That is one step too late to be right:
+between the render being received and the page being ready, a newer run of the
+same document can fail and raise the ⚠︎, and the delayed apply would then take
+down a warning about a result newer than the content it is painting. The
+reader would be looking at a stale body with nothing saying so.
+
+Which result is the newest word on the document is known where results are
+received, not where content is painted, so that is where the ⚠︎ is cleared now:
+in the external success branch and in the built-in renderer&#39;s completion. The
+ordering stays correct for the ordinary pending flow — the good render did
+clear the older diagnostic when it arrived — while a failure that comes after
+it keeps the warning it raised, through the apply and beyond.
+
+Co-Authored-By: Claude Fable 5 &lt;noreply@anthropic.com&gt;
+</pre></div>
+    <div class="commit-meta">
+      <div class="commit-links">
+        <a href="https://github.com/robios/textmate/commit/e0e87a43bdf8742c53cd20747b202372d5ba1b80" class="gobutton">
+          <span class="sha">e0e87a43bd<span class="mini-icon mini-icon-arr-right-mini"></span></span>
+        </a>
+        <a href="https://github.com/robios/textmate/tree/e0e87a43bdf8742c53cd20747b202372d5ba1b80" class="browse-button" title="Browse the code at this point in the history" rel="nofollow">Browse code <span class="mini-icon mini-icon-arr-right"></span></a>
+      </div>
+      <div class="authorship">
+        <span class="author-name"><a href="https://github.com/robios">Kazuhiro Sakai</a></span>
+        authored <time class="js-relative-date" datetime="2026-08-13T12:50:35-04:00" title="2026-08-13 12:50:35">August 13, 2026</time>
+      </div>
+    </div>
+</li>
+
+<li class="commit commit-group-item">
+    <img class="gravatar" src="https://www.gravatar.com/avatar/d7e4957767431c67d811a9286c9d01d7?s=48&amp;d=https://a248.e.akamai.net/assets.github.com%2Fimages%2Fgravatars%2Fgravatar-user-420.png" height="36" width="36">
+    <p class="commit-title">
+      <a href="https://github.com/robios/textmate/commit/c64bd9c2f17b1146bd1676226179ff4b072c3773" class="message">Copy a code block only for a click the reader made</a>
+      <span class="hidden-text-expander inline"><a href="javascript:;" class="js-details-target">…</a></span>
+    </p>
+    <div class="commit-desc"><pre>The copy control lives in its own content world, which keeps the clipboard
+channel out of the page&#39;s reach — but the two worlds share one DOM, and the
+button is in it. Page-world script, including anything a document injects
+through the renderer&#39;s unsafe HTML pass, can therefore call .click() on the
+button (or dispatch a MouseEvent at it) and have the control&#39;s own listener
+post the block text on its behalf: a clipboard write with no user behind it,
+of text the document itself chose by supplying the code block.
+
+The world boundary cannot close this, since the DOM is deliberately shared —
+that is how the control finds the blocks to decorate. The event is what
+separates the two cases: WebKit marks only events it generated from a real
+user gesture as trusted, and no script in any world can set isTrusted. So the
+listener now returns immediately for an untrusted event, before posting and
+before the checkmark, which must never claim a copy that did not happen.
+
+The tests follow: scripted clicks — from the page world, from the copy world,
+and from a document payload that waits for the button to appear — must leave
+a seeded pasteboard alone, and the legitimate path is driven by native mouse
+events delivered to the web view, the only way to obtain a trusted click.
+
+Co-Authored-By: Claude Fable 5 &lt;noreply@anthropic.com&gt;
+</pre></div>
+    <div class="commit-meta">
+      <div class="commit-links">
+        <a href="https://github.com/robios/textmate/commit/c64bd9c2f17b1146bd1676226179ff4b072c3773" class="gobutton">
+          <span class="sha">c64bd9c2f1<span class="mini-icon mini-icon-arr-right-mini"></span></span>
+        </a>
+        <a href="https://github.com/robios/textmate/tree/c64bd9c2f17b1146bd1676226179ff4b072c3773" class="browse-button" title="Browse the code at this point in the history" rel="nofollow">Browse code <span class="mini-icon mini-icon-arr-right"></span></a>
+      </div>
+      <div class="authorship">
+        <span class="author-name"><a href="https://github.com/robios">Kazuhiro Sakai</a></span>
+        authored <time class="js-relative-date" datetime="2026-08-13T12:48:31-04:00" title="2026-08-13 12:48:31">August 13, 2026</time>
+      </div>
+    </div>
+</li>
+
+<li class="commit commit-group-item">
+    <img class="gravatar" src="https://www.gravatar.com/avatar/d7e4957767431c67d811a9286c9d01d7?s=48&amp;d=https://a248.e.akamai.net/assets.github.com%2Fimages%2Fgravatars%2Fgravatar-user-420.png" height="36" width="36">
+    <p class="commit-title">
+      <a href="https://github.com/robios/textmate/commit/02a360e34ba90c0c63fc67fc5236fb7ca439565c" class="message">Keep a same-document render pending across a failure before shell load</a>
+      <span class="hidden-text-expander inline"><a href="javascript:;" class="js-details-target">…</a></span>
+    </p>
+    <div class="commit-desc"><pre>A failed render clears the page only when it belongs to another document
+— otherwise a transient converter error would blank the render under the
+reader. That decision compared the current document against the one whose
+render is on screen. But before the shell finishes its first load nothing
+is on screen yet: a good render that completed during the load is held in
+_pendingContent and applied on didFinishNavigation, and it never set the
+displayed-document identifier. So a second render of the same document
+that failed while the shell was still loading found a nil identifier,
+read it as &quot;another document&#39;s first render failed&quot;, and cleared the
+page — destroying that document&#39;s own pending good render, which the
+keep-on-same-document rule was meant to protect.
+
+The pending content now carries the identity of the document it was
+rendered for, set beside _pendingContent and dropped wherever the pending
+render is (invalidateRenders, clearContent, the fresh-shell reset). The
+failure keeps the page when the current document matches either the
+displayed render or the pending one, and clears only when it matches
+neither. When the shell finishes and the pending render is applied, the
+page is attributed to the render&#39;s own document rather than merely the
+current one.
+
+The pane test reproduces the reviewer&#39;s ordering: with the shell still
+loading, document A&#39;s render succeeds into pending, then a save-driven
+render of A fails before the shell finishes. The window is a race against
+the asynchronous load, so the test observes the pane&#39;s state and only
+accepts an attempt that actually landed the failure while the shell was
+unloaded and nothing was displayed — the pending path — retrying
+otherwise. A&#39;s good render then survives to be shown, never the FAIL
+buffer. Against the old single-identifier decision the failure always
+clears pending and stamps the page, so the ordering never reproduces and
+the test fails.
+
+Co-Authored-By: Claude Fable 5 &lt;noreply@anthropic.com&gt;
+</pre></div>
+    <div class="commit-meta">
+      <div class="commit-links">
+        <a href="https://github.com/robios/textmate/commit/02a360e34ba90c0c63fc67fc5236fb7ca439565c" class="gobutton">
+          <span class="sha">02a360e34b<span class="mini-icon mini-icon-arr-right-mini"></span></span>
+        </a>
+        <a href="https://github.com/robios/textmate/tree/02a360e34ba90c0c63fc67fc5236fb7ca439565c" class="browse-button" title="Browse the code at this point in the history" rel="nofollow">Browse code <span class="mini-icon mini-icon-arr-right"></span></a>
+      </div>
+      <div class="authorship">
+        <span class="author-name"><a href="https://github.com/robios">Kazuhiro Sakai</a></span>
+        authored <time class="js-relative-date" datetime="2026-08-13T03:50:54-04:00" title="2026-08-13 03:50:54">August 13, 2026</time>
+      </div>
+    </div>
+</li>
+
+<li class="commit commit-group-item">
+    <img class="gravatar" src="https://www.gravatar.com/avatar/d7e4957767431c67d811a9286c9d01d7?s=48&amp;d=https://a248.e.akamai.net/assets.github.com%2Fimages%2Fgravatars%2Fgravatar-user-420.png" height="36" width="36">
+    <p class="commit-title">
+      <a href="https://github.com/robios/textmate/commit/613f22ea55aa88aeabd85201dbea80de078ba59c" class="message">Let the preview be selected from, and code blocks be copied</a>
+      <span class="hidden-text-expander inline"><a href="javascript:;" class="js-details-target">…</a></span>
+    </p>
+    <div class="commit-desc"><pre>Every click in the preview reached the sourcepos jump, including the
+one that ends a drag-selection, so text could be highlighted but never
+copied — the jump moved focus back to the editor. The click listener
+now stands down while the selection is non-collapsed; a plain click
+still jumps, scroll sync still holds off, and since WKWebView keeps
+first responder when no jump runs, ⌘C copies what was selected.
+
+Code blocks additionally get a GitHub-style copy control, shown on
+hover and confirming with a 1.5 s checkmark; the clipboard write
+happens on the app side, since navigator.clipboard is not reliable in
+a custom-scheme page. Because the preview renders cmark with
+CMARK_OPT_UNSAFE, page content must not be able to reach that write
+path: the control lives in a dedicated WKContentWorld whose message
+channel (tmPreviewCopy) is registered only in that world, so it is
+simply not present on webkit.messageHandlers in the page world, and
+the page-world tmPreview handler stays string-jump only — the world,
+not the message shape, is the boundary. The decoration shares the DOM
+but no JS objects with the page, and is re-injected after every
+setContent.
+
+Both affordances live in the shared shell, so the built-in Markdown
+preview gains them alongside external converters. The pane tests seed
+a pasteboard sentinel and pin the boundary: an &lt;img onerror&gt; payload
+through the Markdown UNSAFE path and a direct page-world post both
+leave the sentinel intact, while the legitimate button still lands the
+block&#39;s text through the real handler.
+
+Co-Authored-By: Claude Fable 5 &lt;noreply@anthropic.com&gt;
+</pre></div>
+    <div class="commit-meta">
+      <div class="commit-links">
+        <a href="https://github.com/robios/textmate/commit/613f22ea55aa88aeabd85201dbea80de078ba59c" class="gobutton">
+          <span class="sha">613f22ea55<span class="mini-icon mini-icon-arr-right-mini"></span></span>
+        </a>
+        <a href="https://github.com/robios/textmate/tree/613f22ea55aa88aeabd85201dbea80de078ba59c" class="browse-button" title="Browse the code at this point in the history" rel="nofollow">Browse code <span class="mini-icon mini-icon-arr-right"></span></a>
+      </div>
+      <div class="authorship">
+        <span class="author-name"><a href="https://github.com/robios">Kazuhiro Sakai</a></span>
+        authored <time class="js-relative-date" datetime="2026-08-13T13:30:01-04:00" title="2026-08-13 13:30:01">August 13, 2026</time>
+      </div>
+    </div>
+</li>
+
+<li class="commit commit-group-item">
+    <img class="gravatar" src="https://www.gravatar.com/avatar/d7e4957767431c67d811a9286c9d01d7?s=48&amp;d=https://a248.e.akamai.net/assets.github.com%2Fimages%2Fgravatars%2Fgravatar-user-420.png" height="36" width="36">
+    <p class="commit-title">
+      <a href="https://github.com/robios/textmate/commit/7d326ac4f4b2ec45902236e02f453423cfa7198c" class="message">Clear stale content and open preview diagnostics in HTML output</a>
+      <span class="hidden-text-expander inline"><a href="javascript:;" class="js-details-target">…</a></span>
+    </p>
+    <div class="commit-desc"><pre>A failure keeps what the page shows — right for the previewed
+document, whose last good render must not blank under a transient
+converter error, but wrong across a document switch: a document whose
+converter fails on its very first render left the previous document&#39;s
+body standing under the new document&#39;s header. The pane now remembers
+which document its content was rendered from, and a failed completion
+clears the page before the warning goes up when that document is not
+the current one; the same document keeps its last good render as
+before. Clearing also drops pending content, so a page emptied on
+purpose cannot resurrect the departed document&#39;s render on the next
+shell load.
+
+Clicking the header&#39;s warning used to pour stderr into an untitled
+document, which conscripts the document machinery for something that
+is not a document: a tab-bar buffer that asks about saving and
+outlives the failure it describes. A converter diagnostic is command
+output, and command output has had a home since forever, so the click
+now opens the HTML output window, titled after the previewed document,
+with the diagnostic escaped into a minimal page whose color-scheme
+follows the system appearance. This adds OakTextView →
+HTMLOutputWindow as a direct dependency; everything HTMLOutputWindow
+depends on is already beneath OakTextView, so the edge closes no
+cycle.
+
+Co-Authored-By: Claude Fable 5 &lt;noreply@anthropic.com&gt;
+</pre></div>
+    <div class="commit-meta">
+      <div class="commit-links">
+        <a href="https://github.com/robios/textmate/commit/7d326ac4f4b2ec45902236e02f453423cfa7198c" class="gobutton">
+          <span class="sha">7d326ac4f4<span class="mini-icon mini-icon-arr-right-mini"></span></span>
+        </a>
+        <a href="https://github.com/robios/textmate/tree/7d326ac4f4b2ec45902236e02f453423cfa7198c" class="browse-button" title="Browse the code at this point in the history" rel="nofollow">Browse code <span class="mini-icon mini-icon-arr-right"></span></a>
+      </div>
+      <div class="authorship">
+        <span class="author-name"><a href="https://github.com/robios">Kazuhiro Sakai</a></span>
+        authored <time class="js-relative-date" datetime="2026-08-13T13:30:01-04:00" title="2026-08-13 13:30:01">August 13, 2026</time>
+      </div>
+    </div>
+</li>
+
+<li class="commit commit-group-item">
+    <img class="gravatar" src="https://www.gravatar.com/avatar/d7e4957767431c67d811a9286c9d01d7?s=48&amp;d=https://a248.e.akamai.net/assets.github.com%2Fimages%2Fgravatars%2Fgravatar-user-420.png" height="36" width="36">
+    <p class="commit-title">
+      <a href="https://github.com/robios/textmate/commit/66f77563c7879de783fb29944e4ccf968f1499b0" class="message">Preview any document through a bundle previewCommand</a>
+      <span class="hidden-text-expander inline"><a href="javascript:;" class="js-details-target">…</a></span>
+    </p>
+    <div class="commit-desc"><pre>A bundle Preferences item may declare previewCommand for a scope
+selector, and the preview resolves it through the scope-aware settings
+lookup: a declared converter wins even for Markdown scopes, the
+built-in cmark renderer is the default for text.html.markdown, and
+anything else has no preview. Menu validation, pane targeting, and the
+render path all share that single resolution, so Show Preview enables
+for any scope with a converter, and the user-facing labels drop the
+word Markdown — Show/Hide Preview, the Preview Theme submenu — while
+defaults and session keys keep their identifiers, so session restore
+and user settings survive.
+
+A converter runs as /bin/sh -c in its own process group: buffer on
+stdin, HTML fragment on stdout, cwd at the document&#39;s directory, and a
+deliberately minimal environment — TM_DISPLAYNAME, TM_BUNDLE_SUPPORT,
+TM_PREVIEW, the file variables only for a saved document; a converter
+is a pure document transform, so no selection or caret variables.
+stdout is capped at 16 MB and stderr at 1 MB, the hard timeout is
+10 s, and the pipes are pumped concurrently so back-pressure cannot
+deadlock a large document against a chatty converter. Cancellation
+SIGTERMs the group and escalates to SIGKILL after half a second; the
+leader&#39;s zombie stays unreaped while any kill is pending, since the
+pid is the group id, and a leader that exits normally buys the group
+the same sweep — a background job a converter leaves behind dies with
+the render, so closing the pane always kills what it started.
+
+The pane debounces external converters at 0.5 s, renders on save (the
+converter may read the saved file), and discards stale output through
+a generation that every change of page advances — a result rendered
+for a departed page can no longer land in the new page&#39;s pending slot.
+Failures keep the last good render and light a clickable warning in
+the pane header carrying the diagnostic; no modal, no content flash.
+The guide, renamed docs/markdown-preview.md → docs/preview.md now
+that it covers more than Markdown, documents the contract for bundle
+authors, and pane-level tests drive the whole machinery headlessly
+against fixture converters, including the kill and orphan-sweep
+orderings.
+
+Co-Authored-By: Claude Fable 5 &lt;noreply@anthropic.com&gt;
+</pre></div>
+    <div class="commit-meta">
+      <div class="commit-links">
+        <a href="https://github.com/robios/textmate/commit/66f77563c7879de783fb29944e4ccf968f1499b0" class="gobutton">
+          <span class="sha">66f77563c7<span class="mini-icon mini-icon-arr-right-mini"></span></span>
+        </a>
+        <a href="https://github.com/robios/textmate/tree/66f77563c7879de783fb29944e4ccf968f1499b0" class="browse-button" title="Browse the code at this point in the history" rel="nofollow">Browse code <span class="mini-icon mini-icon-arr-right"></span></a>
+      </div>
+      <div class="authorship">
+        <span class="author-name"><a href="https://github.com/robios">Kazuhiro Sakai</a></span>
+        authored <time class="js-relative-date" datetime="2026-08-13T13:29:53-04:00" title="2026-08-13 13:29:53">August 13, 2026</time>
+      </div>
+    </div>
+</li>
+
+<li class="commit commit-group-item">
+    <img class="gravatar" src="https://www.gravatar.com/avatar/d7e4957767431c67d811a9286c9d01d7?s=48&amp;d=https://a248.e.akamai.net/assets.github.com%2Fimages%2Fgravatars%2Fgravatar-user-420.png" height="36" width="36">
+    <p class="commit-title">
+      <a href="https://github.com/robios/textmate/commit/be7bb80f40fdcc721b3d11b45e493b2aac998bdf" class="message">Render TeX math in the Markdown preview</a>
+      <span class="hidden-text-expander inline"><a href="javascript:;" class="js-details-target">…</a></span>
+    </p>
+    <div class="commit-desc"><pre>cmark-gfm has no math extension, so TeX spans used to reach the
+emphasis parser and come back mangled. Math is now extracted before
+the parse — inline $…$ under GitHub&#39;s whitespace/digit rules, display
+$$…$$ in block position, code regions suppressing extraction — masked
+with opaque tokens that preserve line count and indentation, and
+restored afterwards as data-tm-math elements the preview shell renders
+with KaTeX 0.16.40, vendored into the app (css, js, woff2 fonts) so
+math works fully offline. Unsupported TeX degrades to source text in
+the error color, missing assets to plain TeX text, and long display
+equations scroll inside their own box.
+
+A display span that shares cmark&#39;s paragraph with other content is
+restored by splitting the paragraph into valid siblings, cutting the
+data-sourcepos range at the span&#39;s recorded lines and columns so
+scroll sync and click-to-jump stay exact; multi-line spans mask
+line-for-line with continuation tokens carrying the opener&#39;s indent,
+so the block structure cmark sees is exactly the unmasked source&#39;s.
+Anything that cannot be restored safely — a token landing in an
+attribute, a code region the scanner judged differently than cmark,
+inline markup whose open and close tags would come apart across the
+split — is restored as escaped literal source instead: the failure
+mode is unrendered math, never corrupted output.
+
+Co-Authored-By: Claude Fable 5 &lt;noreply@anthropic.com&gt;
+</pre></div>
+    <div class="commit-meta">
+      <div class="commit-links">
+        <a href="https://github.com/robios/textmate/commit/be7bb80f40fdcc721b3d11b45e493b2aac998bdf" class="gobutton">
+          <span class="sha">be7bb80f40<span class="mini-icon mini-icon-arr-right-mini"></span></span>
+        </a>
+        <a href="https://github.com/robios/textmate/tree/be7bb80f40fdcc721b3d11b45e493b2aac998bdf" class="browse-button" title="Browse the code at this point in the history" rel="nofollow">Browse code <span class="mini-icon mini-icon-arr-right"></span></a>
+      </div>
+      <div class="authorship">
+        <span class="author-name"><a href="https://github.com/robios">Kazuhiro Sakai</a></span>
+        authored <time class="js-relative-date" datetime="2026-08-13T13:27:09-04:00" title="2026-08-13 13:27:09">August 13, 2026</time>
+      </div>
+    </div>
+</li>
+
+</ol>
+
+<h3 class="commit-group-heading">Aug 5, 2026</h3>
+
+<ol class="commit-group">
+
+<li class="commit commit-group-item">
+    <img class="gravatar" src="https://www.gravatar.com/avatar/d7e4957767431c67d811a9286c9d01d7?s=48&amp;d=https://a248.e.akamai.net/assets.github.com%2Fimages%2Fgravatars%2Fgravatar-user-420.png" height="36" width="36">
+    <p class="commit-title">
+      <a href="https://github.com/robios/textmate/commit/1d4d790e6bad0de2998488ac6b8f640508229918" class="message">Use a keychain profile for notarization</a>
+      <span class="hidden-text-expander inline"><a href="javascript:;" class="js-details-target">…</a></span>
+    </p>
+    <div class="commit-desc"><pre>Replace the three NOTARY_* env vars with a notarytool keychain profile
+(default &quot;notarytool&quot;, created once via store-credentials) so the
+app-specific password never passes through the environment or shell
+history. The signing identity and profile name can be overridden per
+machine in scripts/package.conf, an untracked file sourced at startup;
+the identity default stays the bare &quot;Developer ID Application&quot; prefix,
+which codesign refuses as ambiguous when several Developer ID
+certificates are installed, so a wrong certificate can never be picked
+silently.
+
+Co-Authored-By: Claude Fable 5 &lt;noreply@anthropic.com&gt;
+</pre></div>
+    <div class="commit-meta">
+      <div class="commit-links">
+        <a href="https://github.com/robios/textmate/commit/1d4d790e6bad0de2998488ac6b8f640508229918" class="gobutton">
+          <span class="sha">1d4d790e6b<span class="mini-icon mini-icon-arr-right-mini"></span></span>
+        </a>
+        <a href="https://github.com/robios/textmate/tree/1d4d790e6bad0de2998488ac6b8f640508229918" class="browse-button" title="Browse the code at this point in the history" rel="nofollow">Browse code <span class="mini-icon mini-icon-arr-right"></span></a>
+      </div>
+      <div class="authorship">
+        <span class="author-name"><a href="https://github.com/robios">Kazuhiro Sakai</a></span>
+        authored <time class="js-relative-date" datetime="2026-08-05T12:43:08-04:00" title="2026-08-05 12:43:08">August 5, 2026</time>
+      </div>
+    </div>
+</li>
+
+<li class="commit commit-group-item">
+    <img class="gravatar" src="https://www.gravatar.com/avatar/d7e4957767431c67d811a9286c9d01d7?s=48&amp;d=https://a248.e.akamai.net/assets.github.com%2Fimages%2Fgravatars%2Fgravatar-user-420.png" height="36" width="36">
+    <p class="commit-title">
+      <a href="https://github.com/robios/textmate/commit/a5643f12d1c47ed79d8ad2a62ec1d18ace7f352b" class="message">Escape the codesign identity in build rules</a>
+      <span class="hidden-text-expander inline"><a href="javascript:;" class="js-details-target">…</a></span>
+    </p>
+    <div class="commit-desc"><pre>The signing commands in textmate_codesign and textmate_codesign_file
+lacked VERBATIM, so an identity containing parentheses — every real
+&quot;Developer ID Application: Name (TEAMID)&quot; string — produced a /bin/sh
+syntax error at build time. Latent until now because only the ad-hoc
+&quot;-&quot; identity had been used.
+
+Co-Authored-By: Claude Fable 5 &lt;noreply@anthropic.com&gt;
+</pre></div>
+    <div class="commit-meta">
+      <div class="commit-links">
+        <a href="https://github.com/robios/textmate/commit/a5643f12d1c47ed79d8ad2a62ec1d18ace7f352b" class="gobutton">
+          <span class="sha">a5643f12d1<span class="mini-icon mini-icon-arr-right-mini"></span></span>
+        </a>
+        <a href="https://github.com/robios/textmate/tree/a5643f12d1c47ed79d8ad2a62ec1d18ace7f352b" class="browse-button" title="Browse the code at this point in the history" rel="nofollow">Browse code <span class="mini-icon mini-icon-arr-right"></span></a>
+      </div>
+      <div class="authorship">
+        <span class="author-name"><a href="https://github.com/robios">Kazuhiro Sakai</a></span>
+        authored <time class="js-relative-date" datetime="2026-08-05T12:42:55-04:00" title="2026-08-05 12:42:55">August 5, 2026</time>
+      </div>
+    </div>
+</li>
+
+</ol>
+
 <h3 class="commit-group-heading">Aug 3, 2026</h3>
 
 <ol class="commit-group">
@@ -26,7 +794,134 @@
 <li class="commit commit-group-item">
     <img class="gravatar" src="https://www.gravatar.com/avatar/d7e4957767431c67d811a9286c9d01d7?s=48&amp;d=https://a248.e.akamai.net/assets.github.com%2Fimages%2Fgravatars%2Fgravatar-user-420.png" height="36" width="36">
     <p class="commit-title">
-      <a href="https://github.com/robios/textmate/commit/4b6a3f1f6c7f57680d4eb5df62f759b0f5b726b7" class="message">Drop the About window&#39;s Bundles tab</a>
+      <a href="https://github.com/robios/textmate/commit/017352726a8357dd380c08cefb1d5b4c6935fc03" class="message">Resize the window when a pane changes edge</a>
+      <span class="hidden-text-expander inline"><a href="javascript:;" class="js-details-target">…</a></span>
+    </p>
+    <div class="commit-desc"><pre>Showing the terminal or the Markdown preview grows the window outward
+on the pane&#39;s edge and hiding shrinks it back, but moving a visible
+pane to another edge did neither: the window kept the width it had
+gained for a side pane after the pane moved to the bottom, leaving the
+editor permanently wider than before the pane existed — and shorter,
+since the bottom pane was then carved out of the existing height.
+
+A placement change now shrinks the edge the pane leaves and grows the
+edge it arrives at, reusing the hide and show math so screen-edge
+clamping is identical to toggling the pane. The terminal&#39;s left ↔
+right move is unchanged: the growth stays on the same axis and both
+sides use the same width, so the window neither resizes nor slides.
+</pre></div>
+    <div class="commit-meta">
+      <div class="commit-links">
+        <a href="https://github.com/robios/textmate/commit/017352726a8357dd380c08cefb1d5b4c6935fc03" class="gobutton">
+          <span class="sha">017352726a<span class="mini-icon mini-icon-arr-right-mini"></span></span>
+        </a>
+        <a href="https://github.com/robios/textmate/tree/017352726a8357dd380c08cefb1d5b4c6935fc03" class="browse-button" title="Browse the code at this point in the history" rel="nofollow">Browse code <span class="mini-icon mini-icon-arr-right"></span></a>
+      </div>
+      <div class="authorship">
+        <span class="author-name"><a href="https://github.com/robios">Kazuhiro Sakai</a></span>
+        authored <time class="js-relative-date" datetime="2026-08-03T03:33:34-04:00" title="2026-08-03 03:33:34">August 3, 2026</time>
+      </div>
+    </div>
+</li>
+
+<li class="commit commit-group-item">
+    <img class="gravatar" src="https://www.gravatar.com/avatar/d7e4957767431c67d811a9286c9d01d7?s=48&amp;d=https://a248.e.akamai.net/assets.github.com%2Fimages%2Fgravatars%2Fgravatar-user-420.png" height="36" width="36">
+    <p class="commit-title">
+      <a href="https://github.com/robios/textmate/commit/32c5cf43e123dd95253805a591b3b48916e77440" class="message">Export a compilation database for clangd</a>
+      <span class="hidden-text-expander inline"><a href="javascript:;" class="js-details-target">…</a></span>
+    </p>
+    <div class="commit-desc"><pre>The framework headers are imported as &lt;framework/header.h&gt; and only ever
+exist under the build directory, so clangd fell back to a guessed command
+line and reported a cascade of &quot;file not found&quot; errors on every file in
+the tree. Turning on CMAKE_EXPORT_COMPILE_COMMANDS makes every configure
+route — make debug, make release, the presets, a hand-rolled cmake -B —
+write compile_commands.json into its build directory.
+
+clangd only looks for that file next to the source or in build/, so the
+.clangd file points it at build-debug, which is what make debug creates.
+Checking DocumentWindowController.mm goes from 31 errors to none; headers
+have no entry of their own but inherit flags from the sibling .mm.
+
+Co-Authored-By: Claude Opus 5 &lt;noreply@anthropic.com&gt;
+</pre></div>
+    <div class="commit-meta">
+      <div class="commit-links">
+        <a href="https://github.com/robios/textmate/commit/32c5cf43e123dd95253805a591b3b48916e77440" class="gobutton">
+          <span class="sha">32c5cf43e1<span class="mini-icon mini-icon-arr-right-mini"></span></span>
+        </a>
+        <a href="https://github.com/robios/textmate/tree/32c5cf43e123dd95253805a591b3b48916e77440" class="browse-button" title="Browse the code at this point in the history" rel="nofollow">Browse code <span class="mini-icon mini-icon-arr-right"></span></a>
+      </div>
+      <div class="authorship">
+        <span class="author-name"><a href="https://github.com/robios">Kazuhiro Sakai</a></span>
+        authored <time class="js-relative-date" datetime="2026-08-03T03:12:57-04:00" title="2026-08-03 03:12:57">August 3, 2026</time>
+      </div>
+    </div>
+</li>
+
+<li class="commit commit-group-item">
+    <img class="gravatar" src="https://www.gravatar.com/avatar/d7e4957767431c67d811a9286c9d01d7?s=48&amp;d=https://a248.e.akamai.net/assets.github.com%2Fimages%2Fgravatars%2Fgravatar-user-420.png" height="36" width="36">
+    <p class="commit-title">
+      <a href="https://github.com/robios/textmate/commit/59d59ce1a6bac7219bc75a0dea13ef33ced9dbb6" class="message">Give the review-base popup a minimum width</a>
+      <span class="hidden-text-expander inline"><a href="javascript:;" class="js-details-target">…</a></span>
+    </p>
+    <div class="commit-desc"><pre>Every other compressible view in the status bar has a floor, which
+made the review-base popup the sole item that yields when the bar is
+under-width: below roughly an 800pt window it silently collapsed to a
+5pt sliver, which reads as the popup being gone. &gt;=45 keeps at least
+an identifiable stub visible and &gt;=90@450 keeps the full label
+whenever it fits, pushing any real shortfall onto views whose floors
+already handle it.
+</pre></div>
+    <div class="commit-meta">
+      <div class="commit-links">
+        <a href="https://github.com/robios/textmate/commit/59d59ce1a6bac7219bc75a0dea13ef33ced9dbb6" class="gobutton">
+          <span class="sha">59d59ce1a6<span class="mini-icon mini-icon-arr-right-mini"></span></span>
+        </a>
+        <a href="https://github.com/robios/textmate/tree/59d59ce1a6bac7219bc75a0dea13ef33ced9dbb6" class="browse-button" title="Browse the code at this point in the history" rel="nofollow">Browse code <span class="mini-icon mini-icon-arr-right"></span></a>
+      </div>
+      <div class="authorship">
+        <span class="author-name"><a href="https://github.com/robios">Kazuhiro Sakai</a></span>
+        authored <time class="js-relative-date" datetime="2026-08-03T02:41:31-04:00" title="2026-08-03 02:41:31">August 3, 2026</time>
+      </div>
+    </div>
+</li>
+
+<li class="commit commit-group-item">
+    <img class="gravatar" src="https://www.gravatar.com/avatar/d7e4957767431c67d811a9286c9d01d7?s=48&amp;d=https://a248.e.akamai.net/assets.github.com%2Fimages%2Fgravatars%2Fgravatar-user-420.png" height="36" width="36">
+    <p class="commit-title">
+      <a href="https://github.com/robios/textmate/commit/3031a78fcdeceed97c71d0aa55bdc414c47845e1" class="message">Regenerate the Contributions page from this fork&#39;s history</a>
+      <span class="hidden-text-expander inline"><a href="javascript:;" class="js-details-target">…</a></span>
+    </p>
+    <div class="commit-desc"><pre>The page still carried the snapshot a March commit generated: fork
+commits that no longer exist after the history rebuild, linked into a
+repository this fork no longer descends from. gen_credits.rb also
+could not simply be rerun — it queried GitHub&#39;s long-dead legacy
+email-search API and fed an ERB template for the removed rave build.
+
+Rewrite it to emit the page&#39;s HTML directly from git log, resolving
+profile links from @users.noreply addresses and a seeded map instead
+of the network. Credits now cover every non-Allan commit in the
+current history — upstream contributors, tectiv3&#39;s 174 commits, and
+this fork&#39;s own — with links that resolve at robios/textmate.
+</pre></div>
+    <div class="commit-meta">
+      <div class="commit-links">
+        <a href="https://github.com/robios/textmate/commit/3031a78fcdeceed97c71d0aa55bdc414c47845e1" class="gobutton">
+          <span class="sha">3031a78fcd<span class="mini-icon mini-icon-arr-right-mini"></span></span>
+        </a>
+        <a href="https://github.com/robios/textmate/tree/3031a78fcdeceed97c71d0aa55bdc414c47845e1" class="browse-button" title="Browse the code at this point in the history" rel="nofollow">Browse code <span class="mini-icon mini-icon-arr-right"></span></a>
+      </div>
+      <div class="authorship">
+        <span class="author-name"><a href="https://github.com/robios">Kazuhiro Sakai</a></span>
+        authored <time class="js-relative-date" datetime="2026-08-03T02:16:43-04:00" title="2026-08-03 02:16:43">August 3, 2026</time>
+      </div>
+    </div>
+</li>
+
+<li class="commit commit-group-item">
+    <img class="gravatar" src="https://www.gravatar.com/avatar/d7e4957767431c67d811a9286c9d01d7?s=48&amp;d=https://a248.e.akamai.net/assets.github.com%2Fimages%2Fgravatars%2Fgravatar-user-420.png" height="36" width="36">
+    <p class="commit-title">
+      <a href="https://github.com/robios/textmate/commit/dc1518f57dcc8b2d782d46ef1312c24baa4f8650" class="message">Drop the About window&#39;s Bundles tab</a>
       <span class="hidden-text-expander inline"><a href="javascript:;" class="js-details-target">…</a></span>
     </p>
     <div class="commit-desc"><pre>The tab rendered Changes.json files that the retired upstream bundle
@@ -38,10 +933,10 @@ will be tap-fed, and nothing else read those files.
 </pre></div>
     <div class="commit-meta">
       <div class="commit-links">
-        <a href="https://github.com/robios/textmate/commit/4b6a3f1f6c7f57680d4eb5df62f759b0f5b726b7" class="gobutton">
-          <span class="sha">4b6a3f1f6c<span class="mini-icon mini-icon-arr-right-mini"></span></span>
+        <a href="https://github.com/robios/textmate/commit/dc1518f57dcc8b2d782d46ef1312c24baa4f8650" class="gobutton">
+          <span class="sha">dc1518f57d<span class="mini-icon mini-icon-arr-right-mini"></span></span>
         </a>
-        <a href="https://github.com/robios/textmate/tree/4b6a3f1f6c7f57680d4eb5df62f759b0f5b726b7" class="browse-button" title="Browse the code at this point in the history" rel="nofollow">Browse code <span class="mini-icon mini-icon-arr-right"></span></a>
+        <a href="https://github.com/robios/textmate/tree/dc1518f57dcc8b2d782d46ef1312c24baa4f8650" class="browse-button" title="Browse the code at this point in the history" rel="nofollow">Browse code <span class="mini-icon mini-icon-arr-right"></span></a>
       </div>
       <div class="authorship">
         <span class="author-name"><a href="https://github.com/robios">Kazuhiro Sakai</a></span>
@@ -53,61 +948,7 @@ will be tap-fed, and nothing else read those files.
 <li class="commit commit-group-item">
     <img class="gravatar" src="https://www.gravatar.com/avatar/d7e4957767431c67d811a9286c9d01d7?s=48&amp;d=https://a248.e.akamai.net/assets.github.com%2Fimages%2Fgravatars%2Fgravatar-user-420.png" height="36" width="36">
     <p class="commit-title">
-      <a href="https://github.com/robios/textmate/commit/59548f475be2bb6811ede8d65f456f7911bb690f" class="message">Give the review workflow its own documentation page</a>
-      <span class="hidden-text-expander inline"><a href="javascript:;" class="js-details-target">…</a></span>
-    </p>
-    <div class="commit-desc"><pre>The diff pane and the review base are version-control features that
-work the same with or without an agent in the loop, so burying them in
-the AI companion page made them hard to find. docs/version-control.md
-now holds them, next to a pointer at the upstream manual&#39;s chapter for
-the parts this fork does not change. Also drop the docs index&#39;s claim
-that Help &gt; TextMate Help carries this material offline — that
-integration does not exist yet.
-</pre></div>
-    <div class="commit-meta">
-      <div class="commit-links">
-        <a href="https://github.com/robios/textmate/commit/59548f475be2bb6811ede8d65f456f7911bb690f" class="gobutton">
-          <span class="sha">59548f475b<span class="mini-icon mini-icon-arr-right-mini"></span></span>
-        </a>
-        <a href="https://github.com/robios/textmate/tree/59548f475be2bb6811ede8d65f456f7911bb690f" class="browse-button" title="Browse the code at this point in the history" rel="nofollow">Browse code <span class="mini-icon mini-icon-arr-right"></span></a>
-      </div>
-      <div class="authorship">
-        <span class="author-name"><a href="https://github.com/robios">Kazuhiro Sakai</a></span>
-        authored <time class="js-relative-date" datetime="2026-08-03T02:08:24-04:00" title="2026-08-03 02:08:24">August 3, 2026</time>
-      </div>
-    </div>
-</li>
-
-<li class="commit commit-group-item">
-    <img class="gravatar" src="https://www.gravatar.com/avatar/d7e4957767431c67d811a9286c9d01d7?s=48&amp;d=https://a248.e.akamai.net/assets.github.com%2Fimages%2Fgravatars%2Fgravatar-user-420.png" height="36" width="36">
-    <p class="commit-title">
-      <a href="https://github.com/robios/textmate/commit/8adf0b11ed7861b2b1c79256a9eb753da2272454" class="message">Finish clearing tectiv3&#39;s working notes out of docs/</a>
-      <span class="hidden-text-expander inline"><a href="javascript:;" class="js-details-target">…</a></span>
-    </p>
-    <div class="commit-desc"><pre>The history rebuild dropped the fork&#39;s internal design documents, but
-docs/ files riding along in kept commits were only excluded when they
-conflicted; these thirteen applied cleanly and slipped through. docs/
-is the user manual now — internal notes and stale screenshots do not
-belong in it.
-</pre></div>
-    <div class="commit-meta">
-      <div class="commit-links">
-        <a href="https://github.com/robios/textmate/commit/8adf0b11ed7861b2b1c79256a9eb753da2272454" class="gobutton">
-          <span class="sha">8adf0b11ed<span class="mini-icon mini-icon-arr-right-mini"></span></span>
-        </a>
-        <a href="https://github.com/robios/textmate/tree/8adf0b11ed7861b2b1c79256a9eb753da2272454" class="browse-button" title="Browse the code at this point in the history" rel="nofollow">Browse code <span class="mini-icon mini-icon-arr-right"></span></a>
-      </div>
-      <div class="authorship">
-        <span class="author-name"><a href="https://github.com/robios">Kazuhiro Sakai</a></span>
-        authored <time class="js-relative-date" datetime="2026-08-03T02:04:34-04:00" title="2026-08-03 02:04:34">August 3, 2026</time>
-      </div>
-    </div>
-</li>
-
-<li class="commit commit-group-item">
-    <img class="gravatar" src="https://www.gravatar.com/avatar/d7e4957767431c67d811a9286c9d01d7?s=48&amp;d=https://a248.e.akamai.net/assets.github.com%2Fimages%2Fgravatars%2Fgravatar-user-420.png" height="36" width="36">
-    <p class="commit-title">
-      <a href="https://github.com/robios/textmate/commit/2a049611a9ec92066ff3fa3e2ea82dc244345d60" class="message">Require opt-in before a detected formatter runs on save</a>
+      <a href="https://github.com/robios/textmate/commit/c27561ae6bf4c4a338891941bd2b5eb38c77c546" class="message">Require opt-in before a detected formatter runs on save</a>
       <span class="hidden-text-expander inline"><a href="javascript:;" class="js-details-target">…</a></span>
     </p>
     <div class="commit-desc"><pre>Since 66c9fd65 formatOnSave defaulted to true whenever a formatCommand
@@ -128,10 +969,10 @@ Co-Authored-By: Claude Fable 5 &lt;noreply@anthropic.com&gt;
 </pre></div>
     <div class="commit-meta">
       <div class="commit-links">
-        <a href="https://github.com/robios/textmate/commit/2a049611a9ec92066ff3fa3e2ea82dc244345d60" class="gobutton">
-          <span class="sha">2a049611a9<span class="mini-icon mini-icon-arr-right-mini"></span></span>
+        <a href="https://github.com/robios/textmate/commit/c27561ae6bf4c4a338891941bd2b5eb38c77c546" class="gobutton">
+          <span class="sha">c27561ae6b<span class="mini-icon mini-icon-arr-right-mini"></span></span>
         </a>
-        <a href="https://github.com/robios/textmate/tree/2a049611a9ec92066ff3fa3e2ea82dc244345d60" class="browse-button" title="Browse the code at this point in the history" rel="nofollow">Browse code <span class="mini-icon mini-icon-arr-right"></span></a>
+        <a href="https://github.com/robios/textmate/tree/c27561ae6bf4c4a338891941bd2b5eb38c77c546" class="browse-button" title="Browse the code at this point in the history" rel="nofollow">Browse code <span class="mini-icon mini-icon-arr-right"></span></a>
       </div>
       <div class="authorship">
         <span class="author-name"><a href="https://github.com/robios">Kazuhiro Sakai</a></span>
@@ -143,88 +984,28 @@ Co-Authored-By: Claude Fable 5 &lt;noreply@anthropic.com&gt;
 <li class="commit commit-group-item">
     <img class="gravatar" src="https://www.gravatar.com/avatar/d7e4957767431c67d811a9286c9d01d7?s=48&amp;d=https://a248.e.akamai.net/assets.github.com%2Fimages%2Fgravatars%2Fgravatar-user-420.png" height="36" width="36">
     <p class="commit-title">
-      <a href="https://github.com/robios/textmate/commit/70df75f2e2e209077c78fabb07c34018a93e6a41" class="message">Correct a credit and drop an internal doc from docs/</a>
+      <a href="https://github.com/robios/textmate/commit/6fe9d9344449b22db601815f8a430f337d5da258" class="message">Document the fork</a>
       <span class="hidden-text-expander inline"><a href="javascript:;" class="js-details-target">…</a></span>
     </p>
-    <div class="commit-desc"><pre>The Projects preferences pane is upstream&#39;s, not the fork&#39;s, so the
-acknowledgments should not attribute it. The LSP capabilities gap
-analysis was an internal working note that slipped through the doc
-curation of the history rebuild; docs/ is user-facing now.
+    <div class="commit-desc"><pre>docs/ gains a user-facing page per feature area — language servers,
+version control, terminal, Markdown preview, minimap, bundle taps,
+command palette, AI companion, building — and the README is rewritten
+around them, with screenshots. Core-concept documentation stays with
+the upstream manual, linked rather than copied; the acknowledgments
+credit Allan Odgaard for TextMate and tectiv3 for the modernization
+this branch is built on. tectiv3&#39;s internal working notes leave docs/
+to make room, and the .serena/memories notes go with them.
 </pre></div>
     <div class="commit-meta">
       <div class="commit-links">
-        <a href="https://github.com/robios/textmate/commit/70df75f2e2e209077c78fabb07c34018a93e6a41" class="gobutton">
-          <span class="sha">70df75f2e2<span class="mini-icon mini-icon-arr-right-mini"></span></span>
+        <a href="https://github.com/robios/textmate/commit/6fe9d9344449b22db601815f8a430f337d5da258" class="gobutton">
+          <span class="sha">6fe9d93444<span class="mini-icon mini-icon-arr-right-mini"></span></span>
         </a>
-        <a href="https://github.com/robios/textmate/tree/70df75f2e2e209077c78fabb07c34018a93e6a41" class="browse-button" title="Browse the code at this point in the history" rel="nofollow">Browse code <span class="mini-icon mini-icon-arr-right"></span></a>
+        <a href="https://github.com/robios/textmate/tree/6fe9d9344449b22db601815f8a430f337d5da258" class="browse-button" title="Browse the code at this point in the history" rel="nofollow">Browse code <span class="mini-icon mini-icon-arr-right"></span></a>
       </div>
       <div class="authorship">
         <span class="author-name"><a href="https://github.com/robios">Kazuhiro Sakai</a></span>
-        authored <time class="js-relative-date" datetime="2026-08-03T01:50:42-04:00" title="2026-08-03 01:50:42">August 3, 2026</time>
-      </div>
-    </div>
-</li>
-
-<li class="commit commit-group-item">
-    <img class="gravatar" src="https://www.gravatar.com/avatar/d7e4957767431c67d811a9286c9d01d7?s=48&amp;d=https://a248.e.akamai.net/assets.github.com%2Fimages%2Fgravatars%2Fgravatar-user-420.png" height="36" width="36">
-    <p class="commit-title">
-      <a href="https://github.com/robios/textmate/commit/6c7cb6b4dc95a2af776eb740ba6259e8e09d31fb" class="message">Say what this is a fork of, and what it became</a>
-      <span class="hidden-text-expander inline"><a href="javascript:;" class="js-details-target">…</a></span>
-    </p>
-    <div class="commit-desc"><pre>The README was still upstream&#39;s: a download link to macromates.com, a
-build section listing boost, ragel and Cap&#39;n Proto, and an IRC channel on
-freenode. None of it describes this repository — the dependencies are gone,
-the build is CMake, and the editor has grown a language-server client, a
-terminal, and a review workflow that nothing here mentioned.
-
-The acknowledgments are the part that matters. TextMate is Allan Odgaard&#39;s
-work, and the modernization this branch stands on is tectiv3&#39;s: their ~190
-commits are its foundation and their authorship is in the history, which is
-why the history was rebuilt commit by commit rather than squashed. Saying
-so in the README costs nothing and is the only place most readers look.
-</pre></div>
-    <div class="commit-meta">
-      <div class="commit-links">
-        <a href="https://github.com/robios/textmate/commit/6c7cb6b4dc95a2af776eb740ba6259e8e09d31fb" class="gobutton">
-          <span class="sha">6c7cb6b4dc<span class="mini-icon mini-icon-arr-right-mini"></span></span>
-        </a>
-        <a href="https://github.com/robios/textmate/tree/6c7cb6b4dc95a2af776eb740ba6259e8e09d31fb" class="browse-button" title="Browse the code at this point in the history" rel="nofollow">Browse code <span class="mini-icon mini-icon-arr-right"></span></a>
-      </div>
-      <div class="authorship">
-        <span class="author-name"><a href="https://github.com/robios">Kazuhiro Sakai</a></span>
-        authored <time class="js-relative-date" datetime="2026-08-03T01:48:51-04:00" title="2026-08-03 01:48:51">August 3, 2026</time>
-      </div>
-    </div>
-</li>
-
-<li class="commit commit-group-item">
-    <img class="gravatar" src="https://www.gravatar.com/avatar/d7e4957767431c67d811a9286c9d01d7?s=48&amp;d=https://a248.e.akamai.net/assets.github.com%2Fimages%2Fgravatars%2Fgravatar-user-420.png" height="36" width="36">
-    <p class="commit-title">
-      <a href="https://github.com/robios/textmate/commit/8f11ff19c30d0a9c0af476562f547ec9b461583d" class="message">Write down what this fork does differently</a>
-      <span class="hidden-text-expander inline"><a href="javascript:;" class="js-details-target">…</a></span>
-    </p>
-    <div class="commit-desc"><pre>TextMate&#39;s own manual still explains scopes, bundles and settings better
-than a second copy here would, and almost none of it has been invalidated.
-What has no documentation at all is everything this fork added: language
-servers, the terminal pane and runLocation, bundle taps and their trust
-model, the review base and diff pane, the agent bridge. Those were readable
-only by grepping the source or the commit log, which is not a thing to ask
-of someone who just wants gopls to work.
-
-So docs/ covers the delta and links out for the rest. Every menu title,
-key equivalent and settings key here was read out of the source rather than
-remembered; where behaviour and an old design note disagreed, the code won.
-</pre></div>
-    <div class="commit-meta">
-      <div class="commit-links">
-        <a href="https://github.com/robios/textmate/commit/8f11ff19c30d0a9c0af476562f547ec9b461583d" class="gobutton">
-          <span class="sha">8f11ff19c3<span class="mini-icon mini-icon-arr-right-mini"></span></span>
-        </a>
-        <a href="https://github.com/robios/textmate/tree/8f11ff19c30d0a9c0af476562f547ec9b461583d" class="browse-button" title="Browse the code at this point in the history" rel="nofollow">Browse code <span class="mini-icon mini-icon-arr-right"></span></a>
-      </div>
-      <div class="authorship">
-        <span class="author-name"><a href="https://github.com/robios">Kazuhiro Sakai</a></span>
-        authored <time class="js-relative-date" datetime="2026-08-03T01:48:41-04:00" title="2026-08-03 01:48:41">August 3, 2026</time>
+        authored <time class="js-relative-date" datetime="2026-08-03T03:33:21-04:00" title="2026-08-03 03:33:21">August 3, 2026</time>
       </div>
     </div>
 </li>

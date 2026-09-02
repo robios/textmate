@@ -13,6 +13,30 @@
 <h1 id="changes">Changes</h1>
 
 <article>
+<h2 id="2026-09-02v2.5.0">2026-09-02 (v2.5.0)</h2>
+
+<ul>
+<li>First release of TextMate 2.5, a continuation of TextMate 2 for current macOS. It requires macOS 14 (Sonoma) or later. It keeps the bundle identifier and the <code>~/Library/Application Support/TextMate</code> folder of TextMate 2.0, so install it in place of TextMate 2.0 rather than beside it; existing bundles, themes and <code>.tm_properties</code> settings keep working.</li>
+<li>Language servers: an LSP client with completion (<kbd class='keyEquivalent'>⌥⇥</kbd>), hover, go to definition, find references, rename, code actions and formatting. A server takes one setting, <code>lspCommand</code>, scoped like any other TextMate setting, or is shipped as a default by the language bundle. Diagnostics are drawn as squiggles, counted in the status bar, listed in a workspace-wide diagnostics pane and shown in a minimap lane; <kbd class='keyEquivalent'>F5</kbd> and <kbd class='keyEquivalent'>⇧F5</kbd> under Navigate jump between them.</li>
+<li>GitHub Copilot inline suggestions as ghost text, driven by <code>copilot-language-server</code>. Off by default.</li>
+<li>A formatter found on <code>PATH</code> runs on save only when <code>formatOnSave</code> is set; an explicit <code>formatCommand</code> still implies it.</li>
+<li>Command palette (<kbd class='keyEquivalent'>⌃⌘C</kbd>) over commands, symbols, recent projects, bundle items, lines and editor settings, ranked by how often each is used.</li>
+<li>Integrated terminal pane with several sessions, drag and drop of files and text, and file references in its output that open in the editor. A bundle command can declare <code>runLocation = terminal</code> to run in the pane instead of having its output captured; the launchers live under a new Terminal menu and the bundle editor offers “Run in Terminal”.</li>
+<li>Preview pane (<kbd class='keyEquivalent'>⌃⌥⌘P</kbd>): live Markdown rendering through cmark-gfm with GitHub-style tables and TeX math via KaTeX, scroll sync, and its own theme or the editor’s. Other formats plug in through a bundle-declared <code>previewCommand</code>. The renderer also ships as the <code>tm_markdown</code> command-line tool for bundles to use.</li>
+<li>Minimap beside the editor, with a source-control lane on one edge and a diagnostics lane on the other.</li>
+<li>Bundle taps: subscribe to a bundle repository on GitHub, or to a tap that publishes a catalogue of them, and install from Preferences → Bundles. Nothing fetched from GitHub is signed, so a tap or a bundle has to be trusted explicitly before its commands run. Bundle updates are checked once a day rather than every three hours.</li>
+<li>Reviewing changes: a unified diff pane and a movable review base that the gutter, the minimap and the file browser all follow, so several commits can be read as one diff.</li>
+<li>AI companion: an agent running in the terminal pane can see the editor’s selection, open files and diagnostics, through a Claude Code IDE bridge, a native Codex bridge, and <code>tm_agent mcp</code> for any MCP-capable agent. Each session sees only its own project.</li>
+<li>The Text and Source bundles and the bundle support library ship inside the application. The support library no longer needs Rosetta or Ruby 1.8, ruby is resolved through one shared script, and the retired Python support libraries are gone.</li>
+<li>New app icon for macOS 26.</li>
+<li>Under the hood: the build is CMake and ninja; boost, Cap’n Proto, sparsehash, ragel and multimarkdown are no longer needed; the deprecated <code>WebView</code> is replaced with <code>WKWebView</code>; the self-update mechanism and the crash reporter are gone.</li>
+<li>Many crash and deadlock fixes, among them a font panel crash on macOS 15.6, a symlink loop under a bundle folder, a bundle index rebuild that could freeze for good, and main-thread deadlocks when bundle commands spawn processes.</li>
+<li>The build system, the LSP client, Copilot, the command palette, the Formatters and Advanced preference panes and the <code>WKWebView</code> migration come from tectiv3’s fork, on which this branch is built; see the Contributions tab.</li>
+<li>See <a href="https://github.com/robios/textmate/compare/textmate:v2.0.22...robios:v2.5.0">all changes since v2.0.22</a></li>
+</ul>
+</article>
+
+<article>
 <h2 id="2021-04-16v2.0.22">2021-04-16 (v2.0.22)</h2>
 
 <ul>
