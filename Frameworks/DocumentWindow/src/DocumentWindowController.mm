@@ -233,6 +233,8 @@ static NSArray* const kObservedKeyPaths = @[ @"arrayController.arrangedObjects.p
 		self.window.releasedWhenClosed = NO;
 
 		_titlebarViewController = [[NSTitlebarAccessoryViewController alloc] init];
+		// Preserve the tab bar's intrinsic height instead of the system accessory height.
+		_titlebarViewController.automaticallyAdjustsSize = NO;
 		self.tabBarView.frameSize = self.tabBarView.intrinsicContentSize;
 		_titlebarViewController.view = self.tabBarView;
 		_titlebarViewController.fullScreenMinHeight = NSHeight(self.tabBarView.frame);

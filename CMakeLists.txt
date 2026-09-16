@@ -30,12 +30,19 @@ add_compile_definitions(
   "REST_API=\"https://api.textmate.org\""
 )
 
-# Debug: -Os + ASan (rave debug config uses -Os)
-set(CMAKE_C_FLAGS_DEBUG "-Os -g -fsanitize=address -fno-omit-frame-pointer" CACHE STRING "" FORCE)
-set(CMAKE_CXX_FLAGS_DEBUG "-Os -g -fsanitize=address -fno-omit-frame-pointer" CACHE STRING "" FORCE)
-set(CMAKE_OBJC_FLAGS_DEBUG "-Os -g -fsanitize=address -fno-omit-frame-pointer" CACHE STRING "" FORCE)
-set(CMAKE_OBJCXX_FLAGS_DEBUG "-Os -g -fsanitize=address -fno-omit-frame-pointer" CACHE STRING "" FORCE)
-set(CMAKE_EXE_LINKER_FLAGS_DEBUG "-fsanitize=address" CACHE STRING "" FORCE)
+# Debug: -Os + optional ASan (rave debug config uses -Os).
+# Some macOS/toolchain combinations deadlock inside ASan before main().
+option(TEXTMATE_ENABLE_ASAN "Enable AddressSanitizer in Debug builds" ON)
+set(_debug_flags "-Os -g -fno-omit-frame-pointer")
+set(_debug_linker_flags "")
+if(TEXTMATE_ENABLE_ASAN)
+  string(APPEND _debug_flags " -fsanitize=address")
+  set(_debug_linker_flags "-fsanitize=address")
+endif()
+foreach(_language C CXX OBJC OBJCXX)
+  set(CMAKE_${_language}_FLAGS_DEBUG "${_debug_flags}" CACHE STRING "" FORCE)
+endforeach()
+set(CMAKE_EXE_LINKER_FLAGS_DEBUG "${_debug_linker_flags}" CACHE STRING "" FORCE)
 
 # Release: LTO + dead stripping
 set(CMAKE_C_FLAGS_RELEASE "-Os -DNDEBUG -flto=thin" CACHE STRING "" FORCE)

@@ -60,6 +60,21 @@ The built application lands in the build tree:
 The debug build carries its own identifier and is named *TextMate-dev*, so it
 coexists with an installed TextMate instead of replacing it.
 
+If a Debug build keeps bouncing in the Dock before any window appears, sample
+the process to check whether it is stuck in AddressSanitizer initialization.
+Some macOS Tahoe/toolchain combinations have an
+[ASan startup deadlock](https://github.com/llvm/llvm-project/pull/182943).
+For that case, disable ASan and rebuild:
+
+```sh
+cmake -B build-debug -G Ninja -DCMAKE_BUILD_TYPE=Debug -DTEXTMATE_ENABLE_ASAN=OFF
+make run
+```
+
+This keeps debug symbols and assertions, but disables ASan's memory-error
+checks. The setting persists in `build-debug` for subsequent builds. To restore
+ASan, configure with `-DTEXTMATE_ENABLE_ASAN=ON` and rebuild.
+
 ## CMake presets
 
 `CMakePresets.json` defines two configure presets that match what the Makefile
