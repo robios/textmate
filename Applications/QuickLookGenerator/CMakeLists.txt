@@ -3,6 +3,8 @@ add_library(TextMateQL MODULE)
 file(GLOB _src src/*.c src/*.mm)
 target_sources(TextMateQL PRIVATE ${_src})
 
+# Info.plist variable expansion
+set(TARGET_NAME "TextMateQL")
 set_target_properties(TextMateQL PROPERTIES
   BUNDLE TRUE
   BUNDLE_EXTENSION "qlgenerator"
