@@ -19,6 +19,575 @@
 <div>
 
 
+<h3 class="commit-group-heading">Sep 23, 2026</h3>
+
+<ol class="commit-group">
+
+<li class="commit commit-group-item">
+    <img class="gravatar" src="https://www.gravatar.com/avatar/d7e4957767431c67d811a9286c9d01d7?s=48&amp;d=https://a248.e.akamai.net/assets.github.com%2Fimages%2Fgravatars%2Fgravatar-user-420.png" height="36" width="36">
+    <p class="commit-title">
+      <a href="https://github.com/robios/textmate/commit/7da9f3d88bc19a295a01dc58f4ccbc9e3f5e3aff" class="message">Fix Changes.html lookup so release notes auto-open after update</a>
+      <span class="hidden-text-expander inline"><a href="javascript:;" class="js-details-target">…</a></span>
+    </p>
+    <div class="commit-desc"><pre>Since 5d87b8ef (Move HTML/CSS/JS shown in about window to subfolder)
+the about pages are bundled under Contents/Resources/About/, and the
+about window loads them as &quot;About/Changes&quot; etc. The two digest lookups
+in AboutWindowController (+showChangesIfUpdated, run at launch from
+AppController, and -showChangesWindow:, which records that the user
+has seen the changes) still asked for &quot;Changes.html&quot; at the resource
+root. URLForResource:withExtension: does not search subdirectories, so
+both returned nil: the Changes window never opened automatically after
+an update and the releaseNotesDigest default was never written.
+
+Pass subdirectory:@&quot;About&quot; in both places.
+
+Note: the first launch after this fix only stores the digest, because
+there is no previous one to compare against. The window auto-opens from
+the next changelog change on.
+
+Co-Authored-By: Claude Fable 5.1 &lt;noreply@anthropic.com&gt;
+</pre></div>
+    <div class="commit-meta">
+      <div class="commit-links">
+        <a href="https://github.com/robios/textmate/commit/7da9f3d88bc19a295a01dc58f4ccbc9e3f5e3aff" class="gobutton">
+          <span class="sha">7da9f3d88b<span class="mini-icon mini-icon-arr-right-mini"></span></span>
+        </a>
+        <a href="https://github.com/robios/textmate/tree/7da9f3d88bc19a295a01dc58f4ccbc9e3f5e3aff" class="browse-button" title="Browse the code at this point in the history" rel="nofollow">Browse code <span class="mini-icon mini-icon-arr-right"></span></a>
+      </div>
+      <div class="authorship">
+        <span class="author-name"><a href="https://github.com/robios">Kazuhiro Sakai</a></span>
+        authored <time class="js-relative-date" datetime="2026-09-23T18:03:38-04:00" title="2026-09-23 18:03:38">September 23, 2026</time>
+      </div>
+    </div>
+</li>
+
+<li class="commit commit-group-item">
+    <img class="gravatar" src="https://www.gravatar.com/avatar/d7e4957767431c67d811a9286c9d01d7?s=48&amp;d=https://a248.e.akamai.net/assets.github.com%2Fimages%2Fgravatars%2Fgravatar-user-420.png" height="36" width="36">
+    <p class="commit-title">
+      <a href="https://github.com/robios/textmate/commit/33f32da22b0056fb8c8aca1540e038d87fcc57cd" class="message">Derive OakSwiftUI header include path from build type</a>
+      <span class="hidden-text-expander inline"><a href="javascript:;" class="js-details-target">…</a></span>
+    </p>
+    <div class="commit-desc"><pre>Frameworks/OakTextView/CMakeLists.txt hard-coded the Swift package&#39;s
+*debug* header directory (.build/arm64-apple-macosx/debug/...), but
+`make release` only runs `build.sh release`, which writes the generated
+header under .build/&lt;triple&gt;/release/. On a checkout that never ran a
+debug build -- a fresh `git worktree`, for instance -- every OakTextView
+translation unit failed with &quot;&#39;OakSwiftUI-Swift.h&#39; file not found&quot;. The
+main checkout only built because an old debug Swift build happened to
+be lying around.
+
+The app target already computed the right directory from the host
+triple and CMAKE_BUILD_TYPE. Hoist that computation into the root
+CMakeLists next to find_library(OakSwiftUI_LIB) as OakSwiftUI_INCLUDE_DIR
+and use it from both targets, so a single place mirrors build.sh&#39;s
+debug|release layout. Release maps to &quot;release&quot;, anything else to
+&quot;debug&quot;, matching what the Makefile passes to build.sh.
+
+Co-Authored-By: Claude Fable 5.1 &lt;noreply@anthropic.com&gt;
+</pre></div>
+    <div class="commit-meta">
+      <div class="commit-links">
+        <a href="https://github.com/robios/textmate/commit/33f32da22b0056fb8c8aca1540e038d87fcc57cd" class="gobutton">
+          <span class="sha">33f32da22b<span class="mini-icon mini-icon-arr-right-mini"></span></span>
+        </a>
+        <a href="https://github.com/robios/textmate/tree/33f32da22b0056fb8c8aca1540e038d87fcc57cd" class="browse-button" title="Browse the code at this point in the history" rel="nofollow">Browse code <span class="mini-icon mini-icon-arr-right"></span></a>
+      </div>
+      <div class="authorship">
+        <span class="author-name"><a href="https://github.com/robios">Kazuhiro Sakai</a></span>
+        authored <time class="js-relative-date" datetime="2026-09-23T17:36:40-04:00" title="2026-09-23 17:36:40">September 23, 2026</time>
+      </div>
+    </div>
+</li>
+
+<li class="commit commit-group-item">
+    <img class="gravatar" src="https://www.gravatar.com/avatar/d7e4957767431c67d811a9286c9d01d7?s=48&amp;d=https://a248.e.akamai.net/assets.github.com%2Fimages%2Fgravatars%2Fgravatar-user-420.png" height="36" width="36">
+    <p class="commit-title">
+      <a href="https://github.com/robios/textmate/commit/76de4ded44c27436567492ce2bc3a96a9bcab0e5" class="message">Give the QuickLook generator a real bundle identifier</a>
+      <span class="hidden-text-expander inline"><a href="javascript:;" class="js-details-target">…</a></span>
+    </p>
+    <div class="commit-desc"><pre>Applications/QuickLookGenerator/Info.plist fills CFBundleExecutable,
+CFBundleName and CFBundleIdentifier from ${TARGET_NAME}, an Xcode
+build-setting reference left over from the Xcode project. CMake runs
+MACOSX_BUNDLE_INFO_PLIST through configure_file semantics, so it
+substitutes the CMake variable of that name instead, and the generator&#39;s
+CMakeLists never set one. The built plist therefore had an empty
+executable and name and the identifier &quot;com.macromates.&quot;, which is what
+codesign stamped on TextMateQL.qlgenerator, both in build-release and in
+the installed /Applications/TextMate.app.
+
+Set TARGET_NAME before the target properties, as the TextMate app and
+Dialog2 targets already do, so the plist configures to TextMateQL and
+com.macromates.TextMateQL.
+
+Co-Authored-By: Claude Fable 5.1 &lt;noreply@anthropic.com&gt;
+</pre></div>
+    <div class="commit-meta">
+      <div class="commit-links">
+        <a href="https://github.com/robios/textmate/commit/76de4ded44c27436567492ce2bc3a96a9bcab0e5" class="gobutton">
+          <span class="sha">76de4ded44<span class="mini-icon mini-icon-arr-right-mini"></span></span>
+        </a>
+        <a href="https://github.com/robios/textmate/tree/76de4ded44c27436567492ce2bc3a96a9bcab0e5" class="browse-button" title="Browse the code at this point in the history" rel="nofollow">Browse code <span class="mini-icon mini-icon-arr-right"></span></a>
+      </div>
+      <div class="authorship">
+        <span class="author-name"><a href="https://github.com/robios">Kazuhiro Sakai</a></span>
+        authored <time class="js-relative-date" datetime="2026-09-23T17:07:31-04:00" title="2026-09-23 17:07:31">September 23, 2026</time>
+      </div>
+    </div>
+</li>
+
+</ol>
+
+<h3 class="commit-group-heading">Sep 24, 2026</h3>
+
+<ol class="commit-group">
+
+<li class="commit commit-group-item">
+    <img class="gravatar" src="https://www.gravatar.com/avatar/d7e4957767431c67d811a9286c9d01d7?s=48&amp;d=https://a248.e.akamai.net/assets.github.com%2Fimages%2Fgravatars%2Fgravatar-user-420.png" height="36" width="36">
+    <p class="commit-title">
+      <a href="https://github.com/robios/textmate/commit/840c1aa3a4712b143bfbdb23b46ee9796f7791b4" class="message">Link the software updater into the app and its preferences</a>
+      <span class="hidden-text-expander inline"><a href="javascript:;" class="js-details-target">…</a></span>
+    </p>
+    <div class="commit-desc"><pre>Add the SoftwareUpdate framework to the app&#39;s link line and copy its
+dock badge into the app&#39;s resources, since static libraries cannot
+carry resources.
+
+The TextMate menu gets &quot;Check for Updates…&quot; under Preferences. It is
+always enabled: when this copy cannot update itself, the framework
+explains why instead of the item being hidden or greyed out.
+
+AppController becomes the updater&#39;s delegate, forwarding the two install
+prerequisites (asking about running terminal processes and saving the
+session including untitled documents) to DocumentWindowController. The
+delegate is set before the scheduler starts, so no check can create a
+panel without it.
+
+The daily check needs a switch, and people want to see when the last
+check happened and to run one without going to the app menu. Two
+controls do not justify a pane of their own, so a Software Update group
+is appended to Advanced in its label/control/hint layout. The checkbox
+is bound, negated, to the existing disable-polling default so old
+settings still apply. &quot;Last checked&quot; shows the last completed check as
+a relative date, refreshed when defaults change and whenever the pane
+is shown, since a relative date goes stale on its own. Check Now
+follows the updater&#39;s checking state through KVO so it cannot start a
+second request. In a copy that cannot update itself the hint shows the
+updater&#39;s reason and both controls are disabled, rather than offering
+switches that would do nothing.
+
+package.sh documents that the asset name and v-prefixed tag are parsed
+by shipped copies, and that a withdrawn release must be made a draft or
+deleted, because the updater follows whatever is published as latest.
+
+Co-Authored-By: Claude Fable 5.1 &lt;noreply@anthropic.com&gt;
+</pre></div>
+    <div class="commit-meta">
+      <div class="commit-links">
+        <a href="https://github.com/robios/textmate/commit/840c1aa3a4712b143bfbdb23b46ee9796f7791b4" class="gobutton">
+          <span class="sha">840c1aa3a4<span class="mini-icon mini-icon-arr-right-mini"></span></span>
+        </a>
+        <a href="https://github.com/robios/textmate/tree/840c1aa3a4712b143bfbdb23b46ee9796f7791b4" class="browse-button" title="Browse the code at this point in the history" rel="nofollow">Browse code <span class="mini-icon mini-icon-arr-right"></span></a>
+      </div>
+      <div class="authorship">
+        <span class="author-name"><a href="https://github.com/robios">Kazuhiro Sakai</a></span>
+        authored <time class="js-relative-date" datetime="2026-09-24T00:58:53-04:00" title="2026-09-24 00:58:53">September 24, 2026</time>
+      </div>
+    </div>
+</li>
+
+<li class="commit commit-group-item">
+    <img class="gravatar" src="https://www.gravatar.com/avatar/d7e4957767431c67d811a9286c9d01d7?s=48&amp;d=https://a248.e.akamai.net/assets.github.com%2Fimages%2Fgravatars%2Fgravatar-user-420.png" height="36" width="36">
+    <p class="commit-title">
+      <a href="https://github.com/robios/textmate/commit/2c5df3e2ce3d4d63343e7546944dfe19b4c34521" class="message">Add a SoftwareUpdate framework: feed, verifier, installer, panel</a>
+      <span class="hidden-text-expander inline"><a href="javascript:;" class="js-details-target">…</a></span>
+    </p>
+    <div class="commit-desc"><pre>TextMate checks GitHub&#39;s releases/latest for robios/textmate once a day
+(an NSBackgroundActivityScheduler, plus one check 30 s after launch when
+the last completed check is more than a day old) and on demand. A
+downloaded release is trusted because of the code signature Apple
+already requires us to ship, not because of where it came from. Checks
+are skipped entirely unless this copy is a distribution-signed
+TextMate; a manual check then explains why instead.
+
+Release feed. Everything that decides what a response means lives in
+pure functions so it can be tested without a network:
+
+- ParseLatestRelease() takes tag_name without one leading &quot;v&quot; (it must
+  look like 2.5.1 or 2.5.1.7), refuses draft and prerelease entries,
+  requires exactly one asset named TextMate-&lt;version&gt;.tar.gz whose
+  download URL passes the transport rule, and requires html_url. Each
+  failure has its own code in SoftwareUpdateErrorDomain, so a background
+  check can stay quiet about a release that is still being uploaded.
+- RetryDateForRateLimitedResponse() turns every 403/429 into the time
+  the feed may be contacted again: Retry-After, else the rate-limit
+  reset epoch when no requests remain, else 60 s doubling per
+  consecutive strike. Malformed values fall through to the doubling
+  rule and the result is clamped to one hour, so a bad header can
+  neither disable the back-off nor silence the updater. For an
+  unauthenticated GET of public data a 403 is rate limiting in
+  practice, and GitHub&#39;s error prose is not an API.
+- SoftwareUpdateTransportAllowsURL() is the rule for every fetch and
+  redirect: https, or plaintext loopback only while the feed override
+  itself points at a loopback host. The app disables App Transport
+  Security, so nothing else enforces https for these requests.
+- SoftwareUpdateDecide() is the version decision (offer, up to date,
+  newer than the release, quiet), including when a skipped version or a
+  recorded release this Mac cannot run is cleared or suppresses the
+  offer, so the controller only applies its result.
+
+Verifier and installer. The verifier checks an extracted bundle before
+anything touches the installed app, in order: the layout is complete;
+its version is the one the feed announced (so a genuinely signed older
+release served as &quot;latest&quot; is refused); its signature is valid under
+strict, all-architecture, nested-code validation against the running
+app&#39;s own designated requirement (no team ID in the source, and any
+fork that signs its builds gets a working updater); LSMinimumSystemVersion
+is satisfied by this Mac, reported with its own error code and the
+version pair so the controller can remember the release; and it is not
+a downgrade. Revocation is not checked: it needs the network and
+Gatekeeper does it at launch. The requirement, OS version, and local
+version are injected so tests can drive every step.
+
+The availability probe answers whether this copy can update itself at
+all: a certificate chain and team identifier (ad-hoc builds have
+neither), a designated requirement, and the identifier
+com.macromates.TextMate. It returns the requirement the verifier uses,
+or the reason shown to the user.
+
+The installer&#39;s preflight runs before a download starts, so a hopeless
+install is caught before 19 MB are fetched: a translocated copy (asked
+to move to /Applications; checked first because a translocated copy is
+also read-only and the generic wording would not say what to do), a
+read-only volume (upstream&#39;s wording), or an unwritable parent
+directory. Install is replaceItemAtURL:, as upstream; relaunch is the
+existing oak::application_t::relaunch(), which forces session restore
+for that one launch.
+
+Controller and panel. The feed request carries the GitHub API headers
+and a User-Agent of just the app name and version (not the
+bundle-traffic string, which includes the host UUID), bypasses the URL
+cache, and is unconditional: an unauthenticated 304 costs as much quota
+as a 200, and re-deciding on fresh data lets a release answered with
+Later be offered again. Its session refuses redirects that fail the
+https rule, and the initial URL is checked before sending. Every
+403/429 is recorded as a back-off time; until then neither background
+nor manual checks contact GitHub, and a manual check says when to try
+again. A 200 resets the back-off, records the check time, and applies
+the version decision, including clearing a skipped or unsupported
+release once something newer appears. The SoftwareUpdateFeedURL
+testing override is logged at error level on every use. Only one
+request is in flight and only one panel exists at a time; a background
+check while it is open does nothing.
+
+The panel is upstream&#39;s SUDownloadViewController with its info and
+progress views restored into their own files, extended to the new
+states: New Version Available (Download, Release Notes, Skip This
+Version, Later/Cancel), Up To Date, Newer Than the Latest Release,
+errors, Downloading, Verifying, Downloaded, Installing, Cannot Install
+(with Open Download Page), Requires Newer macOS, rate limited, and
+Cannot Save Session. The info view&#39;s width is a minimum rather than a
+fixed 298 points, with the informative text still wrapping there, so
+the offer state widens to fit its row of four buttons as an NSAlert
+would instead of Auto Layout dropping a constraint and squeezing one to
+a sliver. Download runs the install preflight first, then fetches
+through OakDownloadManager without DSA keys but with the same
+User-Agent and https policy. The extracted bundle is moved to a
+TextMate.app in a replacement directory on the app&#39;s volume and
+verified off the main thread against the running app&#39;s designated
+requirement; a release this Mac is too old for is remembered so
+background checks stay quiet about it. The dock badge shows from a
+verified download until the panel closes, and the staged bundle is
+removed when the panel closes without installing.
+
+Install &amp; Relaunch asks about running terminal processes, then saves
+the session with failures reported, and only then replaces the app and
+relaunches with session restore forced on for that launch. Both
+prerequisites live on DocumentWindowController, but DocumentWindow
+links Preferences, whose Advanced pane will use this framework, so
+they are reached through a SoftwareUpdateDelegate protocol the app
+implements rather than by linking DocumentWindow here. Without a
+delegate the install is refused with an internal error rather than
+proceeding unchecked.
+
+Tests embed the real v2.5.1 response and cover the parser&#39;s failure
+modes, the back-off ladder, the transport rule, and the decision table.
+TextEdit in place passes &quot;anchor apple&quot; and fails identifier
+&quot;com.macromates.TextMate&quot;. The tamper case uses a small bundle ad-hoc
+signed by the test instead of a TextEdit copy: system apps seal no
+resources (the signed system volume covers them) and a copy of one
+already fails strict validation unmodified, so flipping a byte in it
+would prove nothing. The fixture also covers the version pin, the
+downgrade rule, and a minimum system version through the full chain;
+the system check alone covers 15.0 vs 14.7 and the passing 14 / 14.0 /
+missing cases. Preflight covers the translocation pattern on synthetic
+paths, a chmod 555 parent, and a writable one; the read-only volume
+case would mean mounting a disk image from tests that run in parallel,
+so it stays manual. The panel test builds the offer state in an
+unshown panel and checks that every button gets at least its intrinsic
+width.
+
+Not yet linked into the app; the badge image is looked up in the main
+bundle, which the app will copy it into.
+
+Co-Authored-By: Claude Fable 5.1 &lt;noreply@anthropic.com&gt;
+</pre></div>
+    <div class="commit-meta">
+      <div class="commit-links">
+        <a href="https://github.com/robios/textmate/commit/2c5df3e2ce3d4d63343e7546944dfe19b4c34521" class="gobutton">
+          <span class="sha">2c5df3e2ce<span class="mini-icon mini-icon-arr-right-mini"></span></span>
+        </a>
+        <a href="https://github.com/robios/textmate/tree/2c5df3e2ce3d4d63343e7546944dfe19b4c34521" class="browse-button" title="Browse the code at this point in the history" rel="nofollow">Browse code <span class="mini-icon mini-icon-arr-right"></span></a>
+      </div>
+      <div class="authorship">
+        <span class="author-name"><a href="https://github.com/robios">Kazuhiro Sakai</a></span>
+        authored <time class="js-relative-date" datetime="2026-09-24T00:58:53-04:00" title="2026-09-24 00:58:53">September 24, 2026</time>
+      </div>
+    </div>
+</li>
+
+<li class="commit commit-group-item">
+    <img class="gravatar" src="https://www.gravatar.com/avatar/d7e4957767431c67d811a9286c9d01d7?s=48&amp;d=https://a248.e.akamai.net/assets.github.com%2Fimages%2Fgravatars%2Fgravatar-user-420.png" height="36" width="36">
+    <p class="commit-title">
+      <a href="https://github.com/robios/textmate/commit/54e0ca41dbc275f0e9066acdfc0e15239b7360af" class="message">Add a session save that reports failed backups</a>
+      <span class="hidden-text-expander inline"><a href="javascript:;" class="js-details-target">…</a></span>
+    </p>
+    <div class="commit-desc"><pre>The software updater will quit and relaunch TextMate through SIGTERM,
+whose handler saves the session but ignored the result, and inside that
+save every document&#39;s saveBackup: result was ignored as well. On a full
+disk an untitled document whose backup was never written would come
+back empty after the relaunch. The updater needs to know the session is
+safe before it replaces the app.
+
+- saveBackup: now answers &quot;a current backup exists, or none is needed&quot;
+  rather than &quot;a file was written just now&quot;; NO means the temp write,
+  the extended attributes, or the rename into place failed. No caller
+  read the old value. The temp file is removed when the rename fails.
+  The backup path is recorded only after the rename: a document loaded
+  with content starts out with backupRevision == revision, so a path
+  set before a failed first write (an unwritable Session directory, a
+  full disk) would make the next call answer YES with nothing on disk.
+  And because path::set_attributes() logs and swallows a failed
+  fsetxattr() — which suits saving to file systems without extended
+  attributes — the com.macromates.backup.* attributes are read back
+  from the temp file and compared before the rename, so a backup
+  without the identifier the restore lookup matches does not count as
+  written. That check is declared in a testing SPI header so it can be
+  driven against a file with an attribute removed.
+- Backups and their restore lookup resolve the session directory
+  through oak::application_t::support(&quot;Session&quot;), as the session file
+  already did. Identical on disk for the app (main.mm sets the support
+  directory to exactly that), and it lets a test redirect backups and
+  session file together. document now links OakSystem explicitly.
+- +saveSessionIncludingUntitledDocuments:error: returns NO with an
+  error when session saving is disabled, when any backup failed, or
+  when the session file could not be written. Backups are attempted for
+  every document and the file is written regardless, so a restore has
+  the best information available; the error names the first failing
+  document, else the session file. The Session directory is created if
+  missing: previously the file was silently not written until some
+  backup had created it, which the checked variant would report as a
+  failure on a machine that never had an unsaved document. The old
+  method is now a wrapper that drops the error.
+- +askToTerminateRunningTerminalProcesses: runs the quit-time &quot;terminate
+  running processes?&quot; sheets over all windows with a live terminal
+  process, so a SIGTERM relaunch can ask first.
+- The SIGTERM handler logs a failed save at error level.
+
+The session-save tests drive real DocumentWindowController instances on
+the main queue (window at alpha 0, ordered in so the session code
+enumerates it) with the support directory pointed at a per-run
+temporary directory from a static initializer. Cases: a backup into a
+read-only directory fails while the session file is still written; a
+first save with the Session directory read-only fails and the next one,
+with permissions restored, writes the backup with its identifier; a
+session file path occupied by a directory fails while the backup is
+written with its identifier attribute and then counts as current; both
+succeed and a backup is found by identifier through the redirected
+directory. All cases share the session file and the process-wide
+window list, so they are serialized with a mutex. The document suite
+covers the attribute check with a missing, a wrong, and an unrelated
+attribute.
+
+Co-Authored-By: Claude Fable 5.1 &lt;noreply@anthropic.com&gt;
+</pre></div>
+    <div class="commit-meta">
+      <div class="commit-links">
+        <a href="https://github.com/robios/textmate/commit/54e0ca41dbc275f0e9066acdfc0e15239b7360af" class="gobutton">
+          <span class="sha">54e0ca41db<span class="mini-icon mini-icon-arr-right-mini"></span></span>
+        </a>
+        <a href="https://github.com/robios/textmate/tree/54e0ca41dbc275f0e9066acdfc0e15239b7360af" class="browse-button" title="Browse the code at this point in the history" rel="nofollow">Browse code <span class="mini-icon mini-icon-arr-right"></span></a>
+      </div>
+      <div class="authorship">
+        <span class="author-name"><a href="https://github.com/robios">Kazuhiro Sakai</a></span>
+        authored <time class="js-relative-date" datetime="2026-09-24T00:58:53-04:00" title="2026-09-24 00:58:53">September 24, 2026</time>
+      </div>
+    </div>
+</li>
+
+<li class="commit commit-group-item">
+    <img class="gravatar" src="https://www.gravatar.com/avatar/d7e4957767431c67d811a9286c9d01d7?s=48&amp;d=https://a248.e.akamai.net/assets.github.com%2Fimages%2Fgravatars%2Fgravatar-user-420.png" height="36" width="36">
+    <p class="commit-title">
+      <a href="https://github.com/robios/textmate/commit/7e272253708c4ca47f213420ffa59ca1fdbed6d0" class="message">Prepare OakDownloadManager for fetching release tarballs</a>
+      <span class="hidden-text-expander inline"><a href="javascript:;" class="js-details-target">…</a></span>
+    </p>
+    <div class="commit-desc"><pre>The in-app updater reuses OakDownloadArchiveTask to fetch release
+tarballs from GitHub, which cannot serve the x-amz-meta signature
+headers the task insists on; authenticity is established afterwards by
+checking the extracted bundle&#39;s code signature instead.
+
+- publicKeys == nil skips the header-signature check, and the body is
+  then no longer buffered in memory (the copy only existed for that
+  check).
+- A sibling download method takes a User-Agent and a transport policy
+  block. Both are applied when the task is created, since the task
+  resumes its data task inside init and a property set afterwards would
+  race the first redirect. A redirect whose target fails the policy is
+  not followed. The existing method forwards with the shared
+  userAgentString and no policy, so bundle installs behave as before.
+- Any non-2xx HTTP response cancels the download with an error naming
+  the status (&quot;Insecure redirect refused (302 to http://...)&quot; when the
+  policy refused the redirect), instead of piping an HTML error page
+  into tar and reporting a tar failure.
+- A download that fails before any data arrives — a refused connection,
+  a redirect loop, a timeout — never launches tar, and the completion
+  path took the missing extractor task as the reason for the failure:
+  every such error surfaced as &quot;Unable to launch tar.&quot;, hiding the
+  NSURLError that explains it. Harmless while the manager only served
+  bundle installs, misleading once the updater shows the message in its
+  error panel. The transport error now wins when there is one; the tar
+  message stays for a completed response with nothing to extract.
+
+The new test downloads from a loopback port nobody listens on and
+expects an NSURLErrorDomain error back.
+
+Co-Authored-By: Claude Fable 5.1 &lt;noreply@anthropic.com&gt;
+</pre></div>
+    <div class="commit-meta">
+      <div class="commit-links">
+        <a href="https://github.com/robios/textmate/commit/7e272253708c4ca47f213420ffa59ca1fdbed6d0" class="gobutton">
+          <span class="sha">7e27225370<span class="mini-icon mini-icon-arr-right-mini"></span></span>
+        </a>
+        <a href="https://github.com/robios/textmate/tree/7e272253708c4ca47f213420ffa59ca1fdbed6d0" class="browse-button" title="Browse the code at this point in the history" rel="nofollow">Browse code <span class="mini-icon mini-icon-arr-right"></span></a>
+      </div>
+      <div class="authorship">
+        <span class="author-name"><a href="https://github.com/robios">Kazuhiro Sakai</a></span>
+        authored <time class="js-relative-date" datetime="2026-09-24T00:58:53-04:00" title="2026-09-24 00:58:53">September 24, 2026</time>
+      </div>
+    </div>
+</li>
+
+</ol>
+
+<h3 class="commit-group-heading">Sep 18, 2026</h3>
+
+<ol class="commit-group">
+
+<li class="commit commit-group-item">
+    <img class="gravatar" src="https://www.gravatar.com/avatar/d7e4957767431c67d811a9286c9d01d7?s=48&amp;d=https://a248.e.akamai.net/assets.github.com%2Fimages%2Fgravatars%2Fgravatar-user-420.png" height="36" width="36">
+    <p class="commit-title">
+      <a href="https://github.com/robios/textmate/commit/5e74a4683a4440063c580b49a37cda71677c086d" class="message">Add changelog for v2.5.1</a>
+    </p>
+    <div class="commit-meta">
+      <div class="commit-links">
+        <a href="https://github.com/robios/textmate/commit/5e74a4683a4440063c580b49a37cda71677c086d" class="gobutton">
+          <span class="sha">5e74a4683a<span class="mini-icon mini-icon-arr-right-mini"></span></span>
+        </a>
+        <a href="https://github.com/robios/textmate/tree/5e74a4683a4440063c580b49a37cda71677c086d" class="browse-button" title="Browse the code at this point in the history" rel="nofollow">Browse code <span class="mini-icon mini-icon-arr-right"></span></a>
+      </div>
+      <div class="authorship">
+        <span class="author-name"><a href="https://github.com/robios">Kazuhiro Sakai</a></span>
+        authored <time class="js-relative-date" datetime="2026-09-18T15:15:13-04:00" title="2026-09-18 15:15:13">September 18, 2026</time>
+      </div>
+    </div>
+</li>
+
+</ol>
+
+<h3 class="commit-group-heading">Sep 16, 2026</h3>
+
+<ol class="commit-group">
+
+<li class="commit commit-group-item">
+    <img class="gravatar" src="https://www.gravatar.com/avatar/d7e4957767431c67d811a9286c9d01d7?s=48&amp;d=https://a248.e.akamai.net/assets.github.com%2Fimages%2Fgravatars%2Fgravatar-user-420.png" height="36" width="36">
+    <p class="commit-title">
+      <a href="https://github.com/robios/textmate/commit/bd9259fb87ae36c86cc92a85d9f5d5c070c9f031" class="message">Fix tab layout and make Debug ASan optional on macOS Tahoe</a>
+    </p>
+    <div class="commit-meta">
+      <div class="commit-links">
+        <a href="https://github.com/robios/textmate/commit/bd9259fb87ae36c86cc92a85d9f5d5c070c9f031" class="gobutton">
+          <span class="sha">bd9259fb87<span class="mini-icon mini-icon-arr-right-mini"></span></span>
+        </a>
+        <a href="https://github.com/robios/textmate/tree/bd9259fb87ae36c86cc92a85d9f5d5c070c9f031" class="browse-button" title="Browse the code at this point in the history" rel="nofollow">Browse code <span class="mini-icon mini-icon-arr-right"></span></a>
+      </div>
+      <div class="authorship">
+        <span class="author-name"><a href="https://github.com/robios">Kazuhiro Sakai</a></span>
+        authored <time class="js-relative-date" datetime="2026-09-16T14:35:08-04:00" title="2026-09-16 14:35:08">September 16, 2026</time>
+      </div>
+    </div>
+</li>
+
+</ol>
+
+<h3 class="commit-group-heading">Sep 2, 2026</h3>
+
+<ol class="commit-group">
+
+<li class="commit commit-group-item">
+    <img class="gravatar" src="https://www.gravatar.com/avatar/d7e4957767431c67d811a9286c9d01d7?s=48&amp;d=https://a248.e.akamai.net/assets.github.com%2Fimages%2Fgravatars%2Fgravatar-user-420.png" height="36" width="36">
+    <p class="commit-title">
+      <a href="https://github.com/robios/textmate/commit/1f249eae313d8f2b0a8d4e7f9133f4b3f764e1dc" class="message">Add changelog for v2.5.0</a>
+      <span class="hidden-text-expander inline"><a href="javascript:;" class="js-details-target">…</a></span>
+    </p>
+    <div class="commit-desc"><pre>A curated v2.5.0 article prepended to the upstream release notes rather
+than the generated per-commit list: the first release spans 332 commits
+since v2.0.22 and reads better as a summary of what the fork adds.
+
+Contributions.html is regenerated so its commit links match the history
+as rebuilt on 2026-08-03 and include the commits made since.
+
+Co-Authored-By: Claude Fable 5.1 &lt;noreply@anthropic.com&gt;
+</pre></div>
+    <div class="commit-meta">
+      <div class="commit-links">
+        <a href="https://github.com/robios/textmate/commit/1f249eae313d8f2b0a8d4e7f9133f4b3f764e1dc" class="gobutton">
+          <span class="sha">1f249eae31<span class="mini-icon mini-icon-arr-right-mini"></span></span>
+        </a>
+        <a href="https://github.com/robios/textmate/tree/1f249eae313d8f2b0a8d4e7f9133f4b3f764e1dc" class="browse-button" title="Browse the code at this point in the history" rel="nofollow">Browse code <span class="mini-icon mini-icon-arr-right"></span></a>
+      </div>
+      <div class="authorship">
+        <span class="author-name"><a href="https://github.com/robios">Kazuhiro Sakai</a></span>
+        authored <time class="js-relative-date" datetime="2026-09-02T13:42:46-04:00" title="2026-09-02 13:42:46">September 2, 2026</time>
+      </div>
+    </div>
+</li>
+
+<li class="commit commit-group-item">
+    <img class="gravatar" src="https://www.gravatar.com/avatar/d7e4957767431c67d811a9286c9d01d7?s=48&amp;d=https://a248.e.akamai.net/assets.github.com%2Fimages%2Fgravatars%2Fgravatar-user-420.png" height="36" width="36">
+    <p class="commit-title">
+      <a href="https://github.com/robios/textmate/commit/fc4dce7be220e78fa9b765497557ffd2ff5672bc" class="message">Describe notarization&#39;s keychain profile in the build docs</a>
+      <span class="hidden-text-expander inline"><a href="javascript:;" class="js-details-target">…</a></span>
+    </p>
+    <div class="commit-desc"><pre>package.sh has taken its signing identity and notary profile from an
+untracked scripts/package.conf since 1d4d790e; the NOTARY_* environment
+variables the page still listed no longer exist.
+
+Co-Authored-By: Claude Fable 5.1 &lt;noreply@anthropic.com&gt;
+</pre></div>
+    <div class="commit-meta">
+      <div class="commit-links">
+        <a href="https://github.com/robios/textmate/commit/fc4dce7be220e78fa9b765497557ffd2ff5672bc" class="gobutton">
+          <span class="sha">fc4dce7be2<span class="mini-icon mini-icon-arr-right-mini"></span></span>
+        </a>
+        <a href="https://github.com/robios/textmate/tree/fc4dce7be220e78fa9b765497557ffd2ff5672bc" class="browse-button" title="Browse the code at this point in the history" rel="nofollow">Browse code <span class="mini-icon mini-icon-arr-right"></span></a>
+      </div>
+      <div class="authorship">
+        <span class="author-name"><a href="https://github.com/robios">Kazuhiro Sakai</a></span>
+        authored <time class="js-relative-date" datetime="2026-09-02T13:42:46-04:00" title="2026-09-02 13:42:46">September 2, 2026</time>
+      </div>
+    </div>
+</li>
+
+</ol>
+
 <h3 class="commit-group-heading">Aug 18, 2026</h3>
 
 <ol class="commit-group">
