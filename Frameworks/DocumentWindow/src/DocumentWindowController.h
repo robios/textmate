@@ -33,6 +33,17 @@
 + (void)disableSessionSave;
 + (void)enableSessionSave;
 + (BOOL)saveSessionIncludingUntitledDocuments:(BOOL)includeUntitled;
+// Like the above, but reports failure: NO with an error when session saving is
+// disabled (e.g. during a restore), when a backup of an edited or untitled
+// document could not be written, or when the session file could not be
+// written. Backups are attempted for every document and the session file is
+// written regardless; the error names the first failing document, else the
+// session file.
++ (BOOL)saveSessionIncludingUntitledDocuments:(BOOL)includeUntitled error:(NSError**)error;
+// Asks, window by window, whether terminal panes with a running process may be
+// terminated, as quitting does. Calls back with YES right away when there are
+// none, NO as soon as one is refused.
++ (void)askToTerminateRunningTerminalProcesses:(void(^)(BOOL canTerminate))callback;
 + (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication*)sender;
 
 - (void)showWindow:(id)sender;

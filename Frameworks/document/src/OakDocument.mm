@@ -11,6 +11,7 @@
 #import <OakAppKit/OakEncodingPopUpButton.h>
 #import <OakAppKit/OakSavePanel.h>
 #import <OakAppKit/NSAlert Additions.h>
+#import <OakSystem/application.h>
 #import <TMFileReference/TMFileReference.h>
 #import <BundlesManager/BundlesManager.h>
 #import <BundlesManager/BundleSubscriptionManager.h>
@@ -217,6 +218,32 @@ static void* kDocumentEditedObserverContext = &kDocumentEditedObserverContext;
 @property (nonatomic) NSString* folded;
 @end
 
+// path::set_attributes() reports only a file it could not open; a failed
+// fsetxattr() is logged and swallowed, which suits saving documents to file
+// systems without extended attributes but not a backup: without its
+// com.macromates.backup.* attributes it can never be restored (the identifier
+// is what the lookup matches, the rest is what the document is rebuilt from).
+// So those are read back and compared. Values of NULL_STR mean “remove” and
+// are not checked.
+bool OakDocumentBackupAttributesWritten (std::string const& path, std::map<std::string, std::string> const& attributes)
+{
+	static std::string const prefix = "com.macromates.backup.";
+	auto const written = path::attributes(path);
+	for(auto const& pair : attributes)
+	{
+		if(pair.second == NULL_STR || pair.first.compare(0, prefix.size(), prefix) != 0)
+			continue;
+
+		auto it = written.find(pair.first);
+		if(it == written.end() || it->second != pair.second)
+		{
+			os_log_error(OS_LOG_DEFAULT, "saveBackup: attribute %{public}s was not written to %{public}s", pair.first.c_str(), path.c_str());
+			return false;
+		}
+	}
+	return true;
+}
+
 @implementation OakDocument
 + (NSSet*)keyPathsForValuesAffectingIcon
 {
@@ -407,7 +434,7 @@ static void* kDocumentEditedObserverContext = &kDocumentEditedObserverContext;
 	if(OakDocument* res = [OakDocumentController.sharedInstance findDocumentWithIdentifier:anIdentifier])
 		return res;
 
-	std::string const dir = to_s([[NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES) firstObject] stringByAppendingPathComponent:@"TextMate/Session"]);
+	std::string const dir = oak::application_t::support("Session");
 	for(auto dirEntry : path::entries(dir))
 	{
 		std::string const path = path::join(dir, dirEntry->d_name);
@@ -608,7 +635,7 @@ static void* kDocumentEditedObserverContext = &kDocumentEditedObserverContext;
 
 - (NSString*)createAndReturnBackupPath
 {
-	NSString* path = [[NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES) firstObject] stringByAppendingPathComponent:@"TextMate/Session"];
+	NSString* path = to_ns(oak::application_t::support("Session"));
 	if(![NSFileManager.defaultManager createDirectoryAtPath:path withIntermediateDirectories:YES attributes:nil error:nullptr])
 		return nil;
 
@@ -621,10 +648,14 @@ static void* kDocumentEditedObserverContext = &kDocumentEditedObserverContext;
 	if(_buffer && (_onDisk ? _savedRevision != _revision : !_bufferEmpty))
 	{
 		if(_backupPath && _backupRevision == _revision)
-			return NO;
+			return YES;
 
-		if(!_backupPath)
-			self.backupPath = [self createAndReturnBackupPath];
+		// The path is recorded only once a file exists at it: a document loaded
+		// with content starts out with backupRevision == revision, so a path
+		// set before a failed write would pass as a current backup next time.
+		NSString* backupPath = _backupPath ?: [self createAndReturnBackupPath];
+		if(!backupPath)
+			return NO;
 
 		std::string const temp = path::temp("backup");
 		int fd = open(temp.c_str(), O_CREAT|O_TRUNC|O_WRONLY|O_CLOEXEC, S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH);
@@ -657,11 +688,13 @@ static void* kDocumentEditedObserverContext = &kDocumentEditedObserverContext;
 		attr["com.macromates.backup.tab-size"]       = std::to_string(self.tabSize);
 		attr["com.macromates.backup.soft-tabs"]      = self.softTabs ? "YES" : NULL_STR;
 
-		path::set_attributes(temp, attr);
+		if(!path::set_attributes(temp, attr) || !OakDocumentBackupAttributesWritten(temp, attr))
+			return unlink(temp.c_str()), NO;
 
-		if(!path::rename_or_copy(temp, to_s(self.backupPath)))
-			return NO;
+		if(!path::rename_or_copy(temp, to_s(backupPath)))
+			return unlink(temp.c_str()), NO;
 
+		self.backupPath     = backupPath;
 		self.backupRevision = _revision;
 		return YES;
 	}
@@ -670,7 +703,7 @@ static void* kDocumentEditedObserverContext = &kDocumentEditedObserverContext;
 		[self removeBackup];
 	}
 
-	return NO;
+	return YES;
 }
 
 // =================

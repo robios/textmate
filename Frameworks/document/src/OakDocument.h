@@ -81,6 +81,12 @@ typedef NS_ENUM(NSInteger, OakDocumentIOResult) {
 - (void)close;
 
 - (void)markDocumentSaved;
+// Writes the unsaved content (with its metadata as extended attributes) to the
+// session directory, or removes a backup that is no longer needed. Returns YES
+// when a current backup exists afterwards or none is needed, NO only when
+// writing the backup failed (an earlier backup, if any, is left untouched).
+// A backup counts as written only once it is in place with every
+// com.macromates.backup.* attribute it needs to be restored.
 - (BOOL)saveBackup:(id)sender;
 
 @property (nonatomic) osx::authorization_t authorization;

@@ -847,6 +847,17 @@ static NSArray* const kObservedKeyPaths = @[ @"arrayController.arrangedObjects.p
 	}
 }
 
++ (void)askToTerminateRunningTerminalProcesses:(void(^)(BOOL canTerminate))callback
+{
+	NSMutableArray<DocumentWindowController*>* controllersWithRunningProcess = [NSMutableArray array];
+	for(DocumentWindowController* controller in SortedControllers())
+	{
+		if(controller.terminalPane.hasRunningProcess)
+			[controllersWithRunningProcess addObject:controller];
+	}
+	[self askToTerminateTerminalProcessesUsingEnumerator:[controllersWithRunningProcess objectEnumerator] completionHandler:callback];
+}
+
 + (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication*)sender
 {
 	NSMutableArray<DocumentWindowController*>* controllersWithRunningProcess = [NSMutableArray array];
@@ -3425,6 +3436,14 @@ static NSUInteger DisableSessionSavingCount = 0;
 
 - (NSDictionary*)sessionInfoIncludingUntitledDocuments:(BOOL)includeUntitled
 {
+	return [self sessionInfoIncludingUntitledDocuments:includeUntitled firstFailedBackup:nullptr];
+}
+
+// Every document that needs a backup gets one attempted; the first whose backup
+// could not be written is reported through firstFailedBackup (left alone when
+// it already holds a document).
+- (NSDictionary*)sessionInfoIncludingUntitledDocuments:(BOOL)includeUntitled firstFailedBackup:(OakDocument* __autoreleasing*)firstFailedBackup
+{
 	NSMutableDictionary* res = [NSMutableDictionary dictionary];
 
 	if(NSString* projectPath = self.defaultProjectPath)
@@ -3468,8 +3487,8 @@ static NSUInteger DisableSessionSavingCount = 0;
 		if(document.isDocumentEdited || !document.path)
 		{
 			doc[@"identifier"] = document.identifier.UUIDString;
-			if(document.isLoaded)
-				[document saveBackup:self];
+			if(document.isLoaded && ![document saveBackup:self] && firstFailedBackup && !*firstFailedBackup)
+				*firstFailedBackup = document;
 		}
 		if(document.path)
 			doc[@"path"] = document.path;
@@ -3490,8 +3509,19 @@ static NSUInteger DisableSessionSavingCount = 0;
 
 + (BOOL)saveSessionIncludingUntitledDocuments:(BOOL)includeUntitled
 {
+	return [self saveSessionIncludingUntitledDocuments:includeUntitled error:nullptr];
+}
+
++ (BOOL)saveSessionIncludingUntitledDocuments:(BOOL)includeUntitled error:(NSError**)error
+{
+	static NSString* const kSessionErrorDomain = @"com.macromates.TextMate.session";
+
 	if(DisableSessionSavingCount)
+	{
+		if(error)
+			*error = [NSError errorWithDomain:kSessionErrorDomain code:1 userInfo:@{ NSLocalizedDescriptionKey: @"Session saving is currently disabled." }];
 		return NO;
+	}
 
 	NSArray* controllers = SortedControllers();
 	if(controllers.count == 1)
@@ -3501,12 +3531,40 @@ static NSUInteger DisableSessionSavingCount = 0;
 			controllers = nil;
 	}
 
+	// A failed backup does not stop the others or the session file: whatever
+	// could be saved is what a later restore has to work with.
+	OakDocument* failedDocument = nil;
 	NSMutableArray* projects = [NSMutableArray array];
 	for(DocumentWindowController* controller in [controllers reverseObjectEnumerator])
-		[projects addObject:[controller sessionInfoIncludingUntitledDocuments:includeUntitled]];
+		[projects addObject:[controller sessionInfoIncludingUntitledDocuments:includeUntitled firstFailedBackup:&failedDocument]];
 
+	NSString* sessionPath = [self sessionPath];
+	NSError* writeError;
 	NSDictionary* session = @{ @"projects": projects };
-	return [session writeToFile:[self sessionPath] atomically:YES];
+	NSData* data = [NSPropertyListSerialization dataWithPropertyList:session format:NSPropertyListXMLFormat_v1_0 options:0 error:&writeError];
+	BOOL didWrite = data && [NSFileManager.defaultManager createDirectoryAtPath:sessionPath.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:&writeError] && [data writeToFile:sessionPath options:NSDataWritingAtomic error:&writeError];
+
+	if(failedDocument)
+	{
+		if(error)
+			*error = [NSError errorWithDomain:kSessionErrorDomain code:2 userInfo:@{ NSLocalizedDescriptionKey: [NSString stringWithFormat:@"Unable to save a backup of “%@”.", failedDocument.displayName] }];
+		return NO;
+	}
+	else if(!didWrite)
+	{
+		if(error)
+		{
+			NSMutableDictionary* userInfo = [NSMutableDictionary dictionaryWithDictionary:@{
+				NSLocalizedDescriptionKey: [NSString stringWithFormat:@"Unable to write “%@”: %@", sessionPath, writeError.localizedDescription ?: @"unknown error"],
+				NSFilePathErrorKey:        sessionPath,
+			}];
+			if(writeError)
+				userInfo[NSUnderlyingErrorKey] = writeError;
+			*error = [NSError errorWithDomain:kSessionErrorDomain code:3 userInfo:userInfo];
+		}
+		return NO;
+	}
+	return YES;
 }
 
 // ==========

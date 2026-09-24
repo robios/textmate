@@ -14,7 +14,9 @@ static void sig_int_handler (void* unused)
 static void sig_term_handler (void* unused)
 {
 	os_log(OS_LOG_DEFAULT, "Received SIGTERM: Quick shutdown.");
-	[DocumentWindowController saveSessionIncludingUntitledDocuments:YES];
+	NSError* error;
+	if(![DocumentWindowController saveSessionIncludingUntitledDocuments:YES error:&error])
+		os_log_error(OS_LOG_DEFAULT, "Failed to save session: %{public}@", error.localizedDescription);
 	[NSNotificationCenter.defaultCenter postNotificationName:NSApplicationWillTerminateNotification object:NSApp];
 	[NSApp stop:nil];
 	[NSApp postEvent:[NSEvent otherEventWithType:NSEventTypeApplicationDefined location:NSZeroPoint modifierFlags:0 timestamp:0 windowNumber:0 context:NULL subtype:0 data1:0 data2:0] atStart:NO];
