@@ -27,6 +27,7 @@
 - (IBAction)showCommandPalette:(id)sender;
 
 - (IBAction)showPreferences:(id)sender;
+- (IBAction)performSoftwareUpdateCheck:(id)sender;
 - (IBAction)showBundleEditor:(id)sender;
 
 - (IBAction)newDocumentAndActivate:(id)sender;

@@ -25,6 +25,7 @@
 #import <Preferences/Keys.h>
 #import <Preferences/Preferences.h>
 #import <Preferences/TerminalPreferences.h>
+#import <SoftwareUpdate/SoftwareUpdate.h>
 #import <document/OakDocument.h>
 #import <document/OakDocumentController.h>
 #import <bundles/query.h>
@@ -91,7 +92,7 @@ BOOL HasDocumentWindow (NSArray* windows)
 	return NO;
 }
 
-@interface AppController () <OakUserDefaultsObserver>
+@interface AppController () <OakUserDefaultsObserver, SoftwareUpdateDelegate>
 @property (nonatomic) BOOL didFinishLaunching;
 @property (nonatomic) BOOL keyWindowHasBackAndForwardActions;
 @end
@@ -105,6 +106,7 @@ BOOL HasDocumentWindow (NSArray* windows)
 				{ @"About TextMate",        @selector(orderFrontAboutPanel:)               },
 				{ /* -------- */ },
 				{ @"Preferences…",          @selector(showPreferences:),            @","   },
+				{ @"Check for Updates…",    @selector(performSoftwareUpdateCheck:)         },
 				{ /* -------- */ },
 				{ @"Services",              .systemMenu = MBMenuTypeServices               },
 				{ /* -------- */ },
@@ -655,6 +657,8 @@ BOOL HasDocumentWindow (NSArray* windows)
 
 	[TerminalPreferences updateMateIfRequired];
 	[AboutWindowController showChangesIfUpdated];
+	SoftwareUpdate.sharedInstance.delegate = self;
+	[SoftwareUpdate.sharedInstance startIfAvailable];
 
 	[OakCommitWindowServer sharedInstance]; // Setup server
 
@@ -760,6 +764,25 @@ BOOL HasDocumentWindow (NSArray* windows)
 - (IBAction)showPreferences:(id)sender
 {
 	[Preferences.sharedInstance showWindow:self];
+}
+
+- (IBAction)performSoftwareUpdateCheck:(id)sender
+{
+	[SoftwareUpdate.sharedInstance checkForUpdate:sender];
+}
+
+// ==========================
+// = SoftwareUpdateDelegate =
+// ==========================
+
+- (void)softwareUpdateAskToTerminateRunningProcesses:(void(^)(BOOL canTerminate))callback
+{
+	[DocumentWindowController askToTerminateRunningTerminalProcesses:callback];
+}
+
+- (BOOL)softwareUpdateSaveSessionWithError:(NSError**)error
+{
+	return [DocumentWindowController saveSessionIncludingUntitledDocuments:YES error:error];
 }
 
 - (IBAction)showBundleEditor:(id)sender

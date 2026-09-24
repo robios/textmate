@@ -6,7 +6,7 @@ target_sources(TextMate PRIVATE ${_src})
 target_link_libraries(TextMate PRIVATE
   AgentBridge BundleEditor BundleMenu BundlesManager CommitWindow DocumentWindow
   Find HTMLOutputWindow MenuBuilder OakAppKit OakCommand OakFilterList OakFoundation
-  OakSystem OakTextView Preferences authorization bundles cf command
+  OakSystem OakTextView Preferences SoftwareUpdate authorization bundles cf command
   crash document io kvdb license ns plist regexp scm settings text theme
   ${TEXTMATE_DEBUG_LIBS}
 )
@@ -123,6 +123,7 @@ file(GLOB _fw_res
   "${CMAKE_SOURCE_DIR}/Frameworks/HTMLOutput/resources/*.html"
   "${CMAKE_SOURCE_DIR}/Frameworks/HTMLOutput/resources/*.js"
   "${CMAKE_SOURCE_DIR}/Frameworks/scm/resources/*.xslt"
+  "${CMAKE_SOURCE_DIR}/Frameworks/SoftwareUpdate/resources/*.tiff"
 )
 target_sources(TextMate PRIVATE ${_fw_res})
 set_source_files_properties(${_fw_res} PROPERTIES

@@ -67,6 +67,13 @@ echo "==> Stapling notarization ticket"
 xcrun stapler staple "$APP_PATH"
 
 # ── Package as .tar.gz ───────────────────────────────────────────────
+# The asset name TextMate-<version>.tar.gz and the v<version> tag are a
+# contract with the in-app updater of every shipped copy: it reads GitHub's
+# releases/latest API, looks for exactly one asset with this name, and strips
+# one leading "v" from the tag to get the version. Neither may change without
+# changing the updater. Because "latest" is whatever release is published, a
+# release that has to be withdrawn must be turned back into a draft or deleted,
+# not left published.
 TGZ_PATH="$BUILD_DIR/$APP_NAME-$VERSION.tar.gz"
 echo "==> Creating $TGZ_PATH"
 tar -czf "$TGZ_PATH" -C "$(dirname "$APP_PATH")" "$APP_NAME.app"

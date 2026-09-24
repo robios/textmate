@@ -3,7 +3,17 @@
 #import <OakAppKit/OakPasteboard.h>
 #import <OakAppKit/OakUIConstructionFunctions.h>
 #import <MenuBuilder/MenuBuilder.h>
+#import <SoftwareUpdate/SoftwareUpdate.h>
 #import <settings/settings.h>
+
+static void* kSoftwareUpdateCheckingContext = &kSoftwareUpdateCheckingContext;
+
+@interface AdvancedPreferences ()
+{
+	NSTextField* _lastCheckedLabel;
+	NSButton*    _checkNowButton;
+}
+@end
 
 @implementation AdvancedPreferences
 - (id)init
@@ -30,9 +40,65 @@
 			@"fileBrowserOpenAnimationDisabled":     kUserDefaultsFileBrowserOpenAnimationDisabled,
 			@"disableFolderStateRestore":            kUserDefaultsDisableFolderStateRestore,
 			@"disableBundleSuggestions":             kUserDefaultsDisableBundleSuggestionsKey,
+			@"disableSoftwareUpdatePolling":         kUserDefaultsSoftwareUpdateDisablePollingKey,
 		};
 	}
 	return self;
+}
+
+- (void)dealloc
+{
+	if(_checkNowButton)
+		[SoftwareUpdate.sharedInstance removeObserver:self forKeyPath:@"checking" context:kSoftwareUpdateCheckingContext];
+	[NSNotificationCenter.defaultCenter removeObserver:self];
+}
+
+// ===================
+// = Software Update =
+// ===================
+
+- (void)observeValueForKeyPath:(NSString*)keyPath ofObject:(id)object change:(NSDictionary*)change context:(void*)context
+{
+	if(context == kSoftwareUpdateCheckingContext)
+		[self updateCheckNowButton];
+	else
+		[super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
+}
+
+- (void)updateCheckNowButton
+{
+	_checkNowButton.enabled = SoftwareUpdate.sharedInstance.isAvailable && !SoftwareUpdate.sharedInstance.isChecking;
+}
+
+- (void)updateLastCheckedLabel
+{
+	NSString* when = @"Never";
+	NSDate* lastPoll = [NSUserDefaults.standardUserDefaults objectForKey:kUserDefaultsSoftwareUpdateLastPollKey];
+	if([lastPoll isKindOfClass:[NSDate class]])
+	{
+		NSRelativeDateTimeFormatter* formatter = [[NSRelativeDateTimeFormatter alloc] init];
+		formatter.unitsStyle = NSRelativeDateTimeFormatterUnitsStyleFull;
+		when = [formatter localizedStringForDate:lastPoll relativeToDate:NSDate.date];
+	}
+	_lastCheckedLabel.stringValue = [NSString stringWithFormat:@"Last checked: %@", when];
+}
+
+- (void)userDefaultsDidChange:(NSNotification*)aNotification
+{
+	[self updateLastCheckedLabel];
+}
+
+// A relative date goes stale while the pane sits unseen, so it is also
+// recomputed whenever the pane is shown.
+- (void)viewWillAppear
+{
+	[super viewWillAppear];
+	[self updateLastCheckedLabel];
+}
+
+- (void)checkForUpdateNow:(id)sender
+{
+	[SoftwareUpdate.sharedInstance checkForUpdate:sender];
 }
 
 // The change-mark setting is a three-case string, so it is bridged to an
@@ -128,6 +194,13 @@
 	NSPopUpButton* diffMarksPopUp                      = OakCreatePopUpButton();
 	NSTextField* reviewBaseCommitLimitField            = [NSTextField textFieldWithString:@""];
 
+	NSButton* softwareUpdatePollingCheckBox            = OakCreateCheckBox(@"Check for updates automatically (once a day)");
+	_lastCheckedLabel                                  = OakCreateLabel(@"");
+	_checkNowButton                                    = OakCreateButton(@"Check Now");
+	_checkNowButton.target = self;
+	_checkNowButton.action = @selector(checkForUpdateNow:);
+	NSStackView* lastCheckedStackView                  = [NSStackView stackViewWithViews:@[ _lastCheckedLabel, _checkNowButton ]];
+
 	MBMenu const diffMarksItems = {
 		{ @"Always" },
 		{ @"Only while the diff pane is open (default)" },
@@ -156,6 +229,13 @@
 		label.maximumNumberOfLines = 2;
 		return label;
 	};
+
+	// A copy that cannot update itself says why instead of offering controls
+	// that would do nothing.
+	BOOL const softwareUpdateAvailable = SoftwareUpdate.sharedInstance.isAvailable;
+	NSString* softwareUpdateHint = @"Checks GitHub for a newer release; nothing is downloaded without asking";
+	if(!softwareUpdateAvailable)
+		softwareUpdateHint = SoftwareUpdate.sharedInstance.unavailableReason ?: @"Software update is unavailable in this build";
 
 	NSGridView* gridView = [NSGridView gridViewWithViews:@[
 		// Editor — rows 0-11
@@ -227,9 +307,16 @@
 		@[ NSGridCell.emptyContentView,      makeHint(@"Color bars while the diff pane is open, otherwise the gutter's own icons; untracked files show none") ], // 47
 		@[ OakCreateLabel(@"Base commits:"), reviewBaseCommitLimitField ],                                                // 48
 		@[ NSGridCell.emptyContentView,      makeHint(@"How many recent commits the review-base menu lists (default 20; 0 lists none). Projects can override reviewBaseCommitLimit in .tm_properties") ], // 49
+
+		@[ ], // 50 — separator
+
+		// Software Update — rows 51-53
+		@[ OakCreateLabel(@"Software Update:"), softwareUpdatePollingCheckBox ],                                         // 51
+		@[ NSGridCell.emptyContentView,      lastCheckedStackView ],                                                      // 52
+		@[ NSGridCell.emptyContentView,      makeHint(softwareUpdateHint) ],                                              // 53
 	]];
 
-	self.view = OakSetupScrollableGridView(gridView, { 12, 21, 30, 35, 40, 45 });
+	self.view = OakSetupScrollableGridView(gridView, { 12, 21, 30, 35, 40, 45, 50 });
 
 	// Editor bindings
 	[disableTypingPairsCheckBox bind:NSValueBinding toObject:self withKeyPath:@"disableTypingPairs" options:nil];
@@ -266,5 +353,15 @@
 	// Diff bindings
 	[diffMarksPopUp             bind:NSSelectedIndexBinding toObject:self withKeyPath:@"diffMarksVisibilityIndex" options:nil];
 	[reviewBaseCommitLimitField bind:NSValueBinding         toObject:self withKeyPath:@"reviewBaseCommitLimit"    options:@{ NSNullPlaceholderBindingOption: @"20" }];
+
+	// Software Update bindings
+	[softwareUpdatePollingCheckBox bind:NSValueBinding toObject:self withKeyPath:@"disableSoftwareUpdatePolling" options:@{ NSValueTransformerNameBindingOption: NSNegateBooleanTransformerName }];
+	softwareUpdatePollingCheckBox.enabled = softwareUpdateAvailable;
+
+	[self updateLastCheckedLabel];
+	[NSNotificationCenter.defaultCenter addObserver:self selector:@selector(userDefaultsDidChange:) name:NSUserDefaultsDidChangeNotification object:NSUserDefaults.standardUserDefaults];
+
+	[self updateCheckNowButton];
+	[SoftwareUpdate.sharedInstance addObserver:self forKeyPath:@"checking" options:0 context:kSoftwareUpdateCheckingContext];
 }
 @end
