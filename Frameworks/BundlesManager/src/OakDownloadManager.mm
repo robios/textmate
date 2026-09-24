@@ -31,6 +31,9 @@ static NSString* GetHardwareInfo (int field, BOOL isInteger = NO)
 @interface OakDownloadArchiveTask : NSObject <NSProgressReporting, NSURLSessionDataDelegate>
 {
 	NSDictionary<NSString*, NSString*>* _publicKeys;
+	BOOL(^_transportPolicy)(NSURL* url);
+	NSURL*                              _refusedRedirectURL;
+	NSError*                            _responseError;
 	NSString*                           _signee;
 	NSString*                           _signature;
 
@@ -55,15 +58,16 @@ static NSString* GetHardwareInfo (int field, BOOL isInteger = NO)
 @end
 
 @implementation OakDownloadArchiveTask
-- (instancetype)initWithURL:(NSURL*)url forReplacingURL:(NSURL*)localURL publicKeys:(NSDictionary<NSString*, NSString*>*)publicKeys completionHandler:(void(^)(NSURL* extractedArchiveURL, NSError* error))completionHandler
+- (instancetype)initWithURL:(NSURL*)url forReplacingURL:(NSURL*)localURL publicKeys:(NSDictionary<NSString*, NSString*>*)publicKeys userAgent:(NSString*)userAgent transportPolicy:(BOOL(^)(NSURL* url))transportPolicy completionHandler:(void(^)(NSURL* extractedArchiveURL, NSError* error))completionHandler
 {
 	if(self = [super init])
 	{
 		_fileURLToReplace       = localURL;
 		_publicKeys             = publicKeys;
+		_transportPolicy        = transportPolicy;
 		_completionHandler      = completionHandler;
 		_progress               = [NSProgress discreteProgressWithTotalUnitCount:-1];
-		_data                   = [NSMutableData data];
+		_data                   = publicKeys ? [NSMutableData data] : nil; // Only needed for the signature check
 		_extractorDispatchGroup = dispatch_group_create();
 
 		_progress.kind = NSProgressKindFile;
@@ -71,8 +75,9 @@ static NSString* GetHardwareInfo (int field, BOOL isInteger = NO)
 		_progress.localizedDescription = [NSString stringWithFormat:@"Downloading %@…", url.lastPathComponent];
 
 		NSMutableURLRequest* request = [NSMutableURLRequest requestWithURL:url cachePolicy:NSURLRequestUseProtocolCachePolicy timeoutInterval:60];
-		[request setValue:OakDownloadManager.sharedInstance.userAgentString forHTTPHeaderField:@"User-Agent"];
+		[request setValue:userAgent forHTTPHeaderField:@"User-Agent"];
 
+		// Policy and User-Agent must be in place before this: the task starts right away
 		NSURLSession* session = [NSURLSession sessionWithConfiguration:NSURLSessionConfiguration.defaultSessionConfiguration delegate:self delegateQueue:NSOperationQueue.mainQueue];
 		[[session dataTaskWithRequest:request] resume];
 		[session finishTasksAndInvalidate];
@@ -149,6 +154,14 @@ static NSString* GetHardwareInfo (int field, BOOL isInteger = NO)
 {
 	_signee    = _signee    ?: response.allHeaderFields[OakHTTPHeaderSignee];
 	_signature = _signature ?: response.allHeaderFields[OakHTTPHeaderSignature];
+
+	if(_transportPolicy && !_transportPolicy(request.URL))
+	{
+		os_log_error(OS_LOG_DEFAULT, "Refusing redirect from %{public}@ to %{public}@", response.URL, request.URL);
+		_refusedRedirectURL = request.URL;
+		completionHandler(nil); // The redirect response itself becomes the task’s response
+		return;
+	}
 	completionHandler(request);
 }
 
@@ -156,6 +169,22 @@ static NSString* GetHardwareInfo (int field, BOOL isInteger = NO)
 {
 	_signee    = _signee    ?: ((NSHTTPURLResponse*)response).allHeaderFields[OakHTTPHeaderSignee];
 	_signature = _signature ?: ((NSHTTPURLResponse*)response).allHeaderFields[OakHTTPHeaderSignature];
+
+	if([response isKindOfClass:[NSHTTPURLResponse class]])
+	{
+		NSInteger statusCode = ((NSHTTPURLResponse*)response).statusCode;
+		if(statusCode < 200 || statusCode > 299)
+		{
+			NSString* description;
+			if(_refusedRedirectURL && statusCode >= 300 && statusCode <= 399)
+					description = [NSString stringWithFormat:@"Insecure redirect refused (%ld to %@)", statusCode, _refusedRedirectURL.absoluteString];
+			else	description = [NSString stringWithFormat:@"Server returned %ld for %@", statusCode, response.URL.absoluteString];
+
+			_responseError = [NSError errorWithDomain:@"OakDownloadManager" code:statusCode userInfo:@{ NSLocalizedDescriptionKey: description }];
+			completionHandler(NSURLSessionResponseCancel);
+			return;
+		}
+	}
 	completionHandler(NSURLSessionResponseAllow);
 }
 
@@ -208,12 +237,18 @@ static NSString* GetHardwareInfo (int field, BOOL isInteger = NO)
 	[_extractorFileHandle closeFile];
 	_progress.totalUnitCount = dataTask.countOfBytesReceived;
 
-	if(NSError* error = _extractorError ?: (_extractorTask ? downloadError : [NSError errorWithDomain:@"OakDownloadManager" code:0 userInfo:@{ NSLocalizedDescriptionKey: @"Unable to launch tar." }]))
+	// A transport failure before the first byte (refused connection, redirect
+	// loop, timeout) precedes the extractor and must not be blamed on tar
+	NSError* error = _responseError ?: _extractorError ?: downloadError;
+	if(!error && !_extractorTask)
+		error = [NSError errorWithDomain:@"OakDownloadManager" code:0 userInfo:@{ NSLocalizedDescriptionKey: @"Unable to launch tar." }];
+
+	if(error)
 	{
 		os_log_error(OS_LOG_DEFAULT, "Failed to download %{public}@: %{public}@", dataTask.originalRequest.URL, error.localizedDescription);
 		_completionHandler(nil, error);
 	}
-	else if(![OakDownloadManager.sharedInstance data:_data hasValidBase64EncodedSignature:_signature usingPublicKeyString:_publicKeys[_signee]])
+	else if(_publicKeys && ![OakDownloadManager.sharedInstance data:_data hasValidBase64EncodedSignature:_signature usingPublicKeyString:_publicKeys[_signee]])
 	{
 		os_log_error(OS_LOG_DEFAULT, "Unable to verify signature");
 		_completionHandler(nil, [NSError errorWithDomain:@"OakDownloadManager" code:0 userInfo:@{ NSLocalizedDescriptionKey: @"Unable to verify signature." }]);
@@ -368,7 +403,12 @@ static NSString* GetHardwareInfo (int field, BOOL isInteger = NO)
 
 - (id <NSProgressReporting>)downloadArchiveAtURL:(NSURL*)serverURL forReplacingURL:(nullable NSURL*)localURL publicKeys:(NSDictionary<NSString*, NSString*>*)publicKeys completionHandler:(void(^)(NSURL* extractedArchiveURL, NSError* error))completionHandler
 {
-	return [[OakDownloadArchiveTask alloc] initWithURL:serverURL forReplacingURL:localURL publicKeys:publicKeys completionHandler:completionHandler];
+	return [self downloadArchiveAtURL:serverURL forReplacingURL:localURL publicKeys:publicKeys userAgent:self.userAgentString transportPolicy:nil completionHandler:completionHandler];
+}
+
+- (id <NSProgressReporting>)downloadArchiveAtURL:(NSURL*)serverURL forReplacingURL:(nullable NSURL*)localURL publicKeys:(nullable NSDictionary<NSString*, NSString*>*)publicKeys userAgent:(NSString*)userAgent transportPolicy:(nullable BOOL(^)(NSURL* url))transportPolicy completionHandler:(void(^)(NSURL* extractedArchiveURL, NSError* error))completionHandler
+{
+	return [[OakDownloadArchiveTask alloc] initWithURL:serverURL forReplacingURL:localURL publicKeys:publicKeys userAgent:userAgent transportPolicy:transportPolicy completionHandler:completionHandler];
 }
 
 // ==================
