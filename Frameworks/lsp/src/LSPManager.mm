@@ -1,6 +1,7 @@
 #import "LSPManager.h"
 #import "LSPClient.h"
 #import "LSPBundleSettings.h"
+#import "LSPWorkspaceRoot.h"
 #import <document/OakDocumentController.h>
 #import <settings/settings.h>
 #import <io/path.h>
@@ -83,34 +84,11 @@ static bool commandIsScopedToDocument (OakDocument* document, std::string const&
 	return lsp::setting_with_bundle_fallback(kSettingsLSPCommandKey, probeSettings, scope::scope_t("text.plain")) != command;
 }
 
-static std::vector<std::string> const& workspaceMarkers ()
-{
-	static std::vector<std::string> const markers = {
-		".git", "composer.json", "package.json", "tsconfig.json",
-		"CMakeLists.txt", "compile_commands.json", "go.mod",
-		"Cargo.toml", "pyproject.toml", "setup.py", ".clangd"
-	};
-	return markers;
-}
-
 static std::string detectWorkspaceRoot (std::string const& filePath)
 {
-	std::string dir = path::parent(filePath);
-	std::string previousDir;
-
-	while(dir != previousDir && dir != "/")
-	{
-		for(auto const& marker : workspaceMarkers())
-		{
-			if(path::exists(path::join(dir, marker)))
-				return dir;
-		}
-		previousDir = dir;
-		dir = path::parent(dir);
-	}
-
+	std::string root = lsp::marker_workspace_root(filePath);
 	// No marker found — use file's directory
-	return path::parent(filePath);
+	return root.empty() ? path::parent(filePath) : root;
 }
 
 @interface LSPManager () <LSPClientDelegate>

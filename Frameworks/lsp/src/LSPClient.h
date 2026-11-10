@@ -40,7 +40,12 @@ extern NSString* const LSPShowMessageRequestNotification;
 @property (nonatomic, readonly) BOOL codeActionProvider;
 @property (nonatomic, readonly) BOOL codeActionResolveProvider;
 @property (nonatomic, readonly) NSArray<NSString*>* executeCommands;
+// The working directory doubles as the single workspace folder.
 - (instancetype)initWithCommand:(NSString*)command arguments:(NSArray<NSString*>*)arguments workingDirectory:(NSString*)workingDirectory initOptions:(NSString*)initOptionsJSON;
+// A nil ‘workspaceRoot’ initializes the server without workspace folders and
+// refuses its dynamic file-watch registrations (there is no root to watch);
+// the owner then announces folders with workspace/didChangeWorkspaceFolders.
+- (instancetype)initWithCommand:(NSString*)command arguments:(NSArray<NSString*>*)arguments workingDirectory:(NSString*)workingDirectory workspaceRoot:(NSString*)workspaceRoot initOptions:(NSString*)initOptionsJSON;
 - (void)openDocument:(OakDocument*)document languageId:(NSString*)languageId;
 - (void)documentDidChange:(OakDocument*)document version:(int)version;
 - (void)documentDidSave:(OakDocument*)document;

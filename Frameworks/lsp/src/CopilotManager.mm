@@ -1,7 +1,10 @@
 #import "CopilotManager.h"
 #import "LSPClient.h"
+#import "LSPBundleSettings.h"
+#import "LSPWorkspaceRoot.h"
 #import <settings/settings.h>
 #import <io/environment.h>
+#import <io/path.h>
 #import <ns/ns.h>
 
 
@@ -16,6 +19,7 @@ NSNotificationName const CopilotLogNotification             = @"CopilotLogNotifi
 	LSPClient* _client;
 	NSMutableDictionary<NSString*, NSNumber*>* _documentVersions;
 	NSMutableSet<NSString*>* _openURIs;
+	NSMutableSet<NSString*>* _workspaceFolders; // announced to the running server
 	NSMutableDictionary<NSString*, NSTimer*>* _changeTimers;
 	NSHashTable<OakDocument*>* _pendingDocuments; // docs opened before server initialized
 	NSInteger _restartCount;
@@ -57,6 +61,7 @@ static settings_t settingsForCopilotDocument(OakDocument* document)
 	{
 		_documentVersions = [NSMutableDictionary new];
 		_openURIs         = [NSMutableSet new];
+		_workspaceFolders = [NSMutableSet new];
 		_pendingDocuments = [NSHashTable weakObjectsHashTable];
 		_changeTimers     = [NSMutableDictionary new];
 		_restartCount     = 0;
@@ -172,9 +177,13 @@ static settings_t settingsForCopilotDocument(OakDocument* document)
 	// Native copilot-language-server requires editorInfo in initializationOptions
 	NSString* initOpts = @"{\"editorInfo\":{\"name\":\"TextMate\",\"version\":\"2.1\"},\"editorPluginInfo\":{\"name\":\"textmate-copilot\",\"version\":\"1.0\"}}";
 
+	// One server serves every project, so it starts without a workspace and
+	// learns project folders as their documents open. Giving it $HOME as the
+	// workspace made it watch the entire home folder for instruction files.
 	_client = [[LSPClient alloc] initWithCommand:serverPath
 	                                   arguments:@[@"--stdio"]
 	                            workingDirectory:NSHomeDirectory()
+	                               workspaceRoot:nil
 	                                 initOptions:initOpts];
 	_client.delegate = self;
 
@@ -198,6 +207,7 @@ static settings_t settingsForCopilotDocument(OakDocument* document)
 	_client = nil;
 
 	[_openURIs removeAllObjects];
+	[_workspaceFolders removeAllObjects];
 	[_documentVersions removeAllObjects];
 	[_changeTimers removeAllObjects];
 
@@ -224,6 +234,7 @@ static settings_t settingsForCopilotDocument(OakDocument* document)
 	_client = nil;
 	_checkingAuth = NO;
 	[_openURIs removeAllObjects];
+	[_workspaceFolders removeAllObjects];
 	[_documentVersions removeAllObjects];
 
 	for(NSTimer* timer in _changeTimers.allValues)
@@ -601,6 +612,34 @@ static NSString* languageIdForDocument(OakDocument* doc)
 	[self sendDidOpenForDocument:document uri:uri];
 }
 
+// Folders are only ever added, never removed: removal would need per-folder
+// reference counting across documents and windows. A stale folder normally
+// costs a few watches inside that project, but if the folder is deleted while
+// the server runs, its watches move up to the nearest existing ancestor.
+- (void)announceWorkspaceFolderForDocument:(OakDocument*)document
+{
+	std::string fileType   = to_s(document.fileType ?: @"");
+	std::string configured = lsp::setting_with_bundle_fallback(kSettingsLSPRootPathKey, settingsForCopilotDocument(document), scope::scope_t(fileType));
+	std::string root       = lsp::shared_server_workspace_folder(configured, to_s(document.path), path::home());
+	if(root.empty())
+		return;
+
+	NSString* folder = to_ns(root);
+	if([_workspaceFolders containsObject:folder])
+		return;
+	[_workspaceFolders addObject:folder];
+
+	// isDirectory:NO keeps a trailing slash off the URI, matching what VS Code sends
+	NSDictionary* params = @{
+		@"event": @{
+			@"added":   @[ @{ @"uri": [NSURL fileURLWithPath:folder isDirectory:NO].absoluteString, @"name": folder.lastPathComponent } ],
+			@"removed": @[],
+		}
+	};
+	[_client sendCustomNotification:@"workspace/didChangeWorkspaceFolders" params:params];
+	[self log:[NSString stringWithFormat:@"Added workspace folder %@", folder]];
+}
+
 - (void)sendDidOpenForDocument:(OakDocument*)document uri:(NSString*)uri
 {
 	if([_openURIs containsObject:uri])
@@ -608,6 +647,8 @@ static NSString* languageIdForDocument(OakDocument* doc)
 
 	[_openURIs addObject:uri];
 	_documentVersions[uri] = @1;
+
+	[self announceWorkspaceFolderForDocument:document];
 
 	NSDictionary* params = @{
 		@"textDocument": @{

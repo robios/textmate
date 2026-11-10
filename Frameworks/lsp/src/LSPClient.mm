@@ -145,6 +145,7 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 	BOOL _codeActionResolveProvider;
 	NSArray<NSString*>* _executeCommands;
 	NSString* _workingDirectory;
+	NSString* _workspaceRoot; // nil: no workspace folders
 	NSString* _initOptionsJSON;
 	NSMutableDictionary<NSNumber*, void(^)(id)>* _responseCallbacks;
 	NSMutableDictionary<NSNumber*, NSString*>* _requestMethods;
@@ -185,12 +186,18 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 
 - (instancetype)initWithCommand:(NSString*)command arguments:(NSArray<NSString*>*)arguments workingDirectory:(NSString*)workingDirectory initOptions:(NSString*)initOptionsJSON
 {
+	return [self initWithCommand:command arguments:arguments workingDirectory:workingDirectory workspaceRoot:workingDirectory initOptions:initOptionsJSON];
+}
+
+- (instancetype)initWithCommand:(NSString*)command arguments:(NSArray<NSString*>*)arguments workingDirectory:(NSString*)workingDirectory workspaceRoot:(NSString*)workspaceRoot initOptions:(NSString*)initOptionsJSON
+{
 	if(self = [super init])
 	{
 		_serverName = command.lastPathComponent;
 		_identifier = NSUUID.UUID.UUIDString;
 		_logPrefix = [NSString stringWithFormat:@"LSP:%@", _serverName];
 		_workingDirectory = workingDirectory;
+		_workspaceRoot = workspaceRoot;
 		_initOptionsJSON = initOptionsJSON;
 		_readQueue = dispatch_queue_create("com.macromates.lsp.read", DISPATCH_QUEUE_SERIAL);
 		_nextRequestId = 1;
@@ -1024,11 +1031,18 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 
 - (void)sendInitialize
 {
-	std::string rootUriStr = [NSURL fileURLWithPath:_workingDirectory].absoluteString.UTF8String;
+	json rootUri = nullptr, workspaceFolders = nullptr;
+	if(_workspaceRoot)
+	{
+		std::string rootUriStr = [NSURL fileURLWithPath:_workspaceRoot].absoluteString.UTF8String;
+		rootUri          = rootUriStr;
+		workspaceFolders = json::array({{{"uri", rootUriStr}, {"name", _workspaceRoot.lastPathComponent.UTF8String}}});
+	}
+
 	json params = {
 		{"processId",    (int)NSProcessInfo.processInfo.processIdentifier},
-		{"rootUri",      rootUriStr},
-		{"workspaceFolders", json::array({{{"uri", rootUriStr}, {"name", _workingDirectory.lastPathComponent.UTF8String}}})},
+		{"rootUri",      rootUri},
+		{"workspaceFolders", workspaceFolders},
 		{"initializationOptions", _initOptionsJSON.length ? json::parse(_initOptionsJSON.UTF8String, nullptr, false) : json::object()},
 		{"capabilities", {
 			{"textDocument", {
@@ -1896,6 +1910,13 @@ static void extractExtensionsFromGlob (NSString* pattern, NSMutableSet<NSString*
 		}
 
 		std::string regId = reg["id"].is_string() ? reg["id"].get<std::string>() : std::to_string(reg["id"].get<int>());
+		if(!_workspaceRoot)
+		{
+			// The watcher would scan and observe the working directory, which
+			// for a workspace-less client is no project at all (Copilot: $HOME)
+			[self postLog:[NSString stringWithFormat:@"File watch: no workspace root, ignoring registration %s", regId.c_str()] source:@"event"];
+			continue;
+		}
 		[self postLog:[NSString stringWithFormat:@"Registering file watcher: %s", regId.c_str()] source:@"event"];
 
 		if(!_fileWatchRegistrations)
