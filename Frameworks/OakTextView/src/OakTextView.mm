@@ -748,6 +748,22 @@ doScroll:
 	y = std::clamp(y, NSMinY(b), NSMaxY(b) - h);
 
 	NSClipView* contentView = [[self enclosingScrollView] contentView];
+
+	// AppKit animates scrollRectToVisible: during key events. With a held key
+	// every repeat retargets that animation, so the view trails the caret and
+	// redraws the visible text for each intermediate frame. Jump instead.
+	NSEvent* event = [self.window currentEvent];
+	if(contentView && event.type == NSEventTypeKeyDown && event.isARepeat)
+	{
+		NSRect target = [contentView constrainBoundsRect:(NSRect){ { round(x), round(y) }, contentView.bounds.size }];
+		if(!NSEqualPoints(target.origin, contentView.bounds.origin))
+		{
+			[contentView scrollToPoint:target.origin];
+			[[self enclosingScrollView] reflectScrolledClipView:contentView];
+		}
+		return;
+	}
+
 	if([contentView respondsToSelector:@selector(_extendNextScrollRelativeToCurrentPosition)])
 		[contentView performSelector:@selector(_extendNextScrollRelativeToCurrentPosition)]; // Workaround for <rdar://9295929>
 	[self scrollRectToVisible:CGRectMake(round(x), round(y), w, h)];
