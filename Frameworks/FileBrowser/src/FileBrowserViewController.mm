@@ -771,8 +771,12 @@ static NSMutableArray<NSDictionary*>* HistoryWithoutReviewBaseSpec (NSArray<NSDi
 	std::string fileType = settings_for_path(NULL_STR, "attr.untitled", directoryURL.fileSystemRepresentation).get(kSettingsFileTypeKey, "text.plain");
 	for(auto item : bundles::query(bundles::kFieldGrammarScope, fileType))
 	{
-		if(NSString* ext = to_ns(item->value_for_field(bundles::kFieldGrammarExtension)))
-			pathExtension = ext;
+		auto const exts = item->values_for_field(bundles::kFieldGrammarExtension);
+		if(!exts.empty())
+		{
+			pathExtension = to_ns(exts.front());
+			break;
+		}
 	}
 
 	NSURL* newFileURL = [[directoryURL URLByAppendingPathComponent:@"untitled" isDirectory:NO] URLByAppendingPathExtension:pathExtension];
