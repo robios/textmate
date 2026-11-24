@@ -1695,7 +1695,7 @@ static plist::any_t normalize_potential_dictionary (plist::any_t const& action)
 	return action;
 }
 
-static void update_menu_key_equivalents (NSMenu* menu, std::multimap<std::string, std::string> const& actionToKey)
+static void update_menu_key_equivalents (NSMenu* menu, std::map<std::string, std::string> const& actionToKey)
 {
 	for(NSMenuItem* item in [menu itemArray])
 	{
@@ -1731,11 +1731,11 @@ static void update_menu_key_equivalents (NSMenu* menu, std::multimap<std::string
 			}
 		}
 
-		std::multimap<std::string, std::string> actionToKey;
+		std::map<std::string, std::string> actionToKey;
 		for(auto const& pair : KeyBindings)
 		{
 			if(std::string const* selector = plist::get<std::string>(&pair.second))
-				actionToKey.emplace(*selector, pair.first);
+				actionToKey.emplace(*selector, pair.first); // an action bound to several keys keeps the first
 		}
 
 		update_menu_key_equivalents([NSApp mainMenu], actionToKey);
