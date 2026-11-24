@@ -296,8 +296,8 @@ namespace bundles
 	std::string const& item_t::value_for_field (std::string const& field) const
 	{
 		static std::string const fallback = NULL_STR;
-		std::multimap<std::string, std::string>::const_iterator it = _fields.find(field);
-		return it == _fields.end() ? fallback : it->second;
+		std::multimap<std::string, std::string>::const_iterator it = _fields.lower_bound(field);
+		return it == _fields.end() || it->first != field ? fallback : it->second;
 	}
 
 	std::optional<double> item_t::does_match (std::string const& field, std::string const& value, scope::context_t const& scope, int kind, oak::uuid_t const& bundle)
